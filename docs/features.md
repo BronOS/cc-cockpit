@@ -581,8 +581,9 @@ Open the cockpit in a browser on another device (a laptop, a phone): the same pr
 and overlays, live on both screens at once, any of them able to act. Claude keeps running on this computer. Design and
 reasons: [design-web.md](design-web.md).
 
-**Turn it on:** Settings > General > Web access. It is off by default and listens on `127.0.0.1:7330` (port 1024 to
-65535). The card shows the access link as text and a QR code (behind Show, so a screenshot does not leak it); open it
+**Turn it on:** Settings > General > Web access. It is on by default and listens on this computer only (`127.0.0.1:7330`, port 1024 to
+65535); a browser on this Mac still needs the access link. Turn it off there and it stays off; if the port is taken the
+card shows web access as failed and the app runs on. The card shows the access link as text and a QR code (behind Show, so a screenshot does not leak it); open it
 in the browser and the device is signed in. "Add a device" makes a one-time link. The top bar shows a chip while web
 access is on (and a warning while a risky choice is on); it opens the devices list with Disconnect, Revoke and Revoke
 all. Every new device raises a desktop notification. A browser attaches to one project window; closing that window with

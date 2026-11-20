@@ -24,16 +24,20 @@ const INTERFACES = {
 }
 
 describe('webAccessOf', () => {
-  it('is off with the defaults when absent or damaged', () => {
+  it('is on with the defaults when absent or damaged', () => {
     expect(webAccessOf(undefined)).toEqual(DEFAULT_WEB_ACCESS)
     expect(webAccessOf('on')).toEqual(DEFAULT_WEB_ACCESS)
     expect(webAccessOf([])).toEqual(DEFAULT_WEB_ACCESS)
-    expect(DEFAULT_WEB_ACCESS.enabled).toBe(false)
+    expect(DEFAULT_WEB_ACCESS.enabled).toBe(true)
+    expect(DEFAULT_WEB_ACCESS.bind).toBe('127.0.0.1')
+    expect(DEFAULT_WEB_ACCESS.mode).toBe('link')
   })
 
-  it('is on only for exactly true', () => {
+  it('reads an absent enabled as on, a stored false as off, a non-boolean as the default', () => {
+    expect(webAccessOf({}).enabled).toBe(true)
     expect(webAccessOf({ enabled: true }).enabled).toBe(true)
-    for (const enabled of ['true', 1, 'yes', null, {}]) expect(webAccessOf({ enabled }).enabled).toBe(false)
+    expect(webAccessOf({ enabled: false }).enabled).toBe(false)
+    for (const enabled of ['true', 'false', 0, 1, 'yes', null, {}]) expect(webAccessOf({ enabled }).enabled).toBe(true)
   })
 
   it('reads each damaged field as its own default', () => {
@@ -97,7 +101,7 @@ describe('listenPlanOf', () => {
   const on = (over: object) => webAccessOf({ enabled: true, ...over })
 
   it('does not listen while off', () => {
-    expect(listenPlanOf(webAccessOf({}))).toEqual({ ok: false, reason: 'web access is off' })
+    expect(listenPlanOf(webAccessOf({ enabled: false }))).toEqual({ ok: false, reason: 'web access is off' })
   })
 
   it('listens on loopback binds', () => {

@@ -2384,8 +2384,9 @@ function start(server: boolean): void {
   // overlay manager (a terminal overlay's window token, mapped to the project its window shows),
   // `--project <path>` through the registry (a lookup only, never a new record). Handlers arrive
   // with the commands that use them (hook: Task 14, below; the user commands: Task 21, below).
-  // Web access (design-web.md): off by default. Constructing it costs nothing (no listener, `ws`
-  // not loaded); apply() below starts it only when `app.json` › `webAccess.enabled` is true.
+  // Web access (design-web.md): on by default, loopback only. Constructing it costs nothing (no listener,
+  // `ws` not loaded); apply() below starts it unless `app.json` › `webAccess.enabled` is false (a taken
+  // port leaves the gateway `failed` and the app running).
   // The device file is read here (a missing one stays missing: nothing is written until a device
   // signs in or a token is made).
   const webAccessLog = new AccessLog({ filePath: join(paths.logsDir, 'web-access.log') })

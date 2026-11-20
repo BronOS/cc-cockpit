@@ -114,6 +114,9 @@ export async function launchCockpit(
     if (options.claudeTabOnOpen !== true) settings.claudeTabOnOpen = false
     if (options.confirmTabClose !== true) settings.confirmTabClose = false
     if (options.zoneAutoHide !== true) settings.zoneAutoHide = false
+    // Web access is on by default; a spec turns it on itself (enableWebAccess, server fixtures), so
+    // parallel test apps never fight over port 7330.
+    settings.webAccess = { enabled: false }
     Object.assign(settings, options.settings)
     if (Object.keys(settings).length > 1) writeFileSync(join(dataDir, 'app.json'), JSON.stringify(settings))
   }

@@ -28,7 +28,8 @@ import {
 import type { WebAccessSettings } from '../../src/shared/types'
 import { SERVER_NONE_WARNING, type WebAccessIndicator, type WebAccessSetReply, type WebAccessView } from '../../src/shared/web-access'
 
-const base: WebAccessSettings = { ...DEFAULT_WEB_ACCESS, hosts: [] }
+// Off, whatever the default: the tests turn it on themselves.
+const base: WebAccessSettings = { ...DEFAULT_WEB_ACCESS, enabled: false, hosts: [] }
 
 /** The page a saved change answers with; a `needsConfirm` reply fails the test. */
 function pageOf(reply: WebAccessSetReply): WebAccessView {
@@ -357,9 +358,9 @@ describe('WebAccessService', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('is off with the defaults and shows no devices', () => {
+  it('is on with the defaults (nothing stored) and shows no devices', () => {
     const v = service.view()
-    expect(v.form).toEqual({ enabled: false, bind: '127.0.0.1', port: 7330, externalOrigin: '', hosts: [], mode: 'link', certPath: '', keyPath: '' })
+    expect(v.form).toEqual({ enabled: true, bind: '127.0.0.1', port: 7330, externalOrigin: '', hosts: [], mode: 'link', certPath: '', keyPath: '' })
     expect(v.network).toBe(false)
     expect(v.gateway).toEqual({ state: 'off' })
     expect(v.devices).toEqual([])
@@ -393,6 +394,7 @@ describe('WebAccessService', () => {
       },
       version: '9.8.7'
     })
+    stored = { enabled: false }
     // Start-up with web access off: drained after the gateway (a no-op), so nothing is loaded.
     await withTerminals.apply()
     expect(calls).toEqual(['gateway false', 'drain'])
