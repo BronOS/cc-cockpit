@@ -472,6 +472,8 @@ async function streamedMany(lib, n, width, height, budgeted) {
     }
   })
   const pages = []
+  const gone = []
+  const perPage = new Array(n).fill(0)
   for (let i = 0; i < n; i++) {
     const panel = { windowId: 1, pluginId: 'bench.browser', panelId: 'browser' + i }
     const viewer = 'web:' + i
@@ -484,9 +486,11 @@ async function streamedMany(lib, n, width, height, budgeted) {
     budget?.setViewed('p' + i, true)
     win.webContents.on('paint', (_e, _d, image) => {
       cost.paints++
+      perPage[i]++
       budget?.paint('p' + i)
       stream.paint(panel, timed(image))
     })
+    win.webContents.on('render-process-gone', (_e, d) => gone.push(`page ${i}: ${d.reason}`))
     await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(ANIMATED_PAGE))
     viewers.report(panel, viewer, { width, height, visible: true, hidden: false })
     pages.push({ win, detach, viewer })
@@ -495,6 +499,7 @@ async function streamedMany(lib, n, width, height, budgeted) {
   // The budget needs a second of paints to see the pages animate, then a moment to settle.
   await new Promise((r) => setTimeout(r, budgeted ? 2500 : 500))
   Object.assign(cost, { paints: 0, encodes: 0, encodeMs: 0 })
+  perPage.fill(0)
   for (const s of sockets.values()) {
     s.frames = 0
     s.bytes = 0
@@ -515,12 +520,14 @@ async function streamedMany(lib, n, width, height, budgeted) {
     p.win.destroy()
   }
   stream.dispose()
-  const res = { ...r, n, size: `${width}x${height}`, budgeted }
+  const minPaints = Math.min(...perPage)
+  const res = { ...r, n, size: `${width}x${height}`, budgeted, gone, minPaints, needPaints: Math.floor(5 * SECONDS) }
   console.log(
     `\n8. ${n} streamed ${res.size} webviews${budgeted ? ' under the budget' : ''} + flooded: ${(cost.paints / seconds).toFixed(0)} paints/s, ${(frames / seconds).toFixed(0)} frames/s encoded and sent, ` +
       `${mib(bytes / seconds)} MiB/s; encode ${((cost.encodeMs / (seconds * 1000)) * 100).toFixed(0)}% of main`
   )
   console.log(`   ${line(r)}`)
+  console.log(`   paints per page over ${seconds.toFixed(1)} s: ${perPage.join(' ')}${gone.length ? '; renderer gone: ' + gone.join(', ') : ''}`)
   return res
 }
 
@@ -625,9 +632,11 @@ async function main() {
     console.log(`${pass ? 'PASS' : 'FAIL'}: flooded with a 1 GiB zip download p99 ${ms(zipRun.p99)} ms ${pass ? '<=' : '>'} ${P99_LIMIT_MS} ms`)
   }
   for (const r of many) {
-    const pass = r.p99 / 1e6 <= P99_LIMIT_MS
+    // A crashed or stalled page must not pass by leaving only the flood to measure: every page needs
+    // the budget floor's 5 fps over the window and no renderer may have gone.
+    const pass = r.p99 / 1e6 <= P99_LIMIT_MS && r.gone.length === 0 && r.minPaints >= r.needPaints
     ok &&= pass
-    console.log(`${pass ? 'PASS' : 'FAIL'}: flooded with ${r.n} streamed ${r.size} webviews under the budget p99 ${ms(r.p99)} ms ${pass ? '<=' : '>'} ${P99_LIMIT_MS} ms`)
+    console.log(`${pass ? 'PASS' : 'FAIL'}: flooded with ${r.n} streamed ${r.size} webviews under the budget p99 ${ms(r.p99)} ms ${pass ? '<=' : '>'} ${P99_LIMIT_MS} ms, min ${r.minPaints} paints per page (need ${r.needPaints}), ${r.gone.length} renderers gone`)
   }
   return ok ? 0 : 1
 }
