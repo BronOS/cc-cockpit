@@ -28,3 +28,11 @@ Every run of the 2026-11-20 pass (branch `backlog/e2e-flakes-2`) was made with t
   as the control, after `win.blur()` / `win.focus()`, which must still move it to the button. If a real path moves
   it, restore the terminal's focus on the window's focus when the page's focus went to the strip with no press or
   key, without a gesture (a gesture focus takes the terminal size) and from nothing a page can trigger.
+
+Seen 2026-11-20 (overlays in every view release work):
+- **Waits that prove nothing after a second Claude tab.** `qa-guest-edges.spec.ts:44` and `qa-guest-leak.spec.ts:66` wait
+  for the FAKE-CLAUDE banner right after opening a second tab, which the first tab's pane already shows; neither types
+  afterwards, so they pass, but the same pattern made `web-access-plugins.spec.ts:66` type into the wrong pane (fixed in
+  b51a181 by addressing the new tab's own pane). Found by a pattern scan, not a check of every spec.
+- **`folder-walk.test.ts` under load:** its `afterEach` `rmSync` hit vitest's 10 s timeout three times while an e2e run or
+  another full run used the machine; it passes alone.
