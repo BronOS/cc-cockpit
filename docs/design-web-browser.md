@@ -253,7 +253,8 @@ the fallback when the protocol detached:
   and texts keep their order. A full queue (512) drops moves first, then lets in only an up that matches a live press
   record (matched by the physical key's `code`, so Shift+A down and `a` up match, or by the button), one per record:
   repeated ups for one held key never grow the queue. A refused key down drops its `char` too.
-- **Stalled sessions.** A session whose command missed its deadline gets nothing more until that command answers, so
+- **Stalled sessions.** A session whose command missed its deadline gets nothing more until every such command of it
+  answered (a later command's answer never stands in for an earlier one's), so
   a renderer that answers nothing holds one unanswered command, never a pile; that command no longer counts toward
   the page's one on its way (a stalled frame holds itself, not the page). A move for a stalled frame is dropped, its
   press or wheel goes to the page's session at the top point. A release always goes where its press went: a frame
@@ -263,7 +264,9 @@ the fallback when the protocol detached:
   presses, releases and wheels wait in the queue in order (bounded by the cap; no hit test runs), moves
   are dropped, so a page busy for a second loses no key and no press lands in a frame before a key to the page was
   answered; its answer or a reset starts the queue again. A hit-test query that missed its 200 ms deadline marks its
-  session the same way for queries (the event goes on unrouted). Each attachment of the protocol has an epoch, bumped
+  session the same way for queries (the event goes on unrouted). The detached road is a session too: a text, edit
+  command or blocking call there that missed its deadline holds everything after it, in order, until it settles or a
+  reset, so at most one is outstanding. A key down refused late still drops its `char`. Each attachment of the protocol has an epoch, bumped
   only by the reset its detach brings (which drops the queue and every press record), each step the epoch it was taken
   in, and each session its own lifetime. The one sender checks both synchronously right before it sends, so no wait
   inside a step can carry it across: a step of an older attachment sends nothing by any road, and a pointer event

@@ -78,7 +78,8 @@
 //              only with the step right before it); presses, releases, keys, texts and calls keep their
 //              order. The queue holds MAX_QUEUED_STEPS: past it moves go first, and then only an up
 //              with a live press record's slot (by the physical key, `code`, or the button) gets in.
-//   stalled    a session whose command missed its deadline gets no other until that one answers (so a
+//   stalled    a session whose command missed its deadline gets no other until every such command of it
+//              answered (ruling 2026-11-19 #5: a newer one's answer never stands in for an older one's; so a
 //              renderer that answers nothing holds one unanswered command, never a pile), and that
 //              command no longer counts toward the page's one on its way: a stalled frame holds itself,
 //              not the page. A move for a stalled frame is dropped, a press or wheel goes to the page's
@@ -90,7 +91,9 @@
 //              moves are dropped, no hit test runs (review finding: a press
 //              into a frame went while a key to the page was unanswered, so focus could move before
 //              it landed); its answer, or a reset, starts the pump again. A hit test's query that
-//              missed ROUTE_TIMEOUT_MS likewise: that session is asked nothing until it answers.
+//              missed ROUTE_TIMEOUT_MS likewise: that session is asked nothing until it answers. The
+//              detached road is a session too: a text, edit command or blocking call there that
+//              missed its deadline holds everything after it until it settles or a reset.
 //   epoch      each attachment has a number, bumped only when the protocol detaches (`reset`, which
 //              also drops the queue and every press record), and each step carries the one it was
 //              taken in. Each session is an object of its own (`Lane`) that `end` marks gone, the one
@@ -338,8 +341,14 @@ interface Lane {
   readonly epoch: number
   /** False once it went (frameDetached, its parent went, the attachment ended): it gets nothing more, ever. */
   live: boolean
-  /** The command that missed its deadline and is not answered yet: the session gets nothing else until it is. */
+  /**
+   * Set while a command of it missed its deadline and is not answered yet: the session gets nothing
+   * else until all of those (`late`) answered (C5, ruling 2026-11-19 #5: a newer command's answer
+   * never stands in for an older one's; codex: a release's answer unstalled a frame whose press was
+   * still unanswered, so repeated clicks piled up unanswered presses).
+   */
   stalled: object | undefined
+  readonly late: Set<object>
   /** The same for a hit test's query: the session is asked nothing until it answers. */
   queryStalled: object | undefined
   /** A frame's: its target id (a frame's id is its target's), its parent, whether it was resumed. */
@@ -349,7 +358,7 @@ interface Lane {
 }
 
 function newLane(id: string, epoch: number, targetId = '', parent?: Lane): Lane {
-  return { id, epoch, live: true, stalled: undefined, queryStalled: undefined, targetId, parent, ready: id === '' }
+  return { id, epoch, live: true, stalled: undefined, late: new Set(), queryStalled: undefined, targetId, parent, ready: id === '' }
 }
 
 /** One link of a route: the owner element (`owner`, a backend node id) in `parent` of the frame `lane`. */
@@ -422,8 +431,19 @@ type Outcome = 'answered' | 'refused' | 'late' | 'stale'
 /** One delivery handed to the sink: a protocol command to a session, or the detached road's. */
 type Delivery =
   /** `top`: a pointer event's params at the top document's point, where it goes when `lane` (a frame) went. */
-  /** `release`: a press record's release, the one command a stalled session still gets (C5). */
-  | { road: 'protocol'; lane: Lane; method: InputMethod; params: Record<string, unknown>; top?: Record<string, unknown>; release?: boolean }
+  /**
+   * `release`: a press record's release, the one command a stalled session still gets (C5).
+   * `lateRefused`: called when it is refused after its deadline, before the session takes input again.
+   */
+  | {
+      road: 'protocol'
+      lane: Lane
+      method: InputMethod
+      params: Record<string, unknown>
+      top?: Record<string, unknown>
+      release?: boolean
+      lateRefused?: () => void
+    }
   /** `event` by sendInputEvent, or `run` (a text's or an edit command's own road). */
   | { road: 'detached'; event?: ElectronInputEvent; run?: () => unknown }
 
@@ -501,6 +521,13 @@ export class PageInputRouter implements ChildFrameObserver {
    * sends the old press's release); the first button one is the capture.
    */
   private records: Press[] = []
+  /**
+   * Set while a detached road's delivery (a text, an edit command, a blocking call) missed its
+   * deadline and has not settled: the detached road is a session too (C5, ruling 2026-11-19 #5), so
+   * nothing after it goes until it settles or the attachment changes (codex: `wc.insertText` calls
+   * that never settled piled up, one per text). At most one is outstanding.
+   */
+  private detachedStall: object | undefined
   /** The key down the page's session just refused (`key:<code>`): its `char`, next in the queue, is dropped too. */
   private refusedDown: string | undefined
   /** Where the pointer was last delivered (for the hover moves when it changes session). */
@@ -542,7 +569,7 @@ export class PageInputRouter implements ChildFrameObserver {
   /** Mapped input for the page (webview-input.ts toElectronEvents), in order. */
   input(events: readonly ElectronInputEvent[]): void {
     // Detached with nothing queued: straight to the detached road, as before the router.
-    if (!this.pumping && this.queue.length === 0 && !this.deps.attached()) {
+    if (!this.pumping && this.queue.length === 0 && !this.detachedStall && !this.deps.attached()) {
       for (const event of events) this.detachedEvent(event, this.epoch)
       return
     }
@@ -656,6 +683,9 @@ export class PageInputRouter implements ChildFrameObserver {
     this.pumping = true
     try {
       for (;;) {
+        // The detached road owes an answer past its deadline: everything waits, in order (by the
+        // cap), until it settles (which pumps again) or a reset.
+        if (this.detachedStall) return
         if (!this.deps.attached()) {
           // The protocol went: what waits goes by the roads of a detached view, in order. A text, an
           // edit command or a blocking call answers later (an IPC of its own), so what comes after it
@@ -694,7 +724,7 @@ export class PageInputRouter implements ChildFrameObserver {
   private async runDetached(step: Step): Promise<void> {
     if (step.kind === 'call') {
       const pending = this.runCall(step)
-      if (step.blocking) await this.within(pending, STEP_TIMEOUT_MS)
+      if (step.blocking) await this.detachedWait(pending, step.epoch)
       return
     }
     if (step.kind === 'command') {
@@ -702,10 +732,33 @@ export class PageInputRouter implements ChildFrameObserver {
       sent.then(step.resolve, step.reject)
       const key = pressKey(step)
       if (key) this.keyRecord(key.id, 'detached')
-      await this.within(sent, STEP_TIMEOUT_MS)
+      await this.detachedWait(sent, step.epoch)
       return
     }
     this.detachedEvent(step.event, step.epoch)
+  }
+
+  /**
+   * A detached delivery's answer, STEP_TIMEOUT_MS at most; one that missed it stalls the detached
+   * road (`detachedStall`) until it settles, unless the attachment changed meanwhile.
+   */
+  private async detachedWait(pending: Promise<unknown>, epoch: number): Promise<void> {
+    let settled = false
+    const mark = (): void => {
+      settled = true
+    }
+    pending.then(mark, mark)
+    await this.within(pending, STEP_TIMEOUT_MS)
+    if (settled || epoch !== this.epoch) return
+    const token = {}
+    this.detachedStall = token
+    this.warn('detached', 'webview: the detached view did not answer input in time; input waits for it')
+    const clear = (): void => {
+      if (this.detachedStall !== token) return
+      this.detachedStall = undefined
+      void this.pump()
+    }
+    pending.then(clear, clear)
   }
 
   /**
@@ -780,7 +833,13 @@ export class PageInputRouter implements ChildFrameObserver {
     if (step.event.type !== 'char') {
       // A key up goes for its record only (and ends it); one with no record is dropped.
       if (step.event.type === 'keyUp' && !this.unrecord(this.newest(id))) return 'done'
-      const { outcome, lane } = this.sendInput(step.epoch, { road: 'protocol', lane: this.page, method: 'Input.dispatchKeyEvent', params })
+      // Refused after its deadline (C7): the session held everything since, so its `char` is still
+      // next and is dropped. Its record stays (the step had already gone on with it): the up goes.
+      const lateRefused = (): void => {
+        if (step.event.type === 'keyDown') this.refusedDown = id
+        this.pageRefused()
+      }
+      const { outcome, lane } = this.sendInput(step.epoch, { road: 'protocol', lane: this.page, method: 'Input.dispatchKeyEvent', params, lateRefused })
       if (step.event.type === 'keyDown' && lane) press = this.keyRecord(id, lane)
       // Refused: dropped, never by sendInputEvent (the same reasons); a refused down records nothing.
       if ((await outcome) === 'refused') {
@@ -1056,6 +1115,7 @@ export class PageInputRouter implements ChildFrameObserver {
       const timer = this.timers.set(() => {
         if (over) return
         if (epoch === this.epoch && to.live) {
+          to.late.add(token)
           to.stalled = token
           this.warn('stalled', 'webview: the page or a frame did not answer input in time; it gets no more until it does')
         }
@@ -1067,9 +1127,12 @@ export class PageInputRouter implements ChildFrameObserver {
           finish(result)
           return
         }
-        // A late answer: the session takes input again, only if it is
-        // still the one that missed the deadline with this command.
-        if (to.stalled !== token) return
+        // A late answer: the session takes input again once every command of it that missed its
+        // deadline answered. A late refusal still tells its step's owner (`lateRefused`: a key
+        // down's `char` is dropped), before anything else runs.
+        if (!to.late.delete(token)) return
+        if (result === 'refused' && epoch === this.epoch && to.live) d.lateRefused?.()
+        if (to.late.size > 0) return
         to.stalled = undefined
         if (to.live && to.epoch === this.epoch) void this.pump()
       }
@@ -1129,6 +1192,7 @@ export class PageInputRouter implements ChildFrameObserver {
     this.page = newLane('', this.epoch)
     this.records = []
     this.refusedDown = undefined
+    this.detachedStall = undefined
     this.hover = undefined
     this.onWay = undefined
   }
