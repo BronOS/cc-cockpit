@@ -31,20 +31,10 @@
   --cc-traffic-lights-w: 86px;
 }
 
-/* Thin themed scrollbars instead of the OS default (on Linux GTK a wide bar with arrow buttons).
-   Zero specificity (:where), so the specific rules below (`scrollbar-width: none`, a transparent
-   `scrollbar-color`) still win. `scrollbar-color` inherits, `scrollbar-width` does not (hence `*`).
-   Not on macOS: setting either turns its overlay scrollbars into always-visible classic bars. The
-   panel SDK installs the same rule in plugin pages (src/sdk/panel-core.ts BASE_SCROLLBAR_CSS). */
-:where(:root:not([data-platform='darwin'])) {
-  scrollbar-color: color-mix(in srgb, var(--cc-fg) 22%, transparent) transparent;
-}
-:where(:root:not([data-platform='darwin']) *) {
-  scrollbar-width: thin;
-}
-:where(:root:not([data-platform='darwin']) *:hover) {
-  scrollbar-color: color-mix(in srgb, var(--cc-fg) 38%, transparent) transparent;
-}
+/* Scrollbars: edges-only (no bar at rest, shadows at the edges with more content, the bar while
+   scrolling or with the pointer near the edge). The sheets are src/sdk/scroll-edges-core.ts, adopted by
+   main.tsx in a layer at zero specificity, so any rule here (`scrollbar-width: none`, a transparent
+   `scrollbar-color`, a `box-shadow` on a scroller) wins over them. */
 
 html,
 body,
@@ -1419,6 +1409,31 @@ body.shell-dragging .page-tab-frame {
   margin-right: auto;
   align-self: center;
   color: var(--cc-fg-muted);
+}
+/* "Claude Code was not found" (ClaudeOfferDialog): the close dialog's frame, wider for the commands; the
+   command lines reuse the picker's `.connect-command` row with its Copy button. */
+.confirm-dialog.claude-offer {
+  width: min(560px, 92vw);
+}
+.claude-offer .connect-command {
+  margin: 0 0 10px;
+}
+.claude-offer-others {
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-sm);
+}
+.claude-offer-others code {
+  font-family: var(--cc-font-mono);
+  user-select: text;
+}
+.claude-offer-docs .link-button {
+  padding: 0;
+  font: inherit;
+  color: var(--cc-accent, inherit);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 /* Claude status. The dot colours are theme variables; the fallbacks are for a theme (a plugin's)

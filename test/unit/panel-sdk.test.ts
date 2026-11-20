@@ -9,6 +9,7 @@ import {
   MAX_QUEUED_MESSAGES,
   BASE_SCROLLBAR_CSS,
   PanelClient,
+  SCROLL_EDGES_CSS,
   PORT_MESSAGE,
   READY_MESSAGE,
   SLOT_HEIGHT_MESSAGE,
@@ -202,24 +203,47 @@ describe('panel SDK: base scrollbar style', () => {
   }
   const msg = (mac: boolean): unknown => ({ type: THEME_MESSAGE, theme: { kind: 'dark', vars: {} }, mac })
 
-  it('installs the zero-specificity rule once, on the first theme', () => {
+  it('installs the edges at once and the bars once, on the first theme', () => {
     const { c, sheets } = withStyles()
+    expect(sheets).toEqual([SCROLL_EDGES_CSS])
     c.receive(msg(false), [])
     c.receive(msg(false), [])
-    expect(sheets).toEqual([BASE_SCROLLBAR_CSS])
+    expect(sheets).toEqual([SCROLL_EDGES_CSS, BASE_SCROLLBAR_CSS])
     expect(BASE_SCROLLBAR_CSS).toContain('scrollbar-width: thin')
-    expect(BASE_SCROLLBAR_CSS.replace(/:where\([^)]*\)/g, '')).not.toMatch(/[.#a-z]\s*\{/)
   })
 
-  it('does not install it on macOS, or when the message does not say', () => {
+  it('does not install the bars on macOS (the edges stay), and does when the message does not say', () => {
     const a = withStyles()
     a.c.receive(msg(true), [])
-    expect(a.sheets).toEqual([])
+    expect(a.sheets).toEqual([SCROLL_EDGES_CSS])
     const b = withStyles()
     b.c.receive({ type: THEME_MESSAGE, theme: { kind: 'dark', vars: {} } }, [])
-    expect(b.sheets).toEqual([BASE_SCROLLBAR_CSS])
+    expect(b.sheets).toEqual([SCROLL_EDGES_CSS, BASE_SCROLLBAR_CSS])
+  })
+
+  it('keeps both sheets below any page rule: one sub-layer of `cc`, every selector inside :where()', () => {
+    for (const css of [SCROLL_EDGES_CSS, BASE_SCROLLBAR_CSS]) {
+      const statements = topLevel(css)
+      // Only the two @property registrations (not cascaded) sit outside the layer.
+      for (const { prelude } of statements) expect(prelude === '@layer cc.scroll' || prelude.startsWith('@property --cc-edge-')).toBe(true)
+      const layer = statements.find((s) => s.prelude === '@layer cc.scroll')!
+      for (const selector of selectorsOf(layer.body)) {
+        expect(selector.replace(/:where\([^()]*(\([^()]*\)[^()]*)*\)/g, '').replace(/::after/g, '').trim()).toBe('')
+      }
+    }
   })
 })
+
+/** The style rules' selectors in a sheet body, through @media / @supports blocks, @keyframes left out. */
+function selectorsOf(body: string): string[] {
+  const out: string[] = []
+  for (const { prelude, body: inner } of topLevel(body)) {
+    if (prelude.startsWith('@keyframes')) continue
+    if (prelude.startsWith('@media') || prelude.startsWith('@supports')) out.push(...selectorsOf(inner))
+    else out.push(...prelude.split(',').map((s) => s.trim()))
+  }
+  return out
+}
 
 const COMPONENTS_CSS = readFileSync(resolve(__dirname, '../../src/sdk/components.css'), 'utf8')
 
@@ -263,18 +287,18 @@ describe('panel SDK: the component stylesheet', () => {
   }
   const theme = (mac: boolean): unknown => ({ type: THEME_MESSAGE, theme: { kind: 'dark', vars: {} }, mac })
 
-  it('installs the components at once, before the scrollbars (which wait for the first theme)', () => {
+  it('installs the components at once, then the edges, before the scrollbars (which wait for the first theme)', () => {
     const { c, sheets } = withStyles()
-    expect(sheets).toEqual([COMPONENTS_CSS])
+    expect(sheets).toEqual([COMPONENTS_CSS, SCROLL_EDGES_CSS])
     c.receive(theme(false), [])
     c.receive(theme(false), [])
-    expect(sheets).toEqual([COMPONENTS_CSS, BASE_SCROLLBAR_CSS])
+    expect(sheets).toEqual([COMPONENTS_CSS, SCROLL_EDGES_CSS, BASE_SCROLLBAR_CSS])
   })
 
   it('installs the components on macOS too, where the scrollbars are left out', () => {
     const { c, sheets } = withStyles()
     c.receive(theme(true), [])
-    expect(sheets).toEqual([COMPONENTS_CSS])
+    expect(sheets).toEqual([COMPONENTS_CSS, SCROLL_EDGES_CSS])
   })
 
   it('warns and goes on when the sheet cannot be installed', () => {
@@ -285,7 +309,7 @@ describe('panel SDK: the component stylesheet', () => {
       }
     }
     const c = new PanelClient(fakeRoot(), (m) => warnings.push(m), failing, COMPONENTS_CSS)
-    expect(warnings).toEqual(['could not install the component styles: no CSSOM'])
+    expect(warnings).toEqual(['could not install the component styles: no CSSOM', 'could not install the scroll edges: no CSSOM'])
     expect(() => c.api.post(1)).not.toThrow()
   })
 

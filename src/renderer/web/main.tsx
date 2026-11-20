@@ -51,8 +51,10 @@ import '../assets/fonts/fonts.css'
 import '../styles.css'
 import './web.css'
 import { setWebviewFrameSource } from './webview-stream'
+import { startShellScrolling } from '../../sdk/scroll-edges'
 
-document.documentElement.dataset.platform = navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'other'
+// Edges-only scrolling, as in the desktop shell (renderer main.tsx).
+startShellScrolling(window)
 // Before anything renders: TabsPane, App and the zones read it when they mount.
 markWebShell(document.documentElement)
 

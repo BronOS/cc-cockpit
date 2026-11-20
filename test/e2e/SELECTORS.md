@@ -137,6 +137,10 @@ These are `alertdialog`s too, without the one-second wait:
   Escape denies and a backdrop click denies. A browser of a desktop gets it with Deny only (Allow is
   the desktop's), shown on both: `getByRole('alertdialog')` in each page.
 - Install the ccc command: `alertdialog` `Install the ccc command?` (`testid:ccc-offer`).
+- Claude Code not found: `alertdialog` `Claude Code was not found` (or `Claude Code is not on the PATH`)
+  (`testid:claude-offer`); its command lines `testid:claude-offer-command` / `claude-offer-path`, each with a
+  `Copy …` button; buttons `Not now` and `Install in a new tab` (armed after about a second). Settings › General:
+  `testid:claude-code` (the switch), `testid:claude-install` (`claude-settings-command` / `claude-settings-path`, the button).
 - Web access risk confirm: `testid:web-access-risk-confirm`, armed at once like the link confirm (one
   or more steps); Cancel or Escape leaves loopback.
 

@@ -141,7 +141,7 @@ fit); a terminal snapshot larger than that is sent in numbered parts.
 
 ## 4. Access and identity
 
-Off by default (Settings > General > Web access). **A signed-in device is the person at the keyboard** (a shell and
+On by default, listening on this computer only (127.0.0.1; Settings > General > Web access; owner decision 2026-11-20). A fresh install has browser access and Share with no setup, and nothing is reachable from the network: the bind is loopback and the §4.1 checks are always on, so a browser on this computer still needs the access link. A stored `false` stays off; a taken port leaves the gateway `failed` and the desktop running. **A signed-in device is the person at the keyboard** (a shell and
 Claude on the host). How exposed to be is the person's choice; the app makes each choice explicit and keeps the
 protections that cost nothing always on.
 
@@ -963,6 +963,16 @@ none to show it on). §9.15 S1 measured the page `visible` with unthrottled time
 ### 9.9 Other desktop-only pieces
 
 - **ccc offer** (`ccc.offer`, index.ts:1982): skipped. It opened a modal on the hidden page and left its root inert.
+- **Claude Code offer** (`claude.offer`, `hooks/claude-offer.ts`): unlike the ccc offer it reaches the browsers, since a
+  server with no Claude Code is the case it exists for. The once-per-launch claim goes to the first owner browser view
+  that asks, never the hidden page (which asks first and does not spend it) or a guest (`GUEST_CLASS` `no`); its
+  channels `claude.offer`, `claude.install` and `settings.claudeOfferSet` are `adapted` (the desktop page on a desktop,
+  an owner browser on a server, `mayAskClaudeOffer` over main's flag, `view.remote` and `isOwner`), and Install in a new
+  tab runs main's fixed installer command in a command tab on the server; its exit-0 re-check and the early-exit
+  "not found" notice reach the window's browsers as in-page notices (never a guest: `notices.show` is dropped for
+  them). Main also writes one core notice line
+  (`claude-code`, stdout and `ccc web status`, plain text with no link, not an in-page kind) at start when `claude` is
+  not found, behind the same gate ("Don't ask again", the test-run opt-in).
 - **Notifications.** `ctx.notify` and `ccc notify` go to an in-page notice: a `NoticeBackend` in
   `notifications/notifier.ts`, so `Notifier.wait` and the click action keep working, in server mode only (the desktop
   keeps §6.1). It reaches every browser view of the plugin's window; the text is plain text, its length and the queue

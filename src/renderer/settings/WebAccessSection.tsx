@@ -76,7 +76,7 @@ function DesktopWebAccessSection(): React.JSX.Element {
     <>
       <Group
         title="Web access"
-        description="Open this cockpit in a browser on another device: the same project, tabs and panels, live on both screens. Claude keeps running on this computer. Off by default."
+        description="Open this cockpit in a browser on another device: the same project, tabs and panels, live on both screens. Claude keeps running on this computer. On by default, listening on this computer only (127.0.0.1)."
       >
         {view.error && <p role="alert" className="settings-alert">{view.error}</p>}
         {error && <p role="alert" className="settings-alert">{error}</p>}

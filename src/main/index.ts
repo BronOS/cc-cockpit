@@ -44,6 +44,20 @@ import { loadLoginEnv, type Env } from './env/login-env'
 import { buildPtyEnv } from './env/pty-env'
 import { CccCommandInstaller } from './hooks/ccc-install'
 import { CccOffer } from './hooks/ccc-offer'
+import {
+  claudeCodeState,
+  claudeCodeView,
+  CLAUDE_FAST_EXIT_MS,
+  CLAUDE_TAB_FAILED_NOTICE,
+  claudeInstalledNotice,
+  claudeInstallOverride,
+  claudeInstallTab,
+  claudeLauncherPath,
+  claudeOfferAllowed,
+  claudeStartNotice,
+  claudeTabFailureNotice,
+  ClaudeOffer
+} from './hooks/claude-offer'
 import { resolveWrapperTargets, writeCccWrapper } from './hooks/ccc-wrapper'
 import { writeHooksFile } from './hooks/hooks-file'
 import { RateLimitsStore } from './sessions/rate-limits-store'
@@ -60,6 +74,7 @@ import {
   registerSettingsPageHandlers,
   registerSessionHandlers,
   registerCccCommandHandlers,
+  registerClaudeCodeHandlers,
   registerWebAccessHandlers,
   registerRemoteServerHandlers,
   registerProjectSettingsHandlers,
@@ -2258,6 +2273,8 @@ function start(server: boolean): void {
     lifecycle: {
       started: (tab) => {
         sessions.tabStarted(tab)
+        // For the "claude not found" notice on an early exit (claudeTabExited, defined below; runs only at a start).
+        claudeTabStarted(tab.tabId, tab.kind, tab.projectId)
         // A member (restored and rebound, or restarted): its SessionInfo room fields, and an offer of what waits.
         rooms.tabStarted(tab.tabId)
         // A browser that selected the tab before it had a process joins its terminal now
@@ -2266,7 +2283,12 @@ function start(server: boolean): void {
         webConnections.tabStarted(tab.tabId)
       },
       // The signal too: a signal death can arrive as code 0 (tabExited maps it to 128 + n).
-      exited: (tabId, code, signal) => sessions.tabExited(tabId, code, signal),
+      exited: (tabId, code, signal) => {
+        sessions.tabExited(tabId, code, signal)
+        // The Claude Code installer tab: re-check and say what new Claude tabs will find. Defined below; runs at an exit only.
+        claudeInstallExited(tabId, code, signal)
+        claudeTabExited(tabId)
+      },
       closed: (tabId) => {
         sessions.tabClosed(tabId)
         rooms.tabClosed(tabId)
@@ -2277,6 +2299,8 @@ function start(server: boolean): void {
         // Nobody shows it or types in it any more; a guest's ask to close it is moot (every dialog goes).
         presence.tabClosed(tabId)
         settleGoneCloseAsks(guestCloseAsks, (t) => t !== tabId)
+        claudeInstallTabs.delete(tabId)
+        claudeTabStarts.delete(tabId)
       },
       renamed: (tabId, name) => void sessions.setName(tabId, name),
       flagged: (tabId, flag) => void sessions.setFlag(tabId, flag),
@@ -2432,8 +2456,9 @@ function start(server: boolean): void {
   // overlay manager (a terminal overlay's window token, mapped to the project its window shows),
   // `--project <path>` through the registry (a lookup only, never a new record). Handlers arrive
   // with the commands that use them (hook: Task 14, below; the user commands: Task 21, below).
-  // Web access (design-web.md): off by default. Constructing it costs nothing (no listener, `ws`
-  // not loaded); apply() below starts it only when `app.json` › `webAccess.enabled` is true.
+  // Web access (design-web.md): on by default, loopback only. Constructing it costs nothing (no listener,
+  // `ws` not loaded); apply() below starts it unless `app.json` › `webAccess.enabled` is false (a taken
+  // port leaves the gateway `failed` and the app running).
   // The device file is read here (a missing one stays missing: nothing is written until a device
   // signs in or a token is made).
   const webAccessLog = new AccessLog({ filePath: join(paths.logsDir, 'web-access.log') })
@@ -3377,10 +3402,126 @@ function start(server: boolean): void {
         else a.cccOffer = false
       })
     },
-    offer: async () => {
+    offer: async (viewId) => {
+      // Never stacked on the Claude Code question (claude-offer.ts): wait until it is settled, and when its
+      // dialog went to another window, leave the ccc claim to that window (it asks once its dialog closed).
+      // `claudeOffer` is defined below; this runs only when a page asks.
+      if (!(await claudeOffer.cccMayAsk(viewId))) return null
       if (!cccOffer.claim()) return null
       await loginEnvReady
       return cccCommand.view()
+    }
+  })
+  // Claude Code (hooks/claude-offer.ts): looked for on the PATH the Claude tabs spawn with, which is
+  // the login env's once its capture ends (a Finder launch has the GUI's minimal PATH before that), so
+  // every read waits for the capture. The same buildPtyEnv as the spawn: its <data>/bin prepend holds
+  // only `ccc`, but one PATH rule means the check cannot drift from what a tab really gets.
+  const claudeState = (): ReturnType<typeof claudeCodeState> =>
+    claudeCodeState({ path: buildPtyEnv(loginEnv, { binDir: paths.binDir }).PATH, home: homedir(), platform: process.platform })
+  const claudeOfferOn = (): boolean => registry.app.data.claudeOffer !== false
+  const claudeView = (): ReturnType<typeof claudeCodeView> =>
+    claudeCodeView({ state: claudeState(), home: homedir(), platform: process.platform, offerAtStart: claudeOfferOn() })
+  const claudeForcedByTest = process.env.CC_COCKPIT_CLAUDE_OFFER === '1'
+  const claudeOffer = new ClaudeOffer({ server, testRun, forcedByTest: claudeForcedByTest, enabled: claudeOfferOn })
+  const claudeGate = (): { testRun: boolean; forcedByTest: boolean; enabled: boolean } => ({
+    testRun,
+    forcedByTest: claudeForcedByTest,
+    enabled: claudeOfferOn()
+  })
+  /**
+   * A Claude Code notice: the OS's on the desktop; on a server a stdout line (and `ccc web status`) through
+   * core notices, plus, when it is about a window, an in-page notice to that window's browser views (page
+   * notices never reach a guest: GUEST_EVENT drops `notices.show`). Plain text with no path.
+   */
+  const claudeNotice = (text: string, windowId?: number): void => {
+    coreNotices.show({ kind: 'claude-code', text })
+    if (server && windowId !== undefined) showNotification(text, 'Claude Code', windowId)
+  }
+  // A server has nobody at its screen: also one core notice line (stdout, `ccc web status`) at start, so a
+  // server with no Claude Code says so in its journal whether or not a browser ever attaches. Plain text,
+  // no link (claudeStartNotice); not in-page, the owner's browser gets the dialog itself. Behind the same
+  // gate as the dialog: "Don't ask again" means the person knows.
+  if (server) {
+    void loginEnvReady.then(() => {
+      const text = claudeStartNotice({ server, gate: claudeGate(), state: claudeState(), launcher: claudeLauncherPath(process.platform, homedir()) })
+      if (text !== undefined) coreNotices.show({ kind: 'claude-code', text })
+    })
+  }
+  // The installer tabs main opened (tab id to its window), for the re-check at their exit 0.
+  const claudeInstallTabs = new Map<string, number>()
+  const claudeInstallExited = (tabId: string, code: number, signal: number | null): void => {
+    const windowId = claudeInstallTabs.get(tabId)
+    if (windowId === undefined || code !== 0 || signal !== null) return
+    // Read the login env again first: the installer put the launcher in ~/.local/bin, which a profile
+    // that adds it only when it exists (Debian's ~/.profile) puts on PATH only now. New tabs spawn with
+    // the fresh env (TabManager reads loginEnv at each spawn); running tabs keep theirs. loadLoginEnv answers
+    // a failed capture with a copy of process.env (a Finder launch's minimal PATH), which would lose the
+    // login PATH the start captured: such an answer (process.env's PATH) replaces only a start that failed too.
+    void loadLoginEnv(process.env)
+      .then((env) => {
+        if (env.PATH !== process.env.PATH || loginEnv.PATH === process.env.PATH) loginEnv = env
+      })
+      .catch(() => undefined)
+      .then(() => claudeNotice(claudeInstalledNotice(claudeState()), windowId))
+  }
+  // Claude tabs' spawn times, for "a Claude tab ended right after its start while claude is not found"
+  // (claudeTabFailureNotice, once per launch). Fed by the tab lifecycle above; gone with the tab.
+  const claudeTabStarts = new Map<string, { at: number; projectId: string }>()
+  let claudeTabFailureShown = false
+  const claudeTabStarted = (tabId: string, kind: string, projectId: string): void => {
+    if (kind === 'claude') claudeTabStarts.set(tabId, { at: Date.now(), projectId })
+  }
+  const claudeTabExited = (tabId: string): void => {
+    const start = claudeTabStarts.get(tabId)
+    if (start === undefined) return
+    const allowed = claudeOfferAllowed(claudeGate())
+    // Cheap checks first: the PATH walk runs only for an early exit of an armed launch.
+    if (claudeTabFailureShown || !allowed || Date.now() - start.at > CLAUDE_FAST_EXIT_MS) return
+    if (!claudeTabFailureNotice({ livedMs: Date.now() - start.at, state: claudeState(), shown: claudeTabFailureShown, allowed })) return
+    claudeTabFailureShown = true
+    claudeNotice(CLAUDE_TAB_FAILED_NOTICE, windows.windowIdOf(start.projectId))
+  }
+  registerClaudeCodeHandlers(router, {
+    server,
+    status: async () => {
+      await loginEnvReady
+      return claudeView()
+    },
+    setOffer: (value) => {
+      registry.app.update((a) => {
+        // Stored only as false, like cccOffer: an absent key is the default (on).
+        if (value) delete a.claudeOffer
+        else a.claudeOffer = false
+      })
+    },
+    offer: async (caller, viewId) => {
+      // The claim before the wait: two views asking at once must not both pass.
+      if (!claudeOffer.claim(caller)) return null
+      let view: ReturnType<typeof claudeView> | null = null
+      try {
+        await loginEnvReady
+        const v = claudeView()
+        view = v.state === 'found' ? null : v
+        return view
+      } finally {
+        // Settled either way, so the ccc offer never waits forever (cccMayAsk).
+        claudeOffer.settle(view === null ? null : viewId)
+      }
+    },
+    install: async (projectId, windowId, viewId) => {
+      // e2e only: a harmless stand-in for the installer (claudeInstallOverride: a test run only). The dialog
+      // and Settings still show the real command.
+      const entry = claudeInstallTab(process.platform, claudeInstallOverride(process.env, app.isPackaged))
+      if (entry === null) throw new Error('claude.install: this platform has no installer tab; copy the command instead')
+      // As the person's own tabs.create: the login env first, then the window that asked must still be open.
+      await spawnReady
+      requireWindow(projectId, windowId)
+      // Told to every view of the window (`tabs.added`), selected only in the view that clicked: another
+      // owner browser of the window keeps the tab it was in.
+      const tab = announcePluginTab(projectId, windowId, false, undefined, () => tabs.createCommand(projectId, entry, { keepOpen: true }))
+      views.toView(viewId, 'tabs.select', { tabId: tab.id })
+      claudeInstallTabs.set(tab.id, windowId)
+      return tab
     }
   })
   // The card's read side and Revoke/Disconnect are `adapted` (design-web.md §9.4, §9.6): a browser

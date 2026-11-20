@@ -301,6 +301,11 @@ export interface AppSettings {
    * Absent or anything but `false` reads as on; stored only as `false` ("Don't ask again").
    */
   cccOffer?: boolean
+  /**
+   * Offer to install Claude Code at start-up when `claude` is not found (main/hooks/claude-offer.ts).
+   * Absent or anything but `false` reads as on; stored only as `false` ("Don't ask again").
+   */
+  claudeOffer?: boolean
   /** The newest version the user dismissed in the update notice; a newer release shows again. */
   updateDismissed?: string
   /** Plugin id to the git URL it was last installed from; outlives an uninstall (repo-change warning). */
@@ -345,8 +350,8 @@ export interface AppSettings {
    */
   projectDefaultsMigrated?: true
   /**
-   * Web access (design-web.md §4): the gateway that serves the cockpit to a browser. Off unless
-   * `enabled` is exactly `true`. The file is user-writable, so main reads it field by field
+   * Web access (design-web.md §4): the gateway that serves the cockpit to a browser. On unless
+   * `enabled` is a stored `false` (loopback bind by default). The file is user-writable, so main reads it field by field
    * (main/web/settings.ts `webAccessOf`): a damaged field reads as its default, and a network bind
    * whose §4.3 risk was never confirmed is refused (nothing listens), never quietly moved to loopback.
    */

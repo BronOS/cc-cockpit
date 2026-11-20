@@ -237,7 +237,10 @@ behind it are in [design.md](design.md).
   shell tab with `ctx.sessions.openShell` (the person's "+" > shell: their login shell, with no command or environment
   from the plugin). Both take a cwd inside the project folder (checked by real path), open unselected unless the
   plugin passes `focus: true` for a click, and share one budget of 5 a minute per plugin.
-- Thin themed scrollbars in the shell and in every plugin page (overridable by the plugin; macOS keeps its overlay scrollbars).
+- Edges-only scrolling in the shell and in every plugin page: no scrollbar at rest, a dark shadow at the top or bottom edge
+  while content is hidden past it (with a light line along it on dark themes), the thin bar while scrolling (gone about
+  a second later) or with the pointer near the right edge; the bar's strip is always reserved, so rows never shift.
+  Overridable by the plugin; macOS keeps its overlay scrollbars and gets only the edges.
 - Themes, commands, a command palette and editable keybindings, a Settings screen (`Cmd+,`) with one page per
   kind of setting, each setting on exactly one: General (tabs, side panels, notifications and sound, session gist,
   app-wide new-tab commands, the `ccc` command line, updates), Appearance (theme, window background, tab close
@@ -586,8 +589,9 @@ Open the cockpit in a browser on another device (a laptop, a phone): the same pr
 and overlays, live on both screens at once, any of them able to act. Claude keeps running on this computer. Design and
 reasons: [design-web.md](design-web.md).
 
-**Turn it on:** Settings > General > Web access. It is off by default and listens on `127.0.0.1:7330` (port 1024 to
-65535). The card shows the access link as text and a QR code (behind Show, so a screenshot does not leak it); open it
+**Turn it on:** Settings > General > Web access. It is on by default and listens on this computer only (`127.0.0.1:7330`, port 1024 to
+65535); a browser on this Mac still needs the access link. Turn it off there and it stays off; if the port is taken the
+card shows web access as failed and the app runs on. The card shows the access link as text and a QR code (behind Show, so a screenshot does not leak it); open it
 in the browser and the device is signed in. "Add a device" makes a one-time link. The top bar shows a chip while web
 access is on (and a warning while a risky choice is on); it opens the devices list with Disconnect, Revoke and Revoke
 all. Every new device raises a desktop notification. A browser attaches to one project window; closing that window with
@@ -1283,7 +1287,25 @@ Settings > General > Command line > "Install ccc command" symlinks
 `~/.local/bin/ccc` to the wrapper in the data dir (an existing different `ccc` is left alone;
 make sure `~/.local/bin` is on your PATH). At start-up, when nothing is at that path, the first project window asks once per
 launch whether to install it (Yes / No, "Don't ask again"); the same Settings group has "Offer to install at start-up" to turn it
-back on. Not asked when it is installed, when something else is there, or in a test run. Commands:
+back on. Not asked when it is installed, when something else is there, or in a test run.
+
+Before that question (app-wide: the ccc question waits until this one is answered, so two windows never show both), when Claude Code itself (`claude`) is not on the PATH the Claude tabs get (the login shell's
+PATH, as a tab spawns with it), the first project window says so once per launch: "Claude Code was not found", with the
+official install command and Copy (`curl -fsSL https://claude.ai/install.sh | bash` on macOS and Linux, the PowerShell
+`irm https://claude.ai/install.ps1 | iex` on Windows), the other ways as text (Homebrew, npm with Node.js 22+), a link
+to the setup docs and **Install in a new tab**: a command tab running that installer in front of you, which you can
+stop, kept open after it ends so its output can be read; when it ends with 0 the app reads the login shell's environment
+again (so a profile that adds `~/.local/bin` once it exists counts with no restart) and says whether new Claude tabs will
+find `claude` (a notification on the desktop; on a server an in-page notice in the window's browsers and a stdout line).
+The button is armed about a second after the dialog is seen. Settings > General > Claude Code shows the same command,
+Copy and Install in a new tab (or the PATH line) for after the dialog was declined, and a Claude tab that ends within
+two seconds of its start while `claude` is not found brings one notice per launch pointing there. The app never installs Claude Code by itself, and the command is
+fixed in the app. When the installer's launcher (`~/.local/bin/claude`) is there but its folder is not on that PATH,
+the dialog says so and gives the `export PATH=...` line instead (the login PATH is read at start: restart the app after
+fixing it). "Don't ask again" or Settings > General > Claude Code > "Offer to install Claude Code at start-up" turns it
+off. In server mode the first owner browser view gets the dialog (never a guest), Install runs the installer on the
+server, and the server also prints one line (in `ccc web status` too). Not asked in a test run. No Install button on
+Windows, where the app has no tab to run it in. Commands:
 
 ```
 ccc open <path>                          open (or focus) a folder as a project

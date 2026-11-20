@@ -978,6 +978,43 @@ export interface CccCommandView {
   existing?: { kind: 'file' | 'directory' | 'link'; target?: string; cockpitDataDir?: string }
 }
 
+/**
+ * Where Claude Code's `claude` is, as the Claude tabs would find it (main/hooks/claude-offer.ts):
+ * 'found' on the PATH they spawn with; 'off-path' not there, but the native installer's launcher
+ * (`~/.local/bin/claude`) exists and runs, so only PATH needs fixing; 'missing' neither.
+ */
+export type ClaudeCodeState = 'found' | 'off-path' | 'missing'
+
+/** One more way to install Claude Code the setup page lists, shown as text only (never run by the app). */
+export interface ClaudeInstallOther {
+  label: string
+  command: string
+  note?: string
+}
+
+/**
+ * What the start-up "Claude Code was not found" dialog and the Settings row show. Every string is
+ * main's (constants picked by the host's platform, the host's own paths): a browser view may run on
+ * another OS than the server, so the page never picks a command itself, and nothing here is sent back.
+ */
+export interface ClaudeCodeView {
+  state: ClaudeCodeState
+  /** The native installer's launcher, absolute (`~/.local/bin/claude`, `claude.exe` on Windows). */
+  launcher: string
+  /** Its folder: what 'off-path' says to add to PATH. */
+  binDir: string
+  /** The official install command for the host's platform, shown with Copy. */
+  command: string
+  /** Anthropic's setup page. */
+  docsUrl: string
+  /** The other ways the setup page lists, as text. */
+  others: ClaudeInstallOther[]
+  /** Whether "Install in a new tab" may be offered: main can run the installer in a tab on this host (not Windows). */
+  installInTab: boolean
+  /** AppSettings.claudeOffer with the default applied: whether start-up offers the install. */
+  offerAtStart: boolean
+}
+
 /** The zone layout of the sender's project together with the panels it may place. */
 export interface LayoutView {
   layout: LayoutState
@@ -1569,6 +1606,10 @@ export interface IpcInvokeMap {
   'settings.cccInstall': { req: void; res: CccCommandView }
   /** Turn the start-up offer to install `ccc` on or off (Settings and the offer's "Don't ask again"). */
   'settings.cccOfferSet': { req: { value: boolean }; res: void }
+  /** Whether `claude` is found on the PATH Claude tabs get, and how to install it (Settings › General). */
+  'settings.claudeStatus': { req: void; res: ClaudeCodeView }
+  /** Turn the start-up offer to install Claude Code on or off (Settings and the dialog's "Don't ask again"). */
+  'settings.claudeOfferSet': { req: { value: boolean }; res: void }
   // Settings › General › Web access (design-web.md §4). What adds or widens access is `no`-class in
   // both modes; the read, the indicator and Revoke/Disconnect are `adapted`: a browser view of a
   // server reads the card and narrows (§9.4, §9.6), one on the desktop is refused as before.
@@ -1605,6 +1646,17 @@ export interface IpcInvokeMap {
    * else null. Main decides once per app launch, so only the first window to ask can get an answer.
    */
   'ccc.offer': { req: void; res: CccCommandView | null }
+  /**
+   * The start-up question when `claude` is not found: the view when this view should ask, else null.
+   * Main decides once per launch, for the first view that may take it (the desktop page; in server
+   * mode the first owner browser, never the hidden page), so it is asked before `ccc.offer`.
+   */
+  'claude.offer': { req: void; res: ClaudeCodeView | null }
+  /**
+   * Open a command tab running the official Claude Code installer, kept open after it ends. The page
+   * sends only the intent: the command is main's constant for the host's platform.
+   */
+  'claude.install': { req: void; res: TabInfo }
 
   // Overlays. Every id is looked up in the sender window's own stack only.
   /**
@@ -2333,6 +2385,8 @@ export const INVOKE_CHANNELS = [
   'settings.cccStatus',
   'settings.cccInstall',
   'settings.cccOfferSet',
+  'settings.claudeStatus',
+  'settings.claudeOfferSet',
   'settings.webAccess',
   'settings.webAccessSet',
   'settings.webAccessLink',
@@ -2345,6 +2399,8 @@ export const INVOKE_CHANNELS = [
   'webAccess.state',
   'webAccess.confirmAnswer',
   'ccc.offer',
+  'claude.offer',
+  'claude.install',
   'overlays.list',
   'overlays.close',
   'overlays.input',
@@ -2749,6 +2805,15 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'webAccess.state': 'adapted',
   'webAccess.changed': 'adapted',
   'ccc.offer': 'no',
+  // Claude Code (main/hooks/claude-offer.ts). The status reads the host's PATH, like settings.cccStatus. The rest is
+  // `adapted`: on the desktop only the desktop page (the person at the host); in server mode the browsers are the
+  // only screen, so the owner's browser takes the start-up question, saves "Don't ask again" and opens the installer
+  // tab, which runs on the server, the point of it. Decided by main's flag, the view main bound and isOwner, never the
+  // payload; the install carries no text at all (main's constant runs).
+  'settings.claudeStatus': 'yes',
+  'settings.claudeOfferSet': 'adapted',
+  'claude.offer': 'adapted',
+  'claude.install': 'adapted',
 
   // Overlays. URL overlays are a WebContentsView on the host's window (a placeholder remotely, §6.1),
   // so placing one is desktop-only; terminal and html overlays are project work (Tasks 23-24).

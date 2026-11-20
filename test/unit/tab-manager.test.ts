@@ -1311,6 +1311,18 @@ describe('close on a clean exit', () => {
     expect(tabs.list(A).map((t) => t.id)).toEqual([failed.id])
   })
 
+  // main's Claude Code installer tab (main/hooks/claude-offer.ts): its output is what the person opened it to read.
+  it('keeps a keepOpen command tab after exit 0, with its banner, whatever the setting says', () => {
+    const { tabs } = rig()
+    const install = tabs.createCommand(A, { label: 'Install Claude Code', command: 'curl -fsSL https://claude.ai/install.sh | bash' }, { keepOpen: true })
+    expect(backend.last.argv).toEqual(['/bin/zsh', '-l', '-i', '-c', 'curl -fsSL https://claude.ai/install.sh | bash'])
+    clock += 60_000
+    backend.last.exit(0)
+    expect(tabs.list(A)).toEqual([expect.objectContaining({ id: install.id, exit: { code: 0, signal: null } })])
+    expect(channels()).toContain('tabs.exit')
+    expect(channels()).not.toContain('tabs.removed')
+  })
+
   it('keeps a tab with its banner after a non-zero exit or a signal death', () => {
     const { tabs, calls } = rig()
     const failed = tabs.create(A, { kind: 'claude' })

@@ -1,5 +1,5 @@
 import { useEffect, useId } from 'react'
-import type { AppearanceView, CccCommandView, NotificationSoundGroup, UpdateState } from '../../shared/ipc'
+import type { AppearanceView, CccCommandView, ClaudeCodeView, NotificationSoundGroup, UpdateState } from '../../shared/ipc'
 import type { GlobalPluginLimitsView } from '../../shared/plugin-limits'
 import type { TabExitBehavior } from '../../shared/types'
 import { MIN_TERMINAL_WIDTH_RANGE } from '../../shared/zone-auto-hide'
@@ -9,6 +9,7 @@ import { LimitsForm, type LimitsSave } from './LimitsForm'
 import { loadSoundGroups, SoundOptions, usePlaySound } from './sound-options'
 import { TabCommandsEditor } from './TabCommandsEditor'
 import { WebAccessSection } from './WebAccessSection'
+import { ClaudeInstallRow } from './ClaudeInstallRow'
 import { NumberField } from './TerminalFontSettings'
 import { Group, PageHeader, Row, Select, Switch } from './ui'
 import { useAction } from './use-action'
@@ -19,6 +20,8 @@ import { useLoaded } from './use-loaded'
 const loadAppearance = (): Promise<AppearanceView> => window.cockpit.invoke('settings.appearance')
 
 const loadCcc = (): Promise<CccCommandView> => window.cockpit.invoke('settings.cccStatus')
+
+const loadClaude = (): Promise<ClaudeCodeView> => window.cockpit.invoke('settings.claudeStatus')
 
 const loadUpdates = (): Promise<UpdateState> => window.cockpit.invoke('updates.state')
 
@@ -38,6 +41,7 @@ export function GeneralPage(): React.JSX.Element {
   const { data, error: loadError, reload } = useLoaded(loadAppearance)
   const { busy, error, run } = useAction()
   const ccc = useLoaded(loadCcc)
+  const claude = useLoaded(loadClaude)
   const updates = useLoaded(loadUpdates)
   const sounds = useLoaded(loadSoundGroups)
   const playSound = usePlaySound()
@@ -348,6 +352,50 @@ export function GeneralPage(): React.JSX.Element {
                     }}
                   />
                 </Row>
+              </div>
+            )}
+          </Group>
+
+          <Group title="Claude Code">
+            {claude.error && <p role="alert" className="settings-alert">{claude.error}</p>}
+            {claude.data && (
+              <div className="settings-card">
+                {/* `adapted` (main/ipc/router.ts): a browser of a desktop sees the switch but cannot change it; a server's may. */}
+                <Row
+                  data-testid="claude-code"
+                  label={
+                    <>
+                      Offer to install Claude Code at start-up
+                      {claude.data.state === 'found' && <span className="settings-badge accent">found</span>}
+                    </>
+                  }
+                  htmlFor={`${id}-claude-offer`}
+                  help={
+                    <>
+                      Ask once at launch, with the install command, when <code>claude</code> is not on the PATH the Claude tabs get.
+                      {claude.data.state === 'missing' && <span className="warn"> It is not found now: Claude tabs cannot start.</span>}
+                      {claude.data.state === 'off-path' && (
+                        <span className="warn">
+                          {' '}
+                          It is at {claude.data.launcher}, but {claude.data.binDir} is not on the PATH Claude tabs get: add it in your
+                          shell profile, then restart cc-cockpit.
+                        </span>
+                      )}
+                      {isWebShell() && !isServerView() ? ' Change it on the computer itself.' : ''}
+                    </>
+                  }
+                >
+                  <Switch
+                    id={`${id}-claude-offer`}
+                    checked={claude.data.offerAtStart}
+                    disabled={busy !== null || (isWebShell() && !isServerView())}
+                    onChange={(e) => {
+                      const value = e.target.checked
+                      void run('claude', () => window.cockpit.invoke('settings.claudeOfferSet', { value })).then(claude.reload)
+                    }}
+                  />
+                </Row>
+                <ClaudeInstallRow view={claude.data} onChanged={claude.reload} />
               </div>
             )}
           </Group>

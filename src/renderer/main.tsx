@@ -4,13 +4,14 @@ import { App } from './App'
 import { startChime } from './notify/chime'
 import { startPrefs } from './prefs/prefs-store'
 import { startTheme } from './theme/apply-theme'
+import { startShellScrolling } from '../sdk/scroll-edges'
 // The bundled terminal fonts' @font-face rules (shared/terminal-font.ts BUNDLED_TERMINAL_FONTS).
 import './assets/fonts/fonts.css'
 import './styles.css'
 
-// Scopes the themed scrollbars (styles.css) away from macOS, whose overlay scrollbars already fit;
-// the same platform test as the rest of the renderer (window-chrome.ts keys off the platform too).
-document.documentElement.dataset.platform = navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'other'
+// Edges-only scrolling (src/sdk/scroll-edges-core.ts): the edge shadows, the bars off macOS (whose
+// overlay scrollbars already hide at rest), and the script that marks scroll containers for them.
+startShellScrolling(window)
 
 // ctx.notify's `sound`: main decides when (setting, throttle); the page plays it.
 startChime()

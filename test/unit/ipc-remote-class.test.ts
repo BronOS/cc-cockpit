@@ -102,6 +102,11 @@ describe('REMOTE_CLASS drift', () => {
     'plugins.limits.set',
     // Whether the host's computer may idle-sleep while Claude works: the person's at that computer, or a server's browser.
     'settings.keepAwakeSet',
+    // Claude Code on the host (main/hooks/claude-offer.ts): the desktop page, or a server's owner browser (the only
+    // screen there), takes the start-up question, its "Don't ask again" and the installer tab, which runs on the server.
+    'settings.claudeOfferSet',
+    'claude.offer',
+    'claude.install',
     // The person's room mark and the held badge (design-rooms.md §5): let room text into a typed tab, so a server's
     // browsers only, like the approvals.
     'tabs.roomMark',
