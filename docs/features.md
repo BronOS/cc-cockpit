@@ -1029,7 +1029,9 @@ toolbar (back, forward, reload, URL and title, the load error) behave as on the 
   (it is drawn at CSS pixels, scale 1). A page that does not change costs nothing; an animated one costs server CPU
   and bandwidth. The page has one size, like a terminal: the last screen you clicked, typed or scrolled in sets it, and
   another screen shows the same picture letterboxed; "Fit to this screen" (in the panel's toolbar) takes the size of the
-  screen you are on. A panel nobody shows (closed, or its browser tab in the background) stops painting.
+  screen you are on. A panel nobody shows (closed, or its browser tab in the background) stops painting. When many
+  shown pages animate at once (past about four full-HD pages at 30 frames a second), the server lowers their frame
+  rate together, never below 5 frames a second, so the server stays responsive; they go back to full rate as they calm down.
 - *What works:* click, double click, drag, scroll, keys (letters with shortcuts, Enter, Tab, arrows, F-keys, a Mac's
   Cmd+arrows and Cmd+Backspace; the shell's own chords stay with the shell), all of it inside embedded cross-site
   frames too (a video player, a sign-in or payment form), typing including IME, dead keys and non-ASCII text, paste (Ctrl/Cmd+V),
@@ -1039,7 +1041,8 @@ toolbar (back, forward, reload, URL and title, the load error) behave as on the 
   other permissions, and URL overlays (`ccc overlay --url`, still refused). The page's own `alert`, `confirm` and
   `prompt` are silenced (`alert` returns at once, `confirm` answers no, `prompt` throws in the page). A `<select>`
   inside an iframe, a `multiple` or `size` > 1 list is keyboard-only (focus it, arrows, Enter); text selected inside
-  an embedded cross-site frame is not copied by Ctrl/Cmd+C (the top page's is). A touch drag on a phone
+  an embedded cross-site frame is not copied by Ctrl/Cmd+C (the top page's is). A Mac's Option+arrows and
+  Option+Backspace (by word) work only on a macOS server, and a Mac's Ctrl+E and Ctrl+K on none. A touch drag on a phone
   is a mouse drag. A link that opens a new window (`window.open`,
   `target="_blank"`) becomes a link notice to click; it never opens a tab by itself.
 - *A page that hangs:* a page whose script never stops (a busy loop) takes no input, and a reload or a load of the same
