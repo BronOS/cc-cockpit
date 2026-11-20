@@ -911,16 +911,28 @@ async function main() {
         SPIN_WAIT_MS
       )
     }, true)
-    // (c) What main can do about such a page: crash its renderer, then reload.
+    // (c) What main can do about such a page: kill its renderer, then reload. SIGKILL, never
+    // forcefullyCrashRenderer: on Linux that crash dumps core (systemd-coredump, a renderer's core is
+    // large), and the process sits in do_exit for 40 to 50 s before render-process-gone fires (Debian
+    // VM, Electron 45: 46 s and 42 s; the reload asked meanwhile waited for it, so the new page came
+    // after the 20 s this case waits). A SIGKILL writes no core: gone at once on Linux and macOS.
+    let gone = 0
+    wc.on('render-process-gone', () => gone++)
+    const kill = async (label) => {
+      const before = gone
+      const pid = wc.getOSProcessId()
+      process.kill(pid, 'SIGKILL')
+      const t1 = performance.now()
+      while (gone === before && performance.now() - t1 < 10_000) await sleep(50)
+      note(`${label}: renderer ${pid} killed, render-process-gone ${gone > before ? `after ${Math.round(performance.now() - t1)} ms` : 'not within 10 s'}`)
+    }
     if (navigated === 0 || (await field()) === 'unresponsive') {
-      wc.forcefullyCrashRenderer()
-      await sleep(500)
+      await kill('before (c)')
       await within(view.load(`http://127.0.0.1:${port}/?role=spin`).catch(() => {}), 10000)
-      note('crashed and loaded again before (c)')
+      note('killed and loaded again before (c)')
     }
     await spinThen('crash, reload', async () => {
-      wc.forcefullyCrashRenderer()
-      await sleep(500)
+      await kill('(c)')
       view.reload()
     })
     await sleep(2000)
