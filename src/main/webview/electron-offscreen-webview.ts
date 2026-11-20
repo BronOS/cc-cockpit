@@ -67,7 +67,9 @@ export interface OffscreenWebviewView extends WebviewView {
   /** Ask the page for a full frame (a new viewer with no frame to show yet). No-op once gone. */
   invalidate(): void
   /** Trusted input for the page (`sendInputEvent`), as webview-input.ts checked and mapped it. No-op once gone. */
-  sendInput(events: readonly ElectronInputEvent[]): void
+  sendInput(events: readonly ElectronInputEvent[], epoch?: number): void
+  /** The page's input attachment now (page-input.ts inputEpoch). */
+  inputEpoch(): number
 }
 
 /** One live off-screen view's window, as the test hook `offscreenWebviews` reports it. */
@@ -240,9 +242,12 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       // A browser's pointer, wheel and keys, checked and mapped by webview-input.ts (main's only
       // path here: `webviews.input` from a viewer), routed by the page's PageInputRouter. Never
       // focuses the window: off-screen input reaches the page without it (spike).
-      sendInput: (events) => {
+      // `epoch`: the input attachment the events came under (webview-input.ts carries it for held
+      // input); the router drops what came under one that ended.
+      inputEpoch: () => input.inputEpoch(),
+      sendInput: (events, epoch) => {
         if (wc.isDestroyed()) return
-        input.input(events)
+        input.input(events, epoch)
       },
       // A browser's committed text (an IME, a dead key, non-ASCII, a paste; webview-input.ts has
       // checked and cleaned it): into the focused field as an IME commit, nothing when none is.
@@ -252,9 +257,9 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       // or after it overtook (the e2e typed 'héllo ü' as "hlélo ü" and "éhllo ü", about one run in
       // ten); it is only the fallback for a view whose protocol detached. A rejection is the lane's
       // to hear (it lets the input after the text go), never thrown here.
-      insertText: (text) => {
+      insertText: (text, epoch) => {
         if (wc.isDestroyed()) return Promise.resolve()
-        return input.command('Input.insertText', { text }, () => (wc.isDestroyed() ? undefined : wc.insertText(text)))
+        return input.command('Input.insertText', { text }, () => (wc.isDestroyed() ? undefined : wc.insertText(text)), epoch)
       },
       // An edit chord or a Mac line key (webview-input.ts editKeyEvent; plan 20261119-server-mode-mac,
       // decision 7): its key down with its command as the protocol's `Input.dispatchKeyEvent` on the
@@ -264,7 +269,7 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       // `redo` (which the page's key down never precedes, so a page that handles the chord itself
       // cannot keep its own undo there), and a line key as a plain key down (which, as before the
       // command, moves nothing on a macOS server); the key up still goes as a key up.
-      editCommand: (edit) => {
+      editCommand: (edit, epoch) => {
         if (wc.isDestroyed()) return Promise.resolve()
         return input.command('Input.dispatchKeyEvent', editKeyEvent(edit), () => {
           if (wc.isDestroyed()) return undefined
@@ -276,7 +281,7 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
             if (keyCode !== undefined) wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers: edit.modifiers })
           }
           return undefined
-        })
+        }, epoch)
       },
       // The page's selection, read in main's own isolated world (webview-input.ts SELECTION_SCRIPT):
       // the page's scripts cannot see the read nor stand in for what it calls. After the input
@@ -290,14 +295,14 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       // Both on the router's call road (ruling 2026-11-19 #11: a press on a hung page started one
       // unanswered script each); the hit test holds nothing after it, and a press waits
       // HIT_TIMEOUT_MS at most for it. The answer in its place among the input.
-      hitSelect: (x, y, id) =>
+      hitSelect: (x, y, id, epoch) =>
         wc.isDestroyed()
           ? Promise.resolve(undefined)
-          : input.call(() => (wc.isDestroyed() ? undefined : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: hitScript(x, y, id) }])), false),
-      chooseSelect: (id, index) =>
+          : input.call(() => (wc.isDestroyed() ? undefined : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: hitScript(x, y, id) }])), false, epoch),
+      chooseSelect: (id, index, epoch) =>
         wc.isDestroyed()
           ? Promise.resolve(false)
-          : input.call(() => (wc.isDestroyed() ? false : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: chooseScript(id, index) }]))),
+          : input.call(() => (wc.isDestroyed() ? false : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: chooseScript(id, index) }])), true, epoch),
       invalidate: () => {
         if (!wc.isDestroyed()) wc.invalidate()
       }

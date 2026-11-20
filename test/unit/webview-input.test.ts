@@ -19,7 +19,6 @@ import {
   SELECTION_SCRIPT,
   type InputModifier,
   INPUT_BURST,
-  InputDroppedError,
   INPUT_RATE,
   MAX_INPUT_EVENTS,
   MAX_WHEEL_DELTA,
@@ -31,6 +30,7 @@ import {
   type WebviewInputEvent
 } from '../../src/main/webview/webview-input'
 import { WebviewViewers, type WebviewPanelOf } from '../../src/main/webview/webview-viewers'
+import { PageInputRouter } from '../../src/main/webview/page-input'
 import { WebviewManager, type WebviewView } from '../../src/main/webview/webview-manager'
 import { CommandRegistry } from '../../src/main/commands/command-registry'
 import { chordFromEvent, type KeyEventLike } from '../../src/shared/keys'
@@ -1325,42 +1325,94 @@ describe('textChunks (a paste into insertText calls)', () => {
   })
 })
 
-describe('a press held for its select hit test', () => {
-  // Codex (merge bar O2): the router dropped the queued hit test with its attachment, the rejection
-  // read as "no select", and the held press went into the next attachment.
-  it('is dropped with its attachment when the router drops the hit test, never delivered into the next', async () => {
+describe('input held in webview-input carries its attachment', () => {
+  // Codex (merge bar O2): input held here (a press behind its select hit test, keys behind a text)
+  // went into the router under the attachment after a reset. It carries the one it came under, and
+  // the router drops it (C1, cause epoch). The target is a real PageInputRouter on a fake protocol.
+  function routed() {
     const viewers = new WebviewViewers({ setViewed: () => {}, setSize: () => {}, now: () => 0 })
     const timers = new Map<number, () => void>()
     let next = 0
-    const sent: ElectronInputEvent[] = []
+    const manual = { set: (fn: () => void) => (timers.set(++next, fn), next), clear: (h: unknown) => void timers.delete(h as number) }
+    const sent: string[] = []
+    let holdKeys = false
+    const router = new PageInputRouter({
+      send: (method, params) => {
+        if (!method.startsWith('Input.')) return Promise.resolve({})
+        const p = params as { type?: string; key?: string; text?: string }
+        sent.push(method === 'Input.insertText' ? `text ${String(p.text)}` : `${String(p.type)}${p.key === undefined ? '' : ' ' + p.key}`)
+        return holdKeys && method === 'Input.dispatchKeyEvent' ? new Promise(() => {}) : Promise.resolve({})
+      },
+      attached: () => true,
+      fallback: () => {},
+      log: () => {},
+      timers: manual
+    })
     const hits: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = []
     const input = new WebviewInput({
       isViewer: (panel, viewId) => viewers.isViewer(panel, viewId),
       claimOwner: (panel, viewId) => viewers.claimOwner(panel, viewId),
       target: () => ({
         size: () => ({ width: 800, height: 600 }),
-        send: (events) => void sent.push(...events),
-        insertText: () => {},
+        epoch: () => router.inputEpoch(),
+        send: (events, epoch) => router.input(events, epoch),
+        insertText: (text, epoch) => router.command('Input.insertText', { text }, () => undefined, epoch),
+        // Already running in the page (not in the router's queue): a reset does not reject it.
         hitSelect: () => new Promise((resolve, reject) => void hits.push({ resolve, reject }))
       }),
       pushSelect: () => {},
-      timers: { set: (fn) => (timers.set(++next, fn), next), clear: (h) => void timers.delete(h as number) },
+      timers: manual,
       now: () => 0
     })
     viewers.report(PANEL, 'web:1', shown, 'owner')
     const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
-    input.accept(PANEL, 'web:1', [down(10, 10), { kind: 'pointer', type: 'up', x: 10, y: 10, button: 'left', clickCount: 1 }, key('a')])
+    const fire = (): void => {
+      const fns = [...timers.values()]
+      timers.clear()
+      for (const fn of fns) fn()
+    }
+    return { input, router, sent, hits, flush, fire, hold: (on: boolean) => (holdKeys = on) }
+  }
+  const release = { kind: 'pointer', type: 'up', x: 10, y: 10, button: 'left', clickCount: 1 }
+
+  it('a press held for a hit test already running when the attachment ends is dropped, never delivered into the next', async () => {
+    const { input, router, sent, hits, flush } = routed()
+    input.accept(PANEL, 'web:1', [down(10, 10), release, key('a')])
     expect(hits).toHaveLength(1)
-    expect(sent).toEqual([])
-    hits[0]?.reject(new InputDroppedError())
+    router.reset()
+    // The hit test answers after the reset ("no select"): the press, its release and the key came
+    // under the attachment that ended.
+    hits[0]?.resolve(null)
     await flush()
-    // The press, its release and the key behind them go nowhere, and the hit's timer is gone.
     expect(sent).toEqual([])
-    expect(timers.size).toBe(0)
-    // Any other failure of the hit test still lets the press go as a click.
+    // Input of the new attachment goes as usual.
     input.accept(PANEL, 'web:1', [down(20, 20)])
-    hits[1]?.reject(new Error('the page went'))
+    hits[1]?.resolve(null)
     await flush()
-    expect(sent.map((e) => e.type)).toEqual(['mouseDown'])
+    expect(sent).toEqual(['mousePressed'])
+  })
+
+  it('input held behind a text the reset dropped is dropped too, never delivered into the next', async () => {
+    const { input, router, sent, flush, fire, hold } = routed()
+    // A key the page never answers, then a text queued behind it in the router, then keys held here
+    // behind the text.
+    hold(true)
+    input.accept(PANEL, 'web:1', [key('a')])
+    expect(input.acceptText(PANEL, 'web:1', 'é')).toBe(true)
+    input.accept(PANEL, 'web:1', [key('b')])
+    await flush()
+    expect(sent).toEqual(['rawKeyDown a'])
+    hold(false)
+    // The reset rejects the queued text (InputDroppedError): the held 'b' came under that attachment.
+    router.reset()
+    await flush()
+    expect(sent).toEqual(['rawKeyDown a'])
+    // The old key's deadline (the step that sent it waits for it), then a key of the new attachment.
+    fire()
+    await flush()
+    expect(sent).toEqual(['rawKeyDown a'])
+    input.accept(PANEL, 'web:1', [key('c')])
+    await flush()
+    expect(sent).toEqual(['rawKeyDown a', 'rawKeyDown c', 'char c'])
   })
 })

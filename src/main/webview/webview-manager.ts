@@ -177,18 +177,23 @@ export interface WebviewView {
   destroy(): void
   /** Server mode's off-screen view only: the page's size, CSS px (webview-input.ts checks points against it). */
   size?(): { width: number; height: number }
-  /** Server mode's off-screen view only: trusted input for the page (its protocol, page-input.ts), checked by webview-input.ts. */
-  sendInput?(events: readonly ElectronInputEvent[]): void
+  /** Server mode's off-screen view only: the page's input attachment now (page-input.ts inputEpoch; webview-input.ts InputTarget `epoch`). */
+  inputEpoch?(): number
+  /**
+   * Server mode's off-screen view only: trusted input for the page (its protocol, page-input.ts), checked by webview-input.ts.
+   * `epoch` here and below: the input attachment it came under (absent: now); the router drops one that ended.
+   */
+  sendInput?(events: readonly ElectronInputEvent[], epoch?: number): void
   /** Server mode's off-screen view only: committed text for the page, settled once the page has it (webview-input.ts InputTarget). */
-  insertText?(text: string): Promise<unknown> | void
+  insertText?(text: string, epoch?: number): Promise<unknown> | void
   /** Server mode's off-screen view only: the page's selection (webview-input.ts SELECTION_SCRIPT, isolated world). */
   readSelection?(): Promise<unknown>
   /** Server mode's off-screen view only: what select is under a press (select-hit.ts hitScript, isolated world). */
-  hitSelect?(x: number, y: number, id: string): Promise<unknown>
+  hitSelect?(x: number, y: number, id: string, epoch?: number): Promise<unknown>
   /** Server mode's off-screen view only: a browser's answer to a select popup (select-hit.ts chooseScript). */
-  chooseSelect?(id: string, index: number | null): Promise<unknown>
+  chooseSelect?(id: string, index: number | null, epoch?: number): Promise<unknown>
   /** Server mode's off-screen view only: an edit chord's key down with its command (webview-input.ts editKeyEvent). */
-  editCommand?(input: EditCommandInput): Promise<unknown> | void
+  editCommand?(input: EditCommandInput, epoch?: number): Promise<unknown> | void
 }
 
 export interface WebviewViewFactory {
@@ -521,15 +526,17 @@ export class WebviewManager {
     const hitSelect = view.hitSelect
     const chooseSelect = view.chooseSelect
     const editCommand = view.editCommand
+    const inputEpoch = view.inputEpoch
     return {
       size: () => size(),
+      ...(inputEpoch ? { epoch: () => inputEpoch() } : {}),
       // Looked up again per call: the record may have gone in between (a crash, the plugin off).
-      send: (events) => {
-        if (this.isLive(rec)) sendInput(events)
+      send: (events, epoch) => {
+        if (this.isLive(rec)) sendInput(events, epoch)
       },
       ...(insertText
         ? {
-            insertText: (text: string) => (this.isLive(rec) ? insertText(text) : undefined)
+            insertText: (text: string, epoch?: number) => (this.isLive(rec) ? insertText(text, epoch) : undefined)
           }
         : {}),
       ...(readSelection
@@ -537,12 +544,12 @@ export class WebviewManager {
         : {}),
       // A gone page answers "nothing there", so a held press is let go (and then dropped by send).
       ...(hitSelect
-        ? { hitSelect: (x: number, y: number, id: string) => (this.isLive(rec) ? hitSelect(x, y, id) : Promise.resolve(undefined)) }
+        ? { hitSelect: (x: number, y: number, id: string, epoch?: number) => (this.isLive(rec) ? hitSelect(x, y, id, epoch) : Promise.resolve(undefined)) }
         : {}),
       ...(chooseSelect
-        ? { chooseSelect: (id: string, index: number | null) => (this.isLive(rec) ? chooseSelect(id, index) : Promise.resolve(false)) }
+        ? { chooseSelect: (id: string, index: number | null, epoch?: number) => (this.isLive(rec) ? chooseSelect(id, index, epoch) : Promise.resolve(false)) }
         : {}),
-      ...(editCommand ? { editCommand: (input: EditCommandInput) => (this.isLive(rec) ? editCommand(input) : undefined) } : {})
+      ...(editCommand ? { editCommand: (input: EditCommandInput, epoch?: number) => (this.isLive(rec) ? editCommand(input, epoch) : undefined) } : {})
     }
   }
 

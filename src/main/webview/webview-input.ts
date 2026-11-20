@@ -442,26 +442,33 @@ export function cursorEvent(panel: WebviewPanelOf, type: unknown): { panelKey: s
 /** Where a panel's input goes: its off-screen page's size, its input road, its text and selection. */
 export interface InputTarget {
   size(): PlaceSize
-  send(events: readonly ElectronInputEvent[]): void
+  /**
+   * The page's input attachment now (page-input.ts `inputEpoch`): input held here carries the one
+   * it came under, and the router drops what carries an older one (C1, cause epoch). Absent: none
+   * is carried (every call is taken as current).
+   */
+  epoch?(): number
+  /** `epoch`: the attachment the events came under (absent: now). The same for the calls below. */
+  send(events: readonly ElectronInputEvent[], epoch?: number): void
   /**
    * Committed text into the page's focused field (absent: the view takes no text). A promise that
    * settles once the page has it: the lane holds later input until then.
    */
-  insertText?(text: string): Promise<unknown> | void
+  insertText?(text: string, epoch?: number): Promise<unknown> | void
   /** SELECTION_SCRIPT's result in WEBVIEW_WORLD_ID; rejects or never settles for a page that is gone or hung. */
   readSelection?(): Promise<unknown>
   /**
    * select-hit.ts hitScript at page CSS px (x, y) in WEBVIEW_WORLD_ID, keeping the select under
    * `id` (absent: presses go to the page unasked). Rejects or never settles for a gone or hung page.
    */
-  hitSelect?(x: number, y: number, id: string): Promise<unknown>
+  hitSelect?(x: number, y: number, id: string, epoch?: number): Promise<unknown>
   /** select-hit.ts chooseScript for popup `id` in WEBVIEW_WORLD_ID (null: forget it). */
-  chooseSelect?(id: string, index: number | null): Promise<unknown>
+  chooseSelect?(id: string, index: number | null, epoch?: number): Promise<unknown>
   /**
    * An edit chord's key down with its command (editKeyEvent; absent: the chord goes as a plain key
    * down). A promise that settles once the page has it: the lane holds later input until then.
    */
-  editCommand?(input: EditCommandInput): Promise<unknown> | void
+  editCommand?(input: EditCommandInput, epoch?: number): Promise<unknown> | void
 }
 
 /** Timers for the selection debounce (tests drive them by hand). */
@@ -499,10 +506,21 @@ type PressEvent = Extract<ElectronInputEvent, { type: 'mouseDown' | 'mouseUp' }>
 /** One item of a lane: an input event, an edit command, a committed text or a select choice, in the order they came. */
 type QueuedInput = ElectronInputEvent | EditCommandInput | { type: 'insertText'; text: string } | { type: 'choose'; id: string; index: number | null }
 
+/**
+ * An item and the page's input attachment it came under (InputTarget `epoch`): held input that goes
+ * later carries it, so what came before a reset or a renderer change is dropped by the router, never
+ * delivered into the next one (codex, O2: a press held for a hit test that was already running, and
+ * input held behind a text whose wait was rejected, went under the new attachment).
+ */
+interface Carried {
+  input: QueuedInput
+  epoch: number | undefined
+}
+
 /** What a lane waits for before the rest of its input goes. */
 type LaneWait =
-  /** A left press's hit-test: its press (held), its popup id. */
-  | { kind: 'hit'; seq: number; timer: unknown; press: PressEvent; selectId: string }
+  /** A left press's hit-test: its press (held, with its attachment), its popup id. */
+  | { kind: 'hit'; seq: number; timer: unknown; press: PressEvent; pressEpoch: number | undefined; selectId: string }
   /** A text, a choice or an edit command the page has not confirmed yet. */
   | { kind: 'page'; seq: number; timer: unknown }
 
@@ -512,8 +530,8 @@ interface PressLane {
   panel: WebviewPanelOf
   viewId: ViewId
   wait: LaneWait | undefined
-  /** Events, texts and choices that came while the lane waited, in order. */
-  held: QueuedInput[]
+  /** Events, texts and choices that came while the lane waited, in order, each with its attachment. */
+  held: Carried[]
   /** The last left press went to a popup: its release (the next left mouseUp) does not go either. */
   dropRelease: boolean
 }
@@ -672,7 +690,9 @@ export class WebviewInput {
   }
 
   /** Checked, mapped input for the page, behind whatever the lane waits for. */
-  private deliver(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: QueuedInput[]): void {
+  private deliver(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, inputs: QueuedInput[]): void {
+    const epoch = target.epoch?.()
+    const events = inputs.map((input): Carried => ({ input, epoch }))
     const lane = this.lanes.get(viewId)?.get(laneIdOf(panel))
     if (lane?.wait) {
       // Over the cap the newest go: a browser of ours sends a few per animation frame.
@@ -689,22 +709,32 @@ export class WebviewInput {
    * after the events before it, and the rest waits for the page to confirm it (startPageWait). A
    * release owed to a popup is dropped.
    */
-  private run(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: readonly QueuedInput[], lane: PressLane | undefined): void {
+  private run(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: readonly Carried[], lane: PressLane | undefined): void {
     let out: ElectronInputEvent[] = []
+    // The attachment of what is in `out` (one send per run of the same one).
+    let outEpoch: number | undefined
     const canHit = target.hitSelect !== undefined && this.deps.pushSelect !== undefined
+    const emit = (e: ElectronInputEvent, epoch: number | undefined): void => {
+      if (out.length > 0 && epoch !== outEpoch) {
+        this.send(panel, viewId, target, out, outEpoch)
+        out = []
+      }
+      outEpoch = epoch
+      out.push(e)
+    }
     for (let i = 0; i < events.length; i++) {
-      const event = events[i] as QueuedInput
+      const { input: event, epoch } = events[i] as Carried
       if (event.type === 'insertText' || event.type === 'choose' || event.type === 'editCommand') {
-        this.send(panel, viewId, target, out)
+        this.send(panel, viewId, target, out, outEpoch)
         out = []
         let pending: Promise<unknown> | void
         try {
           pending =
             event.type === 'insertText'
-              ? target.insertText?.(event.text)
+              ? target.insertText?.(event.text, epoch)
               : event.type === 'editCommand'
-                ? target.editCommand?.(event)
-                : target.chooseSelect?.(event.id, event.index)
+                ? target.editCommand?.(event, epoch)
+                : target.chooseSelect?.(event.id, event.index, epoch)
         } catch {
           pending = undefined
         }
@@ -721,8 +751,8 @@ export class WebviewInput {
         // A new press: whatever release a popup was owed is moot (it never came, or came before).
         if (lane) lane.dropRelease = false
         if (canHit) {
-          this.send(panel, viewId, target, out)
-          this.startHit(panel, viewId, target, event, events.slice(i + 1))
+          this.send(panel, viewId, target, out, outEpoch)
+          this.startHit(panel, viewId, target, event, epoch, events.slice(i + 1))
           return
         }
       } else if (left && lane?.dropRelease) {
@@ -730,17 +760,17 @@ export class WebviewInput {
         continue
       } else if (lane?.dropRelease && event.type === 'mouseMove' && event.modifiers.includes('leftbuttondown')) {
         // The page never saw that press: no drag of it either.
-        out.push({ ...event, modifiers: event.modifiers.filter((m) => m !== 'leftbuttondown') })
+        emit({ ...event, modifiers: event.modifiers.filter((m) => m !== 'leftbuttondown') }, epoch)
         continue
       }
-      out.push(event)
+      emit(event, epoch)
     }
-    this.send(panel, viewId, target, out)
+    this.send(panel, viewId, target, out, outEpoch)
   }
 
-  private send(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, out: readonly ElectronInputEvent[]): void {
+  private send(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, out: readonly ElectronInputEvent[], epoch: number | undefined): void {
     if (out.length === 0) return
-    target.send(out)
+    target.send(out, epoch)
     if (out.some((e) => e.type === 'mouseUp' || e.type === 'keyDown')) this.selectionMayChange(panel, viewId)
   }
 
@@ -760,12 +790,13 @@ export class WebviewInput {
   }
 
   /** Hold `rest` until the page has the text, choice or edit command `pending` is for (or PAGE_WAIT_MS passes). */
-  private startPageWait(panel: WebviewPanelOf, viewId: ViewId, pending: Promise<unknown>, rest: readonly QueuedInput[]): void {
+  private startPageWait(panel: WebviewPanelOf, viewId: ViewId, pending: Promise<unknown>, rest: readonly Carried[]): void {
     const lane = this.lane(panel, viewId)
     const seq = ++this.waitSeq
     lane.held = rest.slice(0, MAX_HELD_EVENTS)
     lane.wait = { kind: 'page', seq, timer: this.timers.set(() => this.pageDone(lane, seq), PAGE_WAIT_MS) }
-    // A rejection (a page gone or navigated meanwhile) lets the rest go all the same.
+    // A rejection (a page gone or navigated meanwhile) lets the rest go all the same: each item with
+    // its own attachment, so the router drops what came under one that ended.
     pending.then(
       () => this.pageDone(lane, seq),
       () => this.pageDone(lane, seq)
@@ -785,34 +816,25 @@ export class WebviewInput {
   }
 
   /** Hold `press` and `rest` while the page says what is under the press (or HIT_TIMEOUT_MS passes). */
-  private startHit(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, press: PressEvent, rest: QueuedInput[]): void {
+  private startHit(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, press: PressEvent, pressEpoch: number | undefined, rest: Carried[]): void {
     const lane = this.lane(panel, viewId)
     const seq = ++this.waitSeq
     const selectId = (this.deps.newSelectId ?? newSelectId)()
     lane.held = rest.slice(0, MAX_HELD_EVENTS)
-    lane.wait = { kind: 'hit', seq, press, selectId, timer: this.timers.set(() => this.hitDone(lane, seq, undefined), HIT_TIMEOUT_MS) }
+    lane.wait = { kind: 'hit', seq, press, pressEpoch, selectId, timer: this.timers.set(() => this.hitDone(lane, seq, undefined), HIT_TIMEOUT_MS) }
     let pending: Promise<unknown>
     try {
-      pending = (target.hitSelect as NonNullable<InputTarget['hitSelect']>)(press.x, press.y, selectId)
+      pending = (target.hitSelect as NonNullable<InputTarget['hitSelect']>)(press.x, press.y, selectId, pressEpoch)
     } catch {
       this.hitDone(lane, seq, undefined)
       return
     }
-    // A page that went or failed: the press goes on as a click (hitDone with nothing). A hit test the
-    // router dropped with its attachment drops the press and what waited for it (cause: epoch).
+    // A page that went or failed: the press goes on as a click (hitDone with nothing), with its own
+    // attachment (one that ended meanwhile: the router drops it).
     pending.then(
       (raw) => this.hitDone(lane, seq, raw),
-      (err) => (err instanceof InputDroppedError ? this.hitDropped(lane, seq) : this.hitDone(lane, seq, undefined))
+      () => this.hitDone(lane, seq, undefined)
     )
-  }
-
-  /** The hit-test `seq` was dropped with its attachment: its press and what waited for it go nowhere. */
-  private hitDropped(lane: PressLane, seq: number): void {
-    const hit = lane.wait
-    if (!hit || hit.kind !== 'hit' || hit.seq !== seq || this.lanes.get(lane.viewId)?.get(lane.id) !== lane) return
-    this.timers.clear(hit.timer)
-    lane.wait = undefined
-    lane.held = []
   }
 
   /**
@@ -829,8 +851,10 @@ export class WebviewInput {
     const target = this.deps.target(lane.panel)
     if (!target) return
     const select = parseHitResult(raw)
-    // A view that stopped viewing the panel meanwhile gets no popup: the press goes as it came.
-    if (select && this.deps.pushSelect && this.deps.isViewer(lane.panel, lane.viewId)) {
+    // A view that stopped viewing the panel meanwhile gets no popup: the press goes as it came. Nor
+    // does a press of an attachment that ended (its select is the old page's; the router drops it).
+    const current = hit.pressEpoch === undefined || target.epoch?.() === hit.pressEpoch
+    if (select && current && this.deps.pushSelect && this.deps.isViewer(lane.panel, lane.viewId)) {
       this.popups.set(lane.viewId, lane.id, select, hit.selectId)
       lane.dropRelease = true
       this.deps.pushSelect(lane.viewId, { panelKey: panelKeyOf(lane.panel), id: hit.selectId, ...select })
@@ -839,7 +863,7 @@ export class WebviewInput {
     }
     // Not a select: the press goes first, then what waited for it; a press among those is asked
     // about in turn. Not through run for the press itself: it would be hit-tested again.
-    this.send(lane.panel, lane.viewId, target, [hit.press])
+    this.send(lane.panel, lane.viewId, target, [hit.press], hit.pressEpoch)
     this.run(lane.panel, lane.viewId, target, held, lane)
   }
 

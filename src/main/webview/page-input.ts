@@ -613,8 +613,24 @@ export class PageInputRouter implements ChildFrameObserver {
     void this.pump()
   }
 
-  /** Mapped input for the page (webview-input.ts toElectronEvents), in order. */
-  input(events: readonly ElectronInputEvent[]): void {
+  /**
+   * The attachment now (read-only): input held outside the router (webview-input.ts, a press held for
+   * its select hit test, input held behind a text) carries it and hands it back, so what came under an
+   * attachment that ended is dropped here (C1, cause epoch), as the router's own steps are.
+   */
+  inputEpoch(): number {
+    return this.epoch
+  }
+
+  /** Whether `epoch` (one handed back, absent: now) is an attachment that ended. */
+  private ended(epoch: number | undefined): boolean {
+    return epoch !== undefined && epoch !== this.epoch
+  }
+
+  /** Mapped input for the page (webview-input.ts toElectronEvents), in order; `epoch`: the attachment it came under. */
+  input(events: readonly ElectronInputEvent[], epoch?: number): void {
+    // Came under an attachment that ended: dropped, never delivered into this one (cause epoch).
+    if (this.ended(epoch)) return
     // Detached with nothing queued: straight to the detached road, as before the router.
     if (!this.pumping && this.queue.length === 0 && !this.detachedStall && !this.deps.attached()) {
       for (const event of events) this.detachedEvent(event, this.epoch)
@@ -631,8 +647,9 @@ export class PageInputRouter implements ChildFrameObserver {
    * refusal rejects it, and nothing else runs it); `detached` runs instead only while the protocol
    * is detached (`webContents.insertText`, ...), and the input after it waits for its answer.
    */
-  command(method: PageCommandMethod, params: Record<string, unknown>, detached: () => unknown): Promise<unknown> {
+  command(method: PageCommandMethod, params: Record<string, unknown>, detached: () => unknown, epoch?: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
+      if (this.ended(epoch)) return void reject(new InputDroppedError())
       if (!this.push({ kind: 'command', method, params, detached, resolve, reject, epoch: this.epoch })) reject(new Error('webview: input queue full'))
       void this.pump()
     })
@@ -644,8 +661,9 @@ export class PageInputRouter implements ChildFrameObserver {
    * after waits for it too, STEP_TIMEOUT_MS at most (a select choice may move focus), attached or
    * not; false for a read (the selection) that only needs what came before.
    */
-  call(run: () => unknown, blocking = true): Promise<unknown> {
+  call(run: () => unknown, blocking = true, epoch?: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
+      if (this.ended(epoch)) return void reject(new InputDroppedError())
       if (!this.push({ kind: 'call', run, resolve, reject, blocking, epoch: this.epoch })) reject(new Error('webview: input queue full'))
       void this.pump()
     })
@@ -1140,12 +1158,12 @@ export class PageInputRouter implements ChildFrameObserver {
    * protocol's own answer (or the detached road's); `lane` the session it went to (undefined: not sent).
    */
   private sendInput(epoch: number, d: Delivery): { sent: Promise<unknown>; outcome: Promise<Outcome>; lane: Lane | undefined } {
-    const notSent = (why: string): { sent: Promise<unknown>; outcome: Promise<Outcome>; lane: undefined } => {
-      const sent = Promise.reject(new Error(why))
+    const notSent = (why: string | InputDroppedError): { sent: Promise<unknown>; outcome: Promise<Outcome>; lane: undefined } => {
+      const sent = Promise.reject(typeof why === 'string' ? new Error(why) : why)
       sent.catch(() => {})
       return { sent, outcome: Promise.resolve('stale'), lane: undefined }
     }
-    if (epoch !== this.epoch) return notSent('webview: input dropped (the protocol was reset)')
+    if (epoch !== this.epoch) return notSent(new InputDroppedError())
     if (d.road === 'detached') {
       if (this.deps.attached()) {
         // The callers look first; this is the contract's last line, never reached.
