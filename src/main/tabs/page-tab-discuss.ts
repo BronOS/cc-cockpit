@@ -23,7 +23,15 @@ import type { DiscussAnswer } from '../../shared/ipc'
 import type { JsonValue } from '../../sdk/types'
 import { within } from '../../shared/timeout'
 import { isRemoteViewId, type ViewId } from '../../shared/views'
-import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget, type DiscussGuest } from '../overlays/discuss'
+import {
+  composeDiscuss,
+  deliverDiscuss,
+  discussContextOf,
+  discussTargetProblem,
+  DiscussSessionBudget,
+  GUEST_DISCUSS_CONTEXT_FAILED,
+  type DiscussGuest
+} from '../overlays/discuss'
 import type { DiscussSessions } from '../overlays/overlay-manager'
 
 /** A page tab as Discuss needs it, from main's own record. */
@@ -109,10 +117,17 @@ export class PageTabDiscuss {
         const view = isRemoteViewId(caller.viewId) ? caller.viewId : undefined
         answer = await within(this.deps.askContext(caller.projectId, tab, view), DISCUSS_ASK_MS, `it took longer than ${DISCUSS_ASK_MS / 1000} s`)
       } catch (err) {
-        return { ok: false, error: `${name} could not give its context: ${errorText(err)}` }
+        // The plugin's error is its own words (it may name a host path): a guest gets a fixed text (D-33, second
+        // codex review, finding 3), the owner and the log the detail.
+        if (guest === undefined) return { ok: false, error: `${name} could not give its context: ${errorText(err)}` }
+        this.deps.log?.(`page tab ${tab.id}: a guest's Ask Claude got no context: ${errorText(err)}`)
+        return { ok: false, error: GUEST_DISCUSS_CONTEXT_FAILED }
       }
       const parsed = discussContextOf(answer)
-      if (!parsed) return { ok: false, error: `${name} answered with something other than { text } or null` }
+      if (!parsed) {
+        if (guest !== undefined) return { ok: false, error: GUEST_DISCUSS_CONTEXT_FAILED }
+        return { ok: false, error: `${name} answered with something other than { text } or null` }
+      }
       const context = parsed.context
       // The tab may have closed while its plugin was asked: its title is read again, and a gone tab sends nothing.
       const now = this.deps.pageTab(caller.projectId, tab.id)

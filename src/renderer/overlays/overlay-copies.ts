@@ -173,13 +173,6 @@ export class CopyLine {
   private held: string[] = []
   /** The page said it has drawn before its copy was known. */
   private drawn = false
-  /**
-   * The page said it has drawn while no load was attached: its `ccPanel.ready()` (a page message) can come before
-   * the frame's `load` event, which is what attaches the load (an image still loading holds `load` back). Kept for
-   * the next attach only (codex review, finding 7: dropped, it left the copy's loader up for good). PluginFrame
-   * passes on messages from its frame's current page only, and a reload is a new frame (HtmlOverlay's generation key).
-   */
-  private drawnUnattached = false
   private attempt = 0
   private timer: unknown
   private current: CopyLineState = { loading: true }
@@ -188,14 +181,10 @@ export class CopyLine {
 
   /** A load of the frame has its port: ask for this view's copy. Returns the load's end (release). */
   attach(port: CopyPagePort): () => void {
-    const drawnEarly = this.phase === 'idle' && this.drawnUnattached
     this.end()
-    this.drawnUnattached = false
     const visit = ++this.visit
     this.port = port
     this.attempt = 0
-    // Read by `answered` like a ready that came while the copy was asked for (and kept across a `cap` retry).
-    this.drawn = drawnEarly
     this.report({ loading: true })
     this.ask()
     return () => {
@@ -247,13 +236,20 @@ export class CopyLine {
     else this.deps.log?.('overlay message dropped: the page has no copy yet and the queue is full')
   }
 
-  /** The page says it has drawn (`ccPanel.ready()`): this copy's loader goes. */
-  pageDrawn(): void {
+  /**
+   * The page says it has drawn (`ccPanel.ready()`): this copy's loader goes. `early`: the page had no port yet (it
+   * drew before its frame's `load`, which attaches a load: an image still loading holds `load` back, codex review
+   * finding 7). Such a ready is not used: the shell cannot tell which load of the frame it came from (a page that
+   * reloads itself in the same frame keeps its window, so its new document's ready came while the previous copy was
+   * live and went to that copy, second codex review finding 4), and the SDK says it again, unmarked, once the port
+   * came (panel-core.ts). The port is posted in the same step that attaches the load, so that ready is this load's.
+   */
+  pageDrawn(early = false): void {
+    if (early) return
     if (this.phase === 'live' && this.copy !== undefined) {
       this.deps.loaded(this.copy)
       this.report({ loading: false })
     } else if (this.phase === 'asking' || this.phase === 'waiting') this.drawn = true
-    else if (this.phase === 'idle') this.drawnUnattached = true
   }
 
   /**

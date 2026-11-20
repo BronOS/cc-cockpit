@@ -54,6 +54,28 @@ export interface DiscussGuest {
 /** What a guest's Discuss answers when its access changed before the send. */
 export const GUEST_DISCUSS_REFUSED = 'Not sent: your access changed'
 
+/**
+ * What a guest's Discuss (or Ask Claude) answers when the plugin's context ask threw or timed out. Fixed: the
+ * plugin's error is its own words, which may name anything of the host (an ENOENT with an absolute path, D-33);
+ * the owner gets the detail, the log has it too (second codex review, finding 3).
+ */
+export const GUEST_DISCUSS_CONTEXT_FAILED = 'Not sent: the context could not be read'
+
+/** Why a guest's new session did not open when the open itself failed (its error stays the owner's, D-33). */
+const GUEST_SESSION_FAILED = 'the session did not start'
+
+/**
+ * Thrown by a caller's `openTab` wrapper when the guest's right to what it discusses went while the new session
+ * opened (the tab is already closed then): deliverDiscuss answers GUEST_DISCUSS_REFUSED for it, never the
+ * "No new session" text.
+ */
+export class GuestDiscussLost extends Error {
+  constructor() {
+    super(GUEST_DISCUSS_REFUSED)
+    this.name = 'GuestDiscussLost'
+  }
+}
+
 export interface DiscussParts {
   /** The overlay's title (any text: it is made one line here). */
   title: string
@@ -229,7 +251,12 @@ export async function deliverDiscuss(
     if (!liveTabs || !closeTab) throw new Error('not available')
     const opened = await guest.openTab(
       liveTabs(windowId),
-      () => sessions.openSession(windowId, text, guest.id),
+      // A failed open's own error (a spawn's, which may name the project folder or the claude binary) never reaches a
+      // guest (D-33): a fixed text. The cap's and the router's refusals come from openTab itself and keep their words.
+      () =>
+        sessions.openSession(windowId, text, guest.id).catch(() => {
+          throw new Error(GUEST_SESSION_FAILED)
+        }),
       (o) => o.tabId,
       (tabId) => closeTab(windowId, tabId)
     )
@@ -237,6 +264,7 @@ export async function deliverDiscuss(
     return { ok: true, tabId: opened.tabId, queued: false }
   } catch (err) {
     budget.refund(windowId)
+    if (err instanceof GuestDiscussLost) return { ok: false, error: GUEST_DISCUSS_REFUSED }
     return { ok: false, error: `No new session: ${errorText(err)}` }
   }
 }

@@ -213,19 +213,57 @@ describe('CopyLine: one view’s copy across the loads of its frame', () => {
   })
 
   // Codex review, finding 7: a `manual` page that draws while an image still holds the frame's `load` back says
-  // ready() before the load attaches; dropped, its loader stayed up for good.
-  it("a ready() before the frame's load attaches is kept for that load: one loaded for its copy, the loader gone, across a cap retry", async () => {
+  // ready() before the load attaches; dropped, its loader stayed up for good. Its SDK marks that ready `early` and
+  // says it again once the port came (panel-core.ts): the second one names the load, whatever the phase.
+  it("a ready() before the frame's load attaches: the early one is not used, the SDK's repeat at the port clears that load's loader, across a cap retry", async () => {
     const h = harness()
-    h.line.pageDrawn()
+    h.line.pageDrawn(true)
     expect(h.calls).toEqual([])
     h.line.attach(h.port)
     expect(h.calls).toEqual([['ready']])
     await h.answer({ refused: 'cap' })
+    // The port came with the load: the SDK's repeat lands while the copy is asked for again.
+    h.line.pageDrawn()
     h.timers.at(-1)!.fn()
     await h.answer({ copy: 'c1' })
     expect(h.calls).toEqual([['ready'], ['ready'], ['loaded', 'c1']])
     expect(h.states.at(-1)).toEqual({ loading: false })
     // Once only: the next load starts with its loader up again.
+    h.line.attach(h.port)
+    await h.answer({ copy: 'c2' })
+    expect(h.calls.filter((c) => c[0] === 'loaded')).toEqual([['loaded', 'c1']])
+    expect(h.states.at(-1)).toEqual({ loading: true })
+  })
+
+  // Second codex review, finding 4: a manual-ready page that reloads itself (the same frame, its window kept) draws
+  // before the new load's `load`: its ready came while the previous copy was live, marked that copy loaded, and the
+  // new copy's loader stayed up for good.
+  for (const drewBefore of [true, false]) {
+    it(`an early ready() of the next load while a copy is live (that copy ${drewBefore ? 'drawn' : 'never drawn'}) goes to the next load, never to the live copy`, async () => {
+      const h = harness()
+      h.line.attach(h.port)
+      await h.answer({ copy: 'c1' })
+      if (drewBefore) h.line.pageDrawn()
+      const loadedBefore = h.calls.filter((c) => c[0] === 'loaded').length
+      // The page reloaded itself: its new document draws before its frame's load.
+      h.line.pageDrawn(true)
+      expect(h.calls.filter((c) => c[0] === 'loaded')).toHaveLength(loadedBefore)
+      // Still loading (states are reported on a change only, so none went to loading: false).
+      if (!drewBefore) expect(h.states.some((st) => !st.loading)).toBe(false)
+      // The load attaches (a new copy), the port reaches the page, and its SDK says ready again.
+      h.line.attach(h.port)
+      h.line.pageDrawn()
+      await h.answer({ copy: 'c2' })
+      expect(h.calls.filter((c) => c[0] === 'loaded')).toEqual([...(drewBefore ? [['loaded', 'c1']] : []), ['loaded', 'c2']])
+      expect(h.states.at(-1)).toEqual({ loading: false })
+    })
+  }
+
+  it("a live copy's own ready() does not clear the next load's loader", async () => {
+    const h = harness()
+    h.line.attach(h.port)
+    await h.answer({ copy: 'c1' })
+    h.line.pageDrawn()
     h.line.attach(h.port)
     await h.answer({ copy: 'c2' })
     expect(h.calls.filter((c) => c[0] === 'loaded')).toEqual([['loaded', 'c1']])

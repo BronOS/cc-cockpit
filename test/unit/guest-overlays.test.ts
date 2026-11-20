@@ -17,7 +17,7 @@ import { guestEvent, type GuestEventContext } from '../../src/main/web/guest-eve
 import { mayConnectCopyOf, overlayCopyPortOf, overlayVisibleOf, type OverlayCopySources } from '../../src/main/guest-wiring'
 import type { GuestService } from '../../src/main/ipc/guest-deps'
 import { IpcRouter, registerOverlayHandlers, webCaller, type IpcMainLike } from '../../src/main/ipc/router'
-import { GUEST_DISCUSS_REFUSED } from '../../src/main/overlays/discuss'
+import { GUEST_DISCUSS_CONTEXT_FAILED, GUEST_DISCUSS_REFUSED } from '../../src/main/overlays/discuss'
 import { guestOverlays } from '../../src/shared/guest-filter'
 import type { GuestAccess, GuestOnlyAccess } from '../../src/shared/guests'
 import type { InvokeChannel, OverlayInfo } from '../../src/shared/ipc'
@@ -418,7 +418,10 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
     const guests = {
       access: accessOf,
       tabVisible: (_g: string, tabId: string) => opts.tabs?.has(tabId) === true,
-      pluginVisible: (_p: string, id: string) => shown.has(id)
+      pluginVisible: (_p: string, id: string) => shown.has(id),
+      // D-21's book of a guest's opened tabs (a Discuss new session goes through openGuestTab).
+      openedTabs: () => [],
+      noteOpenedTab: (_g: string, tabId: string) => void events.push(['guests', 'noteOpenedTab', tabId])
     } as unknown as GuestService
     const windowIdOf = (p: string): number | undefined => (p === PROJECT ? W1 : undefined)
     // eslint-disable-next-line prefer-const
@@ -493,6 +496,11 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
       onDiscuss: (view) => {
         heard.push(['discuss', view])
         return new Promise((resolve) => (answer = resolve))
+      },
+      // A toolbar click whose plugin code fails naming a host path: the click's reply is main's boolean, never this.
+      onButton: async (buttonId, view) => {
+        heard.push(['button', buttonId, view])
+        throw new Error("ENOENT: no such file or directory, open '/Users/owner/private/button.json'")
       }
     }
     const results: Array<Promise<OverlayResult>> = []
@@ -538,6 +546,13 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
     function discussSetup() {
       const sent: Array<[string, string, string | undefined]> = []
       const opened: string[] = []
+      const closedTabs: string[] = []
+      const selected: string[] = []
+      /** A new session's open, held until the test lets it go (`finishOpen`) while `holdOpen` is set. */
+      let holdOpen = false
+      let finishOpen: (() => void) | undefined
+      /** The open's own failure, when set. */
+      let openFails: Error | undefined
       const sessions: DiscussSessions = {
         isClaudeTab: (_w, tabId) => tabId === 't1',
         notReady: () => false,
@@ -547,14 +562,25 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
         },
         openSession: async (_w, prompt) => {
           opened.push(prompt)
+          if (holdOpen) await new Promise<void>((resolve) => (finishOpen = resolve))
+          if (openFails) throw openFails
           return { tabId: 'n1' }
         },
-        selectTab: () => {}
+        liveTabs: () => ['t1'],
+        closeTab: (_w, tabId) => void closedTabs.push(tabId),
+        selectTab: (_w, tabId) => void selected.push(tabId)
       }
       const f = setup({ discuss: sessions, tabs: new Set(['t1']) })
       // The opener has an onDiscuss handler: Discuss shows on the overlay.
       f.m.setDiscussHandler(W1, f.pv, true)
-      return { ...f, sent, opened }
+      const hold = (): void => {
+        holdOpen = true
+      }
+      const release = (): void => finishOpen?.()
+      const failOpen = (err: Error): void => {
+        openFails = err
+      }
+      return { ...f, sent, opened, closedTabs, selected, hold, release, failOpen }
     }
 
     it('via grows with a hidden plugin during the await: refused, nothing sent, the overlay still open and Discuss free again', async () => {
@@ -591,6 +617,104 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
       expect(sent).toHaveLength(1)
       expect(sent[0]![0]).toBe('t1')
       expect(sent[0]![2]).toBe('gW')
+    })
+
+    // Second codex review, finding 2: a new session's open awaits; the owner hides the opener meanwhile. The guest
+    // must not get the tab (it holds the review), the overlay stays and the answer is the refusal.
+    it("a new session whose overlay the guest lost while it opened: the tab closes, nothing selected, the overlay stays, refused", async () => {
+      const { pv, call, heard, answerDiscuss, opened, closedTabs, selected, hold, release, shown, m, results } = discussSetup()
+      hold()
+      const pending = call('web:6', 'overlays.discuss', { overlayId: pv, target: { kind: 'new' } })
+      await vi.waitFor(() => expect(heard).toContainEqual(['discuss', 'web:6']))
+      answerDiscuss({ text: 'the diff' })
+      await vi.waitFor(() => expect(opened).toHaveLength(1))
+      // The owner hides the Reviewer while the session starts.
+      shown.delete('a.rev')
+      release()
+      await expect(pending).resolves.toEqual({ ok: false, error: GUEST_DISCUSS_REFUSED })
+      expect(closedTabs).toEqual(['n1'])
+      expect(selected).toEqual([])
+      expect(m.infos(W1).map((o) => o.id)).toContain(pv)
+      let settled = false
+      void results[0]!.then(() => (settled = true))
+      await Promise.resolve()
+      expect(settled).toBe(false)
+    })
+
+    it('a new session the guest still may see: opened, noted as its tab, selected in its view (the control)', async () => {
+      const { pv, call, heard, answerDiscuss, closedTabs, selected, events } = discussSetup()
+      const pending = call('web:6', 'overlays.discuss', { overlayId: pv, target: { kind: 'new' } })
+      await vi.waitFor(() => expect(heard).toContainEqual(['discuss', 'web:6']))
+      answerDiscuss({ text: 'the diff' })
+      await expect(pending).resolves.toEqual({ ok: true, tabId: 'n1', queued: false })
+      expect(closedTabs).toEqual([])
+      expect(selected).toEqual(['n1'])
+      expect(events).toContainEqual(['guests', 'noteOpenedTab', 'n1'])
+    })
+
+    // Second codex review, finding 3: the opener's rejection may name a host path; a guest gets a fixed text, and only
+    // after its access was read again.
+    it("a rejected context ask: the guest gets a fixed text with no plugin error; the owner gets the detail", async () => {
+      const f = discussSetup()
+      const secret = "ENOENT: no such file or directory, open '/Users/owner/private/secrets.json'"
+      f.m.setDiscussHandler(W1, f.pv, true)
+      const pending = f.call('web:6', 'overlays.discuss', { overlayId: f.pv, target: { kind: 'tab', tabId: 't1' } })
+      await vi.waitFor(() => expect(f.heard).toContainEqual(['discuss', 'web:6']))
+      const rejectNext = (): void => f.answerDiscuss(Promise.reject(new Error(secret)))
+      rejectNext()
+      const answer = (await pending) as { ok: boolean; error: string }
+      expect(answer.ok).toBe(false)
+      expect(answer.error).toBe(GUEST_DISCUSS_CONTEXT_FAILED)
+      expect(answer.error).not.toContain('/Users')
+      expect(f.sent).toEqual([])
+      // The owner's own Discuss hears the detail.
+      const owner = f.call('web:3', 'overlays.discuss', { overlayId: f.pv, target: { kind: 'tab', tabId: 't1' } })
+      await vi.waitFor(() => expect(f.heard).toContainEqual(['discuss', 'web:3']))
+      rejectNext()
+      expect(((await owner) as { error: string }).error).toContain(secret)
+    })
+
+    it('a rejected context ask after the guest lost the overlay: the access refusal, never the error', async () => {
+      const f = discussSetup()
+      const pending = f.call('web:6', 'overlays.discuss', { overlayId: f.pv, target: { kind: 'tab', tabId: 't1' } })
+      await vi.waitFor(() => expect(f.heard).toContainEqual(['discuss', 'web:6']))
+      f.shown.delete('a.rev')
+      f.answerDiscuss(Promise.reject(new Error('/Users/owner/private/secrets.json')))
+      await expect(pending).resolves.toEqual({ ok: false, error: GUEST_DISCUSS_REFUSED })
+    })
+
+    it("a junk context answer: the guest's text names no plugin; the owner's names the opener", async () => {
+      const f = discussSetup()
+      const pending = f.call('web:6', 'overlays.discuss', { overlayId: f.pv, target: { kind: 'tab', tabId: 't1' } })
+      await vi.waitFor(() => expect(f.heard).toContainEqual(['discuss', 'web:6']))
+      f.answerDiscuss('not { text }')
+      await expect(pending).resolves.toEqual({ ok: false, error: GUEST_DISCUSS_CONTEXT_FAILED })
+      const owner = f.call('web:3', 'overlays.discuss', { overlayId: f.pv, target: { kind: 'tab', tabId: 't1' } })
+      await vi.waitFor(() => expect(f.heard).toContainEqual(['discuss', 'web:3']))
+      f.answerDiscuss('not { text }')
+      expect(((await owner) as { error: string }).error).toMatch(/^a\.rev answered Discuss with something other than/)
+    })
+
+    it("a guest's new session whose open fails: a fixed text, never the open's own error (a host path)", async () => {
+      const f = discussSetup()
+      f.failOpen(new Error("spawn /Users/owner/.local/bin/claude ENOENT (cwd '/Users/owner/secret-project')"))
+      const pending = f.call('web:6', 'overlays.discuss', { overlayId: f.pv, target: { kind: 'new' } })
+      await vi.waitFor(() => expect(f.heard).toContainEqual(['discuss', 'web:6']))
+      f.answerDiscuss({ text: 'the diff' })
+      const answer = (await pending) as { ok: boolean; error: string }
+      expect(answer).toEqual({ ok: false, error: 'No new session: the session did not start' })
+    })
+
+    // The button-click reply path (second codex review, finding 3, "check every reply path"): main answers a click with
+    // whether it went out; the plugin's rejection is only logged, never sent to the view.
+    it("a guest's toolbar click whose plugin code rejects with a host path: the reply is true, no event carries the error", async () => {
+      const f = discussSetup()
+      f.m.setButtons(W1, f.pv, [{ id: 'star', label: 'Star' }])
+      f.events.length = 0
+      await expect(f.call('web:6', 'overlays.button', { overlayId: f.pv, source: 'opener', buttonId: 'star' })).resolves.toBe(true)
+      await vi.waitFor(() => expect(f.logs.some((l) => l.includes('button.json'))).toBe(true))
+      expect(f.heard).toContainEqual(['button', 'star', 'web:6'])
+      expect(JSON.stringify(f.events)).not.toContain('/Users/owner')
     })
 
     it("a guest object with no overlay check (an unwired path) is refused before the opener is asked (fail closed)", async () => {

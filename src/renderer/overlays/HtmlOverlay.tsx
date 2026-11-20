@@ -181,7 +181,8 @@ function CopyOverlay(props: {
       allowPopups
       localPort
       onPageMessage={(data) => {
-        if (typeOf(data) === READY_MESSAGE) line.current?.pageDrawn()
+        // `early`: said before the page had its port; CopyLine waits for the SDK's repeat at the port (that load's).
+        if (typeOf(data) === READY_MESSAGE) line.current?.pageDrawn((data as { early?: unknown }).early === true)
       }}
       connect={(deliver) => {
         const ch = new MessageChannel()

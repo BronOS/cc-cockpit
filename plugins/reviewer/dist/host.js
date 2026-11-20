@@ -413,9 +413,16 @@ exports.activate = (ctx) => {
     const { key, title, type, tabId } = review.prepareInput(options)
     const openKey = `text:${key}`
     dismissed.delete(openKey)
-    if (open.has(openKey)) return focusExisting(open.get(openKey))
+    if (open.has(openKey)) return focusExisting(open.get(openKey), chain)
     const had = prepared.get(openKey)
-    if (had) return had.handle.focus()
+    if (had) {
+      // A reuse is a request for this key's content too: this caller's chain joins the loader's before
+      // anything else goes out, so the annotate that fills it later (made in its own, maybe shorter,
+      // chain) re-asserts the union. Shown B prepares K, then hidden A -> B prepares K again: the fill
+      // B annotates is A's content as well (second codex review, finding 1).
+      had.view.page.attribute(chain)
+      return had.handle.focus()
+    }
     const failed = failedViews.get(openKey)
     if (failed && caller && failed.caller === caller) {
       // Its title, type and Discuss tab stay the first prepare's (set when an overlay starts): the
@@ -551,8 +558,13 @@ exports.activate = (ctx) => {
     return Date.now() - at < DISMISSED_MS ? DISMISSED : null
   }
 
-  /** Brings an open (or opening) review to the front once it is up; throws the first open's refusal. */
-  async function focusExisting(entry) {
+  /**
+   * Brings an open (or opening) review to the front once it is up; throws the first open's refusal.
+   * `sources` is the reusing call's chain: added to the overlay's (the page's stored set only grows)
+   * before the focus or anything else goes out, as a fresh open would (D-4).
+   */
+  async function focusExisting(entry, sources = []) {
+    entry.page.attribute(sources)
     await entry.opening
     entry.handle.focus()
     return { done: Promise.resolve() }
@@ -787,7 +799,7 @@ exports.activate = (ctx) => {
    */
   async function showReview(subject, { tabId, sources } = {}) {
     const { openKey, draftKey } = subject
-    if (open.has(openKey)) return focusExisting(open.get(openKey))
+    if (open.has(openKey)) return focusExisting(open.get(openKey), sources)
     // From here until the overlay is in `open` the review is on its way: addNote refuses meanwhile (a note
     // written after the draft is read below would be written over by the page), and the notes already in
     // flight finish first, so the read sees them.
@@ -804,7 +816,7 @@ exports.activate = (ctx) => {
 
   async function showReviewNow(subject, { tabId, sources = [] } = {}) {
     const { openKey, draftKey, what, sides } = subject
-    if (open.has(openKey)) return focusExisting(open.get(openKey))
+    if (open.has(openKey)) return focusExisting(open.get(openKey), sources)
     let draft = review.cleanDraft(await ctx.storage.get(draftKey))
     const savedLayout = await ctx.appStorage.get(LAYOUT_KEY).catch(() => null)
     // The owner's layout and divider (app-wide prefs): what a copy that connects later starts with.
@@ -818,7 +830,7 @@ exports.activate = (ctx) => {
     // Checked again after the awaits above: two quick clicks (or `ccc review` calls) on the same
     // file both pass the first check, and the second must focus the first overlay, not open
     // another. Nothing between here and open.set awaits, so the pair is atomic.
-    if (open.has(openKey)) return focusExisting(open.get(openKey))
+    if (open.has(openKey)) return focusExisting(open.get(openKey), sources)
     // Measured before the overlay starts: MAX_SIDE_BYTES bounds the raw bytes, but JSON escaping (a
     // newline or a quote is two chars) and a saved draft can push the message past what post takes.
     // Throwing here hands a click to the built-in viewer; a post that threw after start would leave

@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { composeDiscuss, GUEST_DISCUSS_REFUSED, type DiscussGuest } from '../../src/main/overlays/discuss'
+import { composeDiscuss, GUEST_DISCUSS_CONTEXT_FAILED, GUEST_DISCUSS_REFUSED, type DiscussGuest } from '../../src/main/overlays/discuss'
 import type { DiscussSessions } from '../../src/main/overlays/overlay-manager'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { PageTabDiscuss, discussQuestionOf, type DiscussPageTab } from '../../src/main/tabs/page-tab-discuss'
@@ -323,6 +323,25 @@ describe("a write guest's Ask Claude (03e A, B)", () => {
     })
     expect(ptyOf(claude).writes.join('')).not.toContain('About:')
     expect(selected).toEqual([])
+  })
+
+  it("the plugin's context ask throws: a guest gets a fixed text, never the plugin's error (a host path, D-33)", async () => {
+    const page = fileTab()
+    const claude = waitingTab()
+    context = async () => {
+      throw new Error("ENOENT: no such file or directory, open '/Users/owner/private/secrets.json'")
+    }
+    await expect(discuss().discuss(caller(GUEST_VIEW), page, 'q', { kind: 'tab', tabId: claude }, guest())).resolves.toEqual({
+      ok: false,
+      error: GUEST_DISCUSS_CONTEXT_FAILED
+    })
+    expect(ptyOf(claude).writes.join('')).not.toContain('About:')
+    // A junk answer names no plugin to a guest either.
+    context = async () => 'text'
+    await expect(discuss().discuss(caller(GUEST_VIEW), page, 'q', { kind: 'tab', tabId: claude }, guest())).resolves.toEqual({
+      ok: false,
+      error: GUEST_DISCUSS_CONTEXT_FAILED
+    })
   })
 
   it("still allowed: sent with the guest's id and selected in the guest's own view only", async () => {

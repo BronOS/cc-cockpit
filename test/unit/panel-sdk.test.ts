@@ -684,10 +684,29 @@ describe('panel SDK: ccPanel.slot', () => {
 
   it('ready() tells the parent, every call, and does not fail without one', () => {
     const { c, up } = slotClient()
+    c.receive({ type: PORT_MESSAGE }, [new FakePort()])
     c.api.ready()
     c.api.ready()
     expect(up).toEqual([{ type: READY_MESSAGE }, { type: READY_MESSAGE }])
     expect(() => new PanelClient(fakeRoot()).api.ready()).not.toThrow()
+  })
+
+  // Second codex review, finding 4: the shell cannot tell which load of the frame a ready() before the port came
+  // from (a page that reloads itself keeps its window), so it is marked, and said again once the port names the load.
+  it('ready() before the first port is marked early and said again, unmarked, when the port comes; only then', () => {
+    const { c, up } = slotClient()
+    c.api.ready()
+    expect(up).toEqual([{ type: READY_MESSAGE, early: true }])
+    c.receive({ type: PORT_MESSAGE }, [new FakePort()])
+    expect(up).toEqual([{ type: READY_MESSAGE, early: true }, { type: READY_MESSAGE }])
+    // A later port (a page tab's reconnect) does not say it again; a ready() with a port is never marked.
+    c.receive({ type: PORT_MESSAGE }, [new FakePort()])
+    c.api.ready()
+    expect(up).toEqual([{ type: READY_MESSAGE, early: true }, { type: READY_MESSAGE }, { type: READY_MESSAGE }])
+    // No ready() before the port: the port alone says nothing.
+    const quiet = slotClient()
+    quiet.c.receive({ type: PORT_MESSAGE }, [new FakePort()])
+    expect(quiet.up).toEqual([])
   })
 })
 

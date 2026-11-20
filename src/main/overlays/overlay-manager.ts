@@ -89,7 +89,9 @@ import {
   discussContextOf,
   discussTargetProblem,
   DiscussSessionBudget,
+  GUEST_DISCUSS_CONTEXT_FAILED,
   GUEST_DISCUSS_REFUSED,
+  GuestDiscussLost,
   type DiscussGuest
 } from './discuss'
 import { PtyService } from '../pty/pty-service'
@@ -1913,13 +1915,29 @@ export class OverlayManager {
         const onDiscuss = overlay.channel.onDiscuss.bind(overlay.channel)
         const ask = (): Promise<unknown> => onDiscuss(view)
         let answer: unknown
+        let failed: string | undefined
         try {
           answer = await within(Promise.resolve().then(ask), DISCUSS_ASK_MS, `onDiscuss took longer than ${DISCUSS_ASK_MS / 1000} s`)
         } catch (err) {
-          return { ok: false, error: `${this.openerName(overlay)} could not give its context: ${toError(err).message}` }
+          failed = toError(err).message
+        }
+        // Before any reply content (second codex review, finding 3): the overlay may have closed, and a guest's
+        // right to it is read again first, so a guest who lost it hears the access refusal and nothing else.
+        if (this.byId.get(overlay.id) !== overlay) return { ok: false, error: 'The overlay closed' }
+        if (!guestSees()) return { ok: false, error: GUEST_DISCUSS_REFUSED }
+        if (failed !== undefined) {
+          // The plugin's error is its own words (an ENOENT naming an absolute path): the owner reads it, a guest
+          // gets a fixed text (D-33) and the log keeps the detail.
+          if (guest === undefined) return { ok: false, error: `${this.openerName(overlay)} could not give its context: ${failed}` }
+          this.log(`overlay ${overlay.id}: a guest's Discuss got no context: ${failed}`)
+          return { ok: false, error: GUEST_DISCUSS_CONTEXT_FAILED }
         }
         const parsed = discussContextOf(answer)
-        if (!parsed) return { ok: false, error: `${this.openerName(overlay)} answered Discuss with something other than { text } or null` }
+        if (!parsed) {
+          // Fixed for a guest too: an overlay it sees through a shared tab may have an opener hidden from it, never named.
+          if (guest !== undefined) return { ok: false, error: GUEST_DISCUSS_CONTEXT_FAILED }
+          return { ok: false, error: `${this.openerName(overlay)} answered Discuss with something other than { text } or null` }
+        }
         context = parsed.context
       }
       // The overlay may have closed while the opener was asked: nothing to discuss any more.
@@ -1937,11 +1955,41 @@ export class OverlayManager {
               id: guest.id,
               viewId: guest.viewId,
               allowed: (to) => guestSees() && guest.allowed(to),
-              openTab: (liveTabs, create, idOf, close) => guest.openTab(liveTabs, create, idOf, close)
+              // The new session's open awaits (seconds): the owner may hide the opener meanwhile, and the router's
+              // own re-check after it reads only the project and the role (second codex review, finding 2). So the
+              // overlay is read again as soon as the tab exists, before the router notes it as the guest's: a guest
+              // who lost the overlay never gets the tab, which holds the overlay's text. It was made for this request
+              // and nobody has typed in it: closed, and the Discuss refused (below).
+              openTab: (liveTabs, create, idOf, close) =>
+                guest.openTab(
+                  liveTabs,
+                  async () => {
+                    const tab = await create()
+                    if (tab !== null && !guestSees()) {
+                      close(idOf(tab))
+                      throw new GuestDiscussLost()
+                    }
+                    return tab
+                  },
+                  idOf,
+                  close
+                )
             }
       const sent = await deliverDiscuss(sessions, this.discussSessions, windowId, target, text, checked)
       if (!sent.ok) return sent
       const { tabId, queued } = sent
+      // Again once a guest's new session is open, before the overlay closes as discussed and the tab is selected: one
+      // whose overlay went in the last step is closed too (nothing awaits between here and the end). Not for a tab
+      // target: its text went through the gate in deliverDiscuss's synchronous check-and-send, it cannot be taken back,
+      // and "not sent" would be untrue.
+      if (guest !== undefined && target.kind === 'new' && !guestSees()) {
+        try {
+          sessions.closeTab?.(windowId, tabId)
+        } catch (err) {
+          this.log(`overlay ${overlay.id}: closing the refused Discuss session ${tabId} failed: ${String(err)}`)
+        }
+        return { ok: false, error: GUEST_DISCUSS_REFUSED }
+      }
       // The person may dismiss the overlay while a new session opens. The session already has the
       // text and cannot be taken back, so it is still selected and the answer is still ok, but the
       // opener has heard `dismissed` (finish below is a no-op): a reviewer-style opener keeps a draft

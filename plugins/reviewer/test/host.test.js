@@ -2223,6 +2223,50 @@ test('provenance: prepare and annotate attribute their caller chains before the 
   host.deactivate()
 })
 
+test('provenance: a reused overlay (a second prepare, a second annotate of an open key) adds the new caller chain; the deferred fill re-asserts the union', async () => {
+  const f = setup({ editorAvailable: false })
+  const caller = { id: 'example.mail' }
+  withServices(f, caller)
+  // Shown B prepares K; then hidden A -> B prepares K again (the loader is reused, only focused).
+  let chain = ['example.mail']
+  f.ctx.services.callers = () => chain
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'gmail:t1', title: 'Mail' })
+  const h = f.handles[0]
+  chain = ['example.hidden', 'example.mail']
+  await f.provided.reviewer.prepare({ key: 'gmail:t1', title: 'Mail' })
+  assert.equal(f.handles.length, 1, 'the loader is reused')
+  assert.equal(h.focused, 1)
+  const both = ['example.mail', 'example.hidden']
+  const reused = h.events.findIndex((e) => e[0] === 'sources' && e[1].includes('example.hidden'))
+  assert.ok(reused >= 0, 'the reuse added the new chain')
+  assert.deepEqual(h.events[reused][1], both)
+  // B's deferred annotate (only B live) records the union before the init goes out.
+  chain = ['example.mail']
+  h.events.length = 0
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<p>x</p>', key: 'gmail:t1' })
+  const filled = h.events.findIndex((e) => e[0] === 'sources')
+  const init = h.events.findIndex((e) => e[0] === 'post' && e[2] === 'init')
+  assert.ok(filled >= 0 && filled < init, 'attributed before the init went out')
+  assert.deepEqual(h.events[filled][1], both)
+  // A filled (open) key reused by yet another chain: added too, and a late copy carries the whole set.
+  chain = ['example.third', 'example.mail']
+  h.events.length = 0
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<p>y</p>', key: 'gmail:t1' })
+  assert.equal(f.handles.length, 1)
+  assert.deepEqual(h.sources.at(-1), [...both, 'example.third'])
+  chain = ['example.fourth']
+  await f.provided.reviewer.prepare({ key: 'gmail:t1', title: 'Mail' })
+  const all = [...both, 'example.third', 'example.fourth']
+  assert.deepEqual(h.sources.at(-1), all)
+  chain = []
+  h.events.length = 0
+  h.connect(WRITER)
+  assert.deepEqual(h.events[0], ['sources', all])
+  host.deactivate()
+})
+
 test('provenance: fail() attributes its caller chain before the error page goes out, a late copy re-asserts it', async () => {
   const f = setup({ editorAvailable: false })
   const caller = { id: 'example.mail' }
