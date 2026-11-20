@@ -917,6 +917,17 @@ async function main() {
         SPIN_WAIT_MS
       )
     })
+    // (b2) A same-site load (the address bar's): it would commit into the spinning process, so it
+    // hangs like the reload; the watchdog's retry is what the load's own promise settles with.
+    await spinThen('same-site load', async () => {
+      void within(
+        view.load(`http://localhost:${port}/?role=spin&again`).then(
+          () => note('same-site load: load resolved'),
+          (e) => note(`same-site load: load rejected: ${e instanceof Error ? e.message : String(e)}`)
+        ),
+        SPIN_WAIT_MS
+      )
+    })
     // (c) This script's own kill, then a reload (the watchdog sees a navigation with no renderer:
     // nothing to kill). SIGKILL, never
     // forcefullyCrashRenderer: on Linux that crash dumps core (systemd-coredump, a renderer's core is
