@@ -12,7 +12,8 @@
 // never by pixels, and change nothing there but clearing a log: focus and carets come from the
 // clicks and keys under test. The iframe also holds a `<select>` (below its field, after it in the
 // order, clear of the drag case's press), for the dropdown the browser draws for a select main found
-// in the frame (design-web-browser.md §4.4).
+// in the frame (design-web-browser.md §4.4). One case loads the same frame from the top's own origin
+// instead (a same-origin frame, in the top's process): main's select script steps into its document.
 import { createServer, type Server as HttpServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { expect, test, type Locator, type Page } from '@playwright/test'
@@ -83,11 +84,11 @@ interface DocState {
 }
 type Role = 'top' | 'frame'
 
-/** A loopback http server answering every request with `body` (the other site's page or ours). */
-async function serve(body: () => string): Promise<number> {
-  const h = createServer((_req, res) => {
+/** A loopback http server answering every request with `body` (by the request's `role`: the other site's page or ours). */
+async function serve(body: (role: string | null) => string): Promise<number> {
+  const h = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-    res.end(body())
+    res.end(body(new URL(req.url ?? '/', 'http://x').searchParams.get('role')))
   })
   http.push(h)
   await new Promise<void>((done) => h.listen(0, '127.0.0.1', done))
@@ -145,11 +146,13 @@ interface Fixture {
 
 /**
  * A server, a browser on its project with the Browser panel open, and the two-site page loaded in it:
- * both documents complete, the frame confirmed in its own process, the canvas drawn.
+ * both documents complete, the frame confirmed in its own process, the canvas drawn. `sameOrigin`:
+ * the frame comes from the top's own origin instead, confirmed in the top's process.
  */
-async function openFixture(): Promise<Fixture> {
+async function openFixture({ sameOrigin = false } = {}): Promise<Fixture> {
   const framePort = await serve(() => FRAME_PAGE)
-  const topPort = await serve(() => topPage(`http://localhost:${framePort}/?role=frame`))
+  const frameUrl = sameOrigin ? '/?role=frame' : `http://localhost:${framePort}/?role=frame`
+  const topPort = await serve((role) => (role === 'frame' ? FRAME_PAGE : topPage(frameUrl)))
   server = await launchServer({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
   const s = server
   await expect
@@ -184,10 +187,12 @@ async function openFixture(): Promise<Fixture> {
   }
   const top = await state('top')
   const frame = await state('frame')
-  // Site isolation: the localhost iframe is out of process (else the router's frame road is untested).
+  // Site isolation: the localhost iframe is out of process (else the router's frame road is untested);
+  // a same-origin one is in the top's (else main's scripts never step into a frame's document).
   expect(top.pid).toBeGreaterThan(0)
   expect(frame.pid).toBeGreaterThan(0)
-  expect(frame.pid, `top pid ${top.pid}, iframe pid ${frame.pid}`).not.toBe(top.pid)
+  if (sameOrigin) expect(frame.pid, `top pid ${top.pid}, iframe pid ${frame.pid}`).toBe(top.pid)
+  else expect(frame.pid, `top pid ${top.pid}, iframe pid ${frame.pid}`).not.toBe(top.pid)
 
   const layer = await section.locator('.webview-input').boundingBox()
   if (!layer) throw new Error('no input layer')
@@ -310,32 +315,35 @@ test('server mode, cross-site iframe: typing in its field, then clicking the top
   await expectMainAlive(server!)
 })
 
-test("server mode, cross-site iframe: its select opens the browser's dropdown over it, and a choice sets the value there", async () => {
-  test.setTimeout(120_000)
-  const f = await openFixture()
-  const frame = (await f.state('top')).frame!
-  const select = (await f.state('frame')).select!
-  // The select's place in the browser: the input layer's origin, the iframe's, the select's in it.
-  const at = { x: f.origin.x + frame.x + select.x, y: f.origin.y + frame.y + select.y }
-  await f.page.mouse.click(at.x + select.w / 2, at.y + select.h / 2)
-  const menu = f.section.getByRole('listbox', { name: 'Choose an option' })
-  await expect(menu).toBeVisible({ timeout: 10_000 })
-  await expect(menu.getByRole('option')).toHaveText(['Apple', 'Banana', 'Cherry'])
-  await expect(menu.getByRole('option', { name: 'Apple' })).toHaveAttribute('aria-selected', 'true')
-  // Under the select (its rectangle mapped from the frame to the top page by main), as wide.
-  const m = await menu.boundingBox()
-  expect(m, 'the dropdown has a box').not.toBeNull()
-  expect(Math.abs(m!.x - at.x), `dropdown x ${m!.x}, select x ${at.x}`).toBeLessThanOrEqual(2)
-  expect(Math.abs(m!.y - (at.y + select.h)), `dropdown y ${m!.y}, select bottom ${at.y + select.h}`).toBeLessThanOrEqual(2)
-  // The press opened the dropdown instead of reaching either document.
-  expect((await f.state('frame')).log).toEqual([])
-  expect((await f.state('top')).log).toEqual([])
-  await menu.getByRole('option', { name: 'Banana' }).click()
-  await expect(menu).toHaveCount(0)
-  await expect.poll(async () => (await f.state('frame')).sv, { timeout: 10_000 }).toBe('banana')
-  expect((await f.state('frame')).chg).toEqual(['input:banana', 'change:banana'])
-  // The select kept the focus in the frame, and the top page's is the iframe (as after a click there).
-  expect((await f.state('frame')).active).toBe('s')
-  expect((await f.state('top')).active).toBe('A')
-  await expectMainAlive(server!)
-})
+for (const sameOrigin of [false, true]) {
+  const kind = sameOrigin ? 'same-origin' : 'cross-site'
+  test(`server mode, ${kind} iframe: its select opens the browser's dropdown over it, and a choice sets the value there`, async () => {
+    test.setTimeout(120_000)
+    const f = await openFixture({ sameOrigin })
+    const frame = (await f.state('top')).frame!
+    const select = (await f.state('frame')).select!
+    // The select's place in the browser: the input layer's origin, the iframe's, the select's in it.
+    const at = { x: f.origin.x + frame.x + select.x, y: f.origin.y + frame.y + select.y }
+    await f.page.mouse.click(at.x + select.w / 2, at.y + select.h / 2)
+    const menu = f.section.getByRole('listbox', { name: 'Choose an option' })
+    await expect(menu).toBeVisible({ timeout: 10_000 })
+    await expect(menu.getByRole('option')).toHaveText(['Apple', 'Banana', 'Cherry'])
+    await expect(menu.getByRole('option', { name: 'Apple' })).toHaveAttribute('aria-selected', 'true')
+    // Under the select (its rectangle mapped from the frame to the top page by main), as wide.
+    const m = await menu.boundingBox()
+    expect(m, 'the dropdown has a box').not.toBeNull()
+    expect(Math.abs(m!.x - at.x), `dropdown x ${m!.x}, select x ${at.x}`).toBeLessThanOrEqual(2)
+    expect(Math.abs(m!.y - (at.y + select.h)), `dropdown y ${m!.y}, select bottom ${at.y + select.h}`).toBeLessThanOrEqual(2)
+    // The press opened the dropdown instead of reaching either document.
+    expect((await f.state('frame')).log).toEqual([])
+    expect((await f.state('top')).log).toEqual([])
+    await menu.getByRole('option', { name: 'Banana' }).click()
+    await expect(menu).toHaveCount(0)
+    await expect.poll(async () => (await f.state('frame')).sv, { timeout: 10_000 }).toBe('banana')
+    expect((await f.state('frame')).chg).toEqual(['input:banana', 'change:banana'])
+    // The select kept the focus in the frame, and the top page's is the iframe (as after a click there).
+    expect((await f.state('frame')).active).toBe('s')
+    expect((await f.state('top')).active).toBe('A')
+    await expectMainAlive(server!)
+  })
+}

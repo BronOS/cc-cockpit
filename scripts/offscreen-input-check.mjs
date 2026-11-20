@@ -4,10 +4,12 @@
 // WebviewInput (webview-input.ts) with esbuild, makes a view the way server mode does (its page
 // protocol attached and auto-attaching frames, webview-hardening.ts), and loads a top page on
 // 127.0.0.1 (scrollable) holding a cross-site iframe on localhost (A, scrollable) that holds another
-// on [::1] (B), a second localhost iframe at scale(0.5) (T), a same-site iframe (S) and a same-site
+// on [::1] (B), a second localhost iframe at scale(0.5) (T), a same-origin iframe (S) and a same-origin
 // one (W, scrollable) holding a localhost iframe (X): three sites, each cross-site frame its own
-// process with site isolation, S and W in the top's (checked). Each document logs the trusted
-// events it gets.
+// process with site isolation, S and W in the top's (checked). Below the top's fold: a same-origin P
+// with an uneven border and padding, a same-origin U at scale(0.5), O on 127.0.0.1 at a second port
+// (same-site, cross-origin), a sandboxed D (allow-scripts) and a localhost N; below A's fold a
+// same-origin Q in A. Each document logs the trusted events it gets.
 //
 // Roads, each into the top document and A:
 //   raw       `webContents.sendInputEvent`;
@@ -35,10 +37,17 @@
 // scrolled), through a second WebviewInput wired for popups (the popup with the select's options over
 // it in the top page, the press kept from the document, the focus on the select, a choice setting
 // the value and firing input and change there and nowhere else); copy of a double-clicked word and
-// of a field's selection in each of those documents, read where the focus is; order: rounds of clicks into A, the top, B and T with
+// of a field's selection in each of those documents, read where the focus is; the same select and
+// copy in the same-origin S, P (scrolled; the point and the rectangle through its border and padding)
+// and Q in A (main's scripts stepping into a same-origin frame's document from the top's world and
+// from A's); cut (the pushed selection, then Delete, as the browser's onCut) in S, Q and A; no popup
+// for a select in U (a scaled same-origin frame is refused, its press goes to the page); N navigating
+// to another cross-site document while its popup is open (the old popup's choice changes nothing,
+// the new document's select works); order: rounds of clicks into A, the top, B and T with
 // keys and texts after each, nothing awaited, and the top document's "abc" é Ctrl+A "x" and
-// "abc" é "d". Printed, never failures: a select and a selection in the same-site S (main's scripts
-// do not reach them), Ctrl+E and Ctrl+K (a Mac field's Emacs keys, not mapped),
+// "abc" é "d". Printed, never failures: a select and a selection in O and D (keyboard-only where
+// main's scripts do not reach: O's document is unreadable from the isolated world; D's process is
+// printed, an isolated sandboxed frame is reached as a cross-site one), Ctrl+E and Ctrl+K (a Mac field's Emacs keys, not mapped),
 // and the router's cost per pointer event in each document, and per key event (the protocol's own
 // answer, fast typing and a held key's repeat through the router; that every key lands is a check).
 //
@@ -108,14 +117,21 @@ async function loadModules() {
   return mod
 }
 
-/** One page for every document, by role: the top holds A and T, A holds B. */
-function page(port, role) {
+/**
+ * One page for every document, by role: the top holds A, T, S, W and (below the fold, the top
+ * scrolled by FOLD for them) P, U, O, D and N; A holds B and (below its own fold) Q. `port2` is a
+ * second port of the same server: 127.0.0.1 on it is same-site, cross-origin.
+ */
+function page(port, role, port2) {
   const frames =
     role === 'top'
       ? `<iframe id="A" src="http://localhost:${port}/?role=frame"></iframe><iframe id="T" src="http://localhost:${port}/?role=xform"></iframe>` +
-        `<iframe id="S" src="/?role=same"></iframe><iframe id="W" src="/?role=wrap"></iframe>`
+        `<iframe id="S" src="/?role=same"></iframe><iframe id="W" src="/?role=wrap"></iframe>` +
+        `<iframe id="P" src="/?role=pad"></iframe><iframe id="U" src="/?role=sxform"></iframe>` +
+        `<iframe id="O" src="http://127.0.0.1:${port2}/?role=xorigin"></iframe><iframe id="D" sandbox="allow-scripts" src="/?role=sandbox"></iframe>` +
+        `<iframe id="N" src="http://localhost:${port}/?role=nav"></iframe>`
       : role === 'frame'
-        ? `<iframe id="B" src="http://[::1]:${port}/?role=nested"></iframe>`
+        ? `<iframe id="B" src="http://[::1]:${port}/?role=nested"></iframe><iframe id="Q" src="/?role=asame"></iframe>`
         : role === 'wrap'
           ? `<iframe id="X" src="http://localhost:${port}/?role=inner"></iframe>`
           : ''
@@ -126,6 +142,10 @@ function page(port, role) {
 iframe{position:absolute;border:0} #A{left:0;top:200px;width:600px;height:300px} #T{left:650px;top:200px;width:300px;height:300px;transform:scale(0.5);transform-origin:0 0}
 #B{left:300px;top:100px;width:280px;height:180px} #S{left:650px;top:400px;width:300px;height:110px}
 #W{left:0;top:520px;width:600px;height:170px} #X{left:300px;top:40px;width:280px;height:120px}
+#P{left:0;top:760px;width:300px;height:200px;border:5px solid #888;border-left-width:3px;padding:6px 4px}
+#U{left:350px;top:760px;width:300px;height:340px;transform:scale(0.5);transform-origin:0 0}
+#O{left:0;top:1000px;width:300px;height:200px} #D{left:350px;top:1000px;width:300px;height:200px} #N{left:650px;top:760px;width:300px;height:200px}
+#Q{left:10px;top:320px;width:280px;height:200px;border:2px solid #888;padding:3px 5px}
 #s{position:absolute;left:10px;top:120px;width:150px;height:24px;margin:0;font:14px monospace} #p{position:absolute;left:10px;top:150px;margin:0;font:14px monospace;white-space:nowrap}</style>
 <input id="i" autocomplete="off" value=""><div id="box"><div>scroll</div></div><a id="l" href="#x">a link</a><textarea id="t"></textarea>${frames}
 <select id="s"><option>one</option><option>two</option><option disabled>three</option><optgroup label="G"><option>four</option></optgroup></select><p id="p">pick ${role} words</p>
@@ -166,12 +186,24 @@ const within = (p, ms, fallback) => Promise.race([p, sleep(ms).then(() => fallba
 const LOCAL = { input: [20, 25], box: [60, 80], link: [260, 18], select: [50, 132], word: [65, 158] }
 /** The select's rectangle in each document's own CSS px (#s). */
 const SELECT_RECT = { x: 10, y: 120, width: 150, height: 24 }
+/** How far the top page is scrolled for the frames below its fold (P, U, O, D, N), and A for Q. */
+const FOLD = 700
+const A_FOLD = 200
 /**
  * Where a document's own point is in the top page's viewport (the top page scrolled by `scroll`, A
- * by `frameScroll`, W by `wrapScroll`). S and W are same-site (the top's process), X in W cross-site.
+ * by `frameScroll`, W by `wrapScroll`, the document itself by `own`). S, W, P and U are same-origin
+ * (the top's process), Q same-origin in A (A's process), X in W cross-site, O same-site but
+ * cross-origin, D sandboxed, N cross-site (it navigates to nav2, the same box).
  */
-function toTop(doc, [x, y], { scroll = 0, frameScroll = 0, wrapScroll = 0 } = {}) {
+function toTop(doc, [x, y], { scroll = 0, frameScroll = 0, wrapScroll = 0, own = 0 } = {}) {
+  y -= own
   if (doc === 'top') return [x, y - scroll]
+  if (doc === 'pad') return [3 + 4 + x, 760 + 5 + 6 + y - scroll] // its border 3/5 and padding 4/6 (left/top)
+  if (doc === 'sxform') return [350 + x / 2, 760 + y / 2 - scroll]
+  if (doc === 'xorigin') return [x, 1000 + y - scroll]
+  if (doc === 'sandbox') return [350 + x, 1000 + y - scroll]
+  if (doc === 'nav' || doc === 'nav2') return [650 + x, 760 + y - scroll]
+  if (doc === 'asame') return [10 + 2 + 5 + x, 200 + 320 + 2 + 3 + y - frameScroll - scroll]
   if (doc === 'same') return [650 + x, 400 + y - scroll]
   if (doc === 'inner') return [300 + x, 520 + 40 + y - wrapScroll - scroll]
   if (doc === 'frame') return [x, 200 + y - frameScroll - scroll]
@@ -183,11 +215,14 @@ const BITS = { alt: 1, control: 2, meta: 4, shift: 8 }
 
 async function main() {
   const { OffscreenWebviewFactory, WebviewInput, toElectronEvents } = await loadModules()
-  const server = createServer((req, res) => {
+  const serve = (req, res) => {
     res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' })
-    res.end(page(server.address().port, new URL(req.url, 'http://x').searchParams.get('role') ?? 'top'))
-  })
+    res.end(page(server.address().port, new URL(req.url, 'http://x').searchParams.get('role') ?? 'top', server2.address().port))
+  }
+  const server = createServer(serve)
+  const server2 = createServer(serve)
   await new Promise((done) => server.listen(0, '::', done))
+  await new Promise((done) => server2.listen(0, '127.0.0.1', done))
   const port = server.address().port
 
   const owner = new BrowserWindow({ show: false })
@@ -215,6 +250,8 @@ async function main() {
   await view.load(`http://127.0.0.1:${port}/`)
 
   const docs = {}
+  /** Every role the page loads (nav2 comes later, when N navigates). */
+  const ROLES = ['top', 'frame', 'nested', 'xform', 'same', 'wrap', 'inner', 'pad', 'sxform', 'xorigin', 'sandbox', 'nav', 'asame']
   let childSession
   for (let i = 0; i < 80; i++) {
     for (const fr of wc.mainFrame.framesInSubtree) {
@@ -227,7 +264,7 @@ async function main() {
       const a = targetInfos.find((t) => t.type === 'iframe' && t.url === `http://localhost:${port}/?role=frame`)
       childSession = a && sessions.get(a.targetId)
     }
-    if (docs.top && docs.frame && docs.nested && docs.xform && docs.same && docs.wrap && docs.inner && childSession) break
+    if (ROLES.every((r) => docs[r]) && childSession) break
     await sleep(100)
   }
   const failures = []
@@ -235,10 +272,12 @@ async function main() {
   // Alt word bindings, so the Mac's Option word keys do nothing there (backlog
   // streamed-mac-line-edit-keys.md). On darwin the same rows still fail.
   const linuxKeyLimits = []
-  if (!docs.frame || !docs.nested || !docs.xform || !docs.same || !docs.wrap || !docs.inner || !childSession) failures.push('a frame never loaded or was never attached')
+  if (!ROLES.every((r) => docs[r]) || !childSession) failures.push(`a frame never loaded or was never attached: ${ROLES.filter((r) => !docs[r]).join(', ')}`)
   const pids = Object.fromEntries(Object.entries(docs).map(([k, f]) => [k, f.osProcessId]))
   if (new Set([pids.top, pids.frame, pids.nested]).size !== 3 || pids.xform === pids.top || pids.inner === pids.top) failures.push(`the frames share processes (no site isolation): ${JSON.stringify(pids)}`)
-  if (pids.same !== pids.top || pids.wrap !== pids.top) failures.push(`a same-site frame has its own process: ${JSON.stringify(pids)}`)
+  if (pids.same !== pids.top || pids.wrap !== pids.top || pids.pad !== pids.top || pids.sxform !== pids.top || pids.asame !== pids.frame || pids.nav === pids.top) {
+    failures.push(`a same-origin frame has its own process, or N shares the top's: ${JSON.stringify(pids)}`)
+  }
   console.log(`processes: ${JSON.stringify(pids)}; protocol attached: ${wc.debugger.isAttached()}`)
   if (failures.length) {
     console.log('\nFAIL:\n  ' + failures.join('\n  '))
@@ -249,7 +288,7 @@ async function main() {
   const state = (doc) => js(doc, '__state()')
   const DOCS = ['top', 'frame', 'nested', 'xform']
   const reset = async () => {
-    for (const d of [...DOCS, 'same', 'wrap', 'inner']) await js(d, '__reset()')
+    for (const d of [...DOCS, 'same', 'wrap', 'inner', 'pad', 'sxform', 'xorigin', 'sandbox', 'asame']) await js(d, '__reset()')
     await sleep(80)
   }
   const settle = (ms = 150) => sleep(ms)
@@ -672,23 +711,205 @@ async function main() {
       want(x.sv === 'four' && x.chg.join() === 'input:four,change:four', `select in X inside W: the choice gave ${JSON.stringify(x.sv)} ${JSON.stringify(x.chg)}`)
       want(word === 'inner' && pushedText.at(-1) === 'inner', `copy in X inside W: the double-clicked word read ${JSON.stringify(word)}`)
     }
-    // Printed, never failures: the same-site S (scrolled 100, its select and paragraph below its
-    // 110 px), whose select and selection main's scripts do not reach (design-web-browser.md §4.4).
-    {
-      await reset()
+    // Same-origin frames (main's scripts step into their documents, design-web-browser.md §4.4) and
+    // what is still keyboard-only. Helpers: a select clicked (the popup, where, the presses the
+    // document got, then "two" chosen), a word and a field's text copied, a field's text cut (as the
+    // browser's onCut, web/webview-canvas.tsx: the pushed selection is the clipboard's, then Delete).
+    const waitPopup = async () => {
+      for (let k = 0; k < 40 && popups.length === 0; k++) await sleep(25)
+      return popups[0]
+    }
+    const trySelect = async (doc, to, scale = 1) => {
       popups.length = 0
-      await js('same', 'scrollTo(0, 100)')
-      await sleep(80)
-      const inS = ([x, y]) => toTop('same', [x, y - 100])
-      selClick(inS(LOCAL.select))
-      await settle(300)
-      const s = await state('same')
-      selClick(inS(LOCAL.word), 1)
-      selClick(inS(LOCAL.word), 2)
+      selClick(to(LOCAL.select))
+      const popup = await waitPopup()
+      const s = await state(doc)
+      const [ex, ey] = to([SELECT_RECT.x, SELECT_RECT.y])
+      const r = popup?.rect
+      const placed = !!r && Math.abs(r.x - ex) <= 1 && Math.abs(r.y - ey) <= 1 && Math.abs(r.width - SELECT_RECT.width * scale) <= 1 && Math.abs(r.height - SELECT_RECT.height * scale) <= 1
+      const pressed = s.log.filter((l) => l.startsWith('mousedown') || l.startsWith('mouseup') || l.startsWith('click'))
+      let chosen = s
+      if (popup) {
+        selInput.acceptChoice(PANEL, 'web:2', popup.id, 1)
+        for (let k = 0; k < 20; k++) {
+          await settle(50)
+          chosen = await state(doc)
+          if (chosen.sv === 'two') break
+        }
+      }
+      return { popup, r, want: [ex, ey], placed, pressed, active: s.active, sv: chosen.sv, chg: chosen.chg }
+    }
+    /** `toField`: the field's mapping when the word's needs the document scrolled (`beforeField` undoes it). */
+    const tryCopy = async (doc, to, toField = to, beforeField = async () => {}) => {
+      pushedText.length = 0
+      selClick(to(LOCAL.word), 1)
+      selClick(to(LOCAL.word), 2)
       await settle(250)
       const word = await within(view.readSelection(), 3000, 'unanswered')
-      const inPage = await js('same', 'String(getSelection())')
-      console.log(`same-site S (known limitation): select popup ${popups.length ? 'shown' : 'none'}, the press reached it: ${s.log.some((l) => l.startsWith('mousedown:s'))}; double-clicked word ${JSON.stringify(inPage)} in S, read for copy ${JSON.stringify(word)}`)
+      const pushedWord = pushedText.at(-1)
+      await beforeField()
+      selClick(toField(LOCAL.input))
+      for (const ch of `copy-${doc}`) selKey(ch)
+      selKey('a', ['control'])
+      await settle(250)
+      const field = await within(view.readSelection(), 3000, 'unanswered')
+      return { word, pushedWord, field, pushedField: pushedText.at(-1) }
+    }
+    const tryCut = async (doc, to) => {
+      pushedText.length = 0
+      selClick(to(LOCAL.input))
+      for (const ch of `cut-${doc}`) selKey(ch)
+      selKey('a', ['control'])
+      await settle(250)
+      const clipboard = pushedText.at(-1)
+      if (clipboard) selKey('Delete')
+      await settle(200)
+      return { clipboard, left: (await state(doc)).value }
+    }
+    const selectOk = (name, doc, r, owners = []) => {
+      console.log(`select in ${name}: popup ${r.popup ? `at ${JSON.stringify(r.r)} (want ${r.want})` : 'none'}; presses there ${JSON.stringify(r.pressed)}; active ${r.active}${owners.map(([d, a]) => `, ${d} ${a}`).join('')}; chose "two": ${JSON.stringify(r.sv)} ${JSON.stringify(r.chg)}`)
+      want(!!r.popup && r.placed, `select in ${name}: ${r.popup ? `the popup at ${JSON.stringify(r.r)}, not over the select (${r.want})` : 'no popup'}`)
+      want(r.pressed.length === 0, `select in ${name}: the press reached the document (${JSON.stringify(r.pressed)})`)
+      want(r.active === 's' && owners.every(([, a, w]) => a === w), `select in ${name}: the focus is not on the select (${r.active}; ${JSON.stringify(owners)})`)
+      want(r.sv === 'two' && r.chg.join() === 'input:two,change:two', `select in ${name}: the choice gave ${JSON.stringify(r.sv)} ${JSON.stringify(r.chg)}`)
+    }
+    const copyOk = (name, doc, c) => {
+      console.log(`copy in ${name}: word ${JSON.stringify(c.word)} (pushed ${JSON.stringify(c.pushedWord)}), field ${JSON.stringify(c.field)} (pushed ${JSON.stringify(c.pushedField)})`)
+      want(c.word === doc && c.pushedWord === doc, `copy in ${name}: the double-clicked word read ${JSON.stringify(c.word)}, pushed ${JSON.stringify(c.pushedWord)}`)
+      want(c.field === `copy-${doc}` && c.pushedField === `copy-${doc}`, `copy in ${name}: the field's selection read ${JSON.stringify(c.field)}, pushed ${JSON.stringify(c.pushedField)}`)
+    }
+    const cutOk = (name, doc, c) => {
+      console.log(`cut in ${name}: clipboard ${JSON.stringify(c.clipboard)}, the field left ${JSON.stringify(c.left)}`)
+      want(c.clipboard === `cut-${doc}` && c.left === '', `cut in ${name}: clipboard ${JSON.stringify(c.clipboard)}, the field left ${JSON.stringify(c.left)}`)
+    }
+
+    // S, same-origin in the top (scrolled 100: its select and paragraph are below its 110 px).
+    {
+      await reset()
+      await js('same', 'scrollTo(0, 100)')
+      await sleep(80)
+      const inS = (p) => toTop('same', p, { own: 100 })
+      selectOk('S (same-origin)', 'same', await trySelect('same', inS), [['top', (await state('top')).active, 'S']])
+      await reset()
+      await js('same', 'scrollTo(0, 100)')
+      await sleep(80)
+      const inS0 = (p) => toTop('same', p)
+      const unscroll = async () => {
+        await js('same', 'scrollTo(0, 0)')
+        await sleep(80)
+      }
+      copyOk('S (same-origin)', 'same', await tryCopy('same', inS, inS0, unscroll))
+      await reset()
+      cutOk('S (same-origin)', 'same', await tryCut('same', inS0))
+    }
+    // P, same-origin below the top's fold with an uneven border (3 left, 5 top) and padding (4 left, 6
+    // top), scrolled 30 itself: the point and the rectangle through the frame's box.
+    {
+      await reset()
+      await js('top', `scrollTo(0, ${FOLD})`)
+      await js('pad', 'scrollTo(0, 30)')
+      await sleep(80)
+      const inP = (p) => toTop('pad', p, { scroll: FOLD, own: 30 })
+      const r = await trySelect('pad', inP)
+      selectOk('P (same-origin, border and padding, scrolled)', 'pad', r, [['top', (await state('top')).active, 'P']])
+      // Unscrolled for copy: its field is at its y 10..40.
+      await reset()
+      await js('top', `scrollTo(0, ${FOLD})`)
+      await sleep(80)
+      copyOk('P (same-origin, border and padding)', 'pad', await tryCopy('pad', (p) => toTop('pad', p, { scroll: FOLD })))
+    }
+    // Q, same-origin inside the cross-site A (A scrolled to it, Q scrolled 20): the script runs in A's
+    // world (the router's route) and steps into Q from there; A's rectangle maps it to the top.
+    {
+      const prep = async () => {
+        await reset()
+        await js('frame', `scrollTo(0, ${A_FOLD})`)
+        await js('asame', 'scrollTo(0, 20)')
+        await sleep(80)
+      }
+      const inQ = (p) => toTop('asame', p, { frameScroll: A_FOLD, own: 20 })
+      await prep()
+      const r = await trySelect('asame', inQ)
+      selectOk('Q (same-origin in cross-site A)', 'asame', r, [['A', (await state('frame')).active, 'Q'], ['top', (await state('top')).active, 'A']])
+      await prep()
+      copyOk('Q (same-origin in cross-site A)', 'asame', await tryCopy('asame', inQ))
+      await prep()
+      cutOk('Q (same-origin in cross-site A)', 'asame', await tryCut('asame', inQ))
+    }
+    // Cut in A itself (cross-site; worked before same-origin frames did: a regression row).
+    {
+      await reset()
+      cutOk('A (cross-site)', 'frame', await tryCut('frame', (p) => toTop('frame', p)))
+    }
+    // U, same-origin at scale(0.5): no exact inverse in the script, so no popup and the press goes to
+    // the page as a click (a popup in the wrong place would be the failure).
+    {
+      await reset()
+      await js('top', `scrollTo(0, ${FOLD})`)
+      await sleep(80)
+      const r = await trySelect('sxform', (p) => toTop('sxform', p, { scroll: FOLD }), 0.5)
+      console.log(`select in U (same-origin at scale(0.5), refused): popup ${r.popup ? JSON.stringify(r.r) : 'none'}, presses there ${JSON.stringify(r.pressed)}`)
+      want(!r.popup && r.pressed.some((l) => l === 'mousedown:s'), `select in U (same-origin, scaled): popup ${JSON.stringify(r.r)}, presses ${JSON.stringify(r.pressed)}`)
+    }
+    // Printed, never failures: O, same-site but cross-origin (127.0.0.1 on a second port: the top's
+    // process, its document unreadable from the isolated world), and D, sandboxed (allow-scripts, an
+    // opaque origin; its process printed: Chromium may isolate sandboxed frames, then the router
+    // reaches it as it does a cross-site frame). Keyboard-only where nothing reaches them.
+    for (const [doc, name] of [
+      ['xorigin', 'O (same-site, cross-origin)'],
+      ['sandbox', 'D (sandboxed)']
+    ]) {
+      await reset()
+      await js('top', `scrollTo(0, ${FOLD})`)
+      await sleep(80)
+      const to = (p) => toTop(doc, p, { scroll: FOLD })
+      const r = await trySelect(doc, to)
+      await reset()
+      await js('top', `scrollTo(0, ${FOLD})`)
+      await sleep(80)
+      const c = await tryCopy(doc, to)
+      // In the top's process main's scripts cannot read it (keyboard-only); in its own the router reaches it.
+      const own = docs[doc].osProcessId === docs.top.osProcessId ? "the top's process: known limitation, keyboard-only" : 'its own process: routed as a cross-site frame'
+      console.log(
+        `${name} (${own}): select popup ${r.popup ? `at ${JSON.stringify(r.r)}, chose ${JSON.stringify(r.sv)}` : 'none'}, presses there ${JSON.stringify(r.pressed)}; copy word ${JSON.stringify(c.word)}, field ${JSON.stringify(c.field)}`
+      )
+    }
+    // N, cross-site, navigates to another cross-site document (nav2 on [::1]) while its popup is open:
+    // the old popup's choice finds nothing (its frame's session went), then a select in the new
+    // document works.
+    {
+      await reset()
+      await js('top', `scrollTo(0, ${FOLD})`)
+      await sleep(80)
+      const inN = (p) => toTop('nav', p, { scroll: FOLD })
+      popups.length = 0
+      selClick(inN(LOCAL.select))
+      const old = await waitPopup()
+      await js('top', `document.getElementById('N').src = 'http://[::1]:${port}/?role=nav2'; true`)
+      for (let k = 0; k < 50; k++) {
+        const fr = wc.mainFrame.framesInSubtree.find((f) => new URL(f.url || 'about:blank').searchParams.get('role') === 'nav2')
+        if (fr && (await within(fr.executeJavaScript('document.readyState').catch(() => ''), 1000, '')) === 'complete') {
+          docs.nav2 = fr
+          break
+        }
+        await sleep(100)
+      }
+      let stale = { sv: 'never loaded', chg: [] }
+      let fresh
+      if (docs.nav2) {
+        await settle(200)
+        if (old) selInput.acceptChoice(PANEL, 'web:2', old.id, 1)
+        await settle(300)
+        stale = await state('nav2')
+        fresh = await trySelect('nav2', (p) => toTop('nav2', p, { scroll: FOLD }))
+      }
+      console.log(
+        `N navigated with its popup open: old popup ${old ? 'shown' : 'none'}, its choice then gave ${JSON.stringify(stale.sv)} ${JSON.stringify(stale.chg)}; the new document's select: popup ${fresh?.popup ? 'shown' : 'none'}, chose ${JSON.stringify(fresh?.sv)} ${JSON.stringify(fresh?.chg)}`
+      )
+      want(!!old, 'navigating N: no popup before the navigation')
+      want(stale.sv === 'one' && stale.chg.length === 0, `navigating N: the old popup's choice changed the new document (${JSON.stringify(stale.sv)} ${JSON.stringify(stale.chg)})`)
+      want(!!fresh?.popup && fresh.placed && fresh.sv === 'two' && fresh.chg.join() === 'input:two,change:two', `navigating N: the new document's select ${JSON.stringify(fresh && { popup: !!fresh.popup, placed: fresh.placed, sv: fresh.sv, chg: fresh.chg })}`)
+      await js('top', 'scrollTo(0, 0)')
     }
   }
 
@@ -1161,11 +1382,12 @@ async function main() {
   view.destroy()
   owner.destroy()
   server.close()
+  server2.close()
   if (failures.length) {
     console.log('\nFAIL:\n  ' + failures.join('\n  '))
     return 1
   }
-  console.log('\nOK: the view road works in the top document and in cross-site frames (nested, scrolled, transformed): click, double click, keys, text, edit chords, line keys, drag, capture, wheel, cursor, hover, select popups, copy, order')
+  console.log('\nOK: the view road works in the top document and in cross-site frames (nested, scrolled, transformed): click, double click, keys, text, edit chords, line keys, drag, capture, wheel, cursor, hover, select popups, copy, cut, order; select popups, copy and cut in same-origin frames too')
   return 0
 }
 
