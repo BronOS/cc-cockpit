@@ -259,8 +259,29 @@ export async function launchCockpit(
     close: async ({ keepFiles = false } = {}) => {
       // Closing the app kills the tabs' PTYs; only then is it safe to remove their cwd.
       await app.close().catch(() => {})
+      reportRefusedBundled(dataDir)
       if (!keepFiles) rmSync(root, { recursive: true, force: true })
     }
+  }
+}
+
+/**
+ * Print every bundled plugin the run's index recorded as refused, with its reason, before the data
+ * dir goes. A bundled plugin.json was refused as "is not a file" at about 1 start in 110 on macOS
+ * (docs/backlog/e2e-flakes-on-macos.md), always inside a spec: main's stderr is not shown and the
+ * index went with the temp dir, so the reason (which now names the check and the errno or mode it
+ * saw) would be lost again. Never fails the spec.
+ */
+function reportRefusedBundled(dataDir: string): void {
+  try {
+    const index = JSON.parse(readFileSync(join(dataDir, 'plugins.json'), 'utf8')) as {
+      plugins?: Array<{ id: string; source?: { kind?: string }; state?: { ok?: boolean; reason?: string } }>
+    }
+    for (const p of index.plugins ?? []) {
+      if (p.source?.kind === 'bundled' && p.state?.ok === false) console.log(`[e2e] bundled plugin ${p.id} refused: ${p.state.reason ?? '?'}`)
+    }
+  } catch {
+    // No index (no plugin was ever indexed) or one being written: nothing to report.
   }
 }
 
