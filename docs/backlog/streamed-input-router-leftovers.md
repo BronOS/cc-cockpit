@@ -16,8 +16,10 @@ order, or growing without bound blocked the merge. These were found and left:
 - After a reset, the step that was running keeps waiting on its stale command until that command's deadline (up to
   500 ms) before new input runs.
 - A delivery, query or call hung forever on a live renderer that neither answers nor goes away parks what follows it,
-  capped at 512 (accepted in the contract). The page itself cannot be reloaded then either:
-  `docs/backlog/offscreen-hung-page-cannot-reload.md`.
+  capped at 512 (accepted in the contract). A reload or navigation main started then gets the renderer killed by the
+  hung-page watchdog (`main/webview/hung-navigation.ts`); a crash with no navigation after it, on a Linux host that
+  dumps core, holds the page about 40 s:
+  `docs/backlog/offscreen-crash-on-core-dumping-host.md`.
 - A key or button can stay down after a reconnect in the middle of a click, or when the page refuses a key-up.
 - Accepted as browser behaviour, not defects: a page that covers or moves a frame while a hit test is in flight gets
   the event where the viewer's picture showed the frame; keys follow the page's own focus into another frame.

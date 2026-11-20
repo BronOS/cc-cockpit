@@ -258,6 +258,19 @@ passes on macOS (2026-11-19) and has not run on Linux.
   events on the session of the deepest cross-site frame under the point (the hardening's auto-attached child sessions, never
   a second debugger), `sendInputEvent` only once the protocol detached; a frame's refusal falls back to the page's session,
   never to another frame. Run `node scripts/offscreen-input-check.mjs` after changing it, `webview-input.ts` or the key table.
+- Streamed-page input (`main/webview/page-input.ts`, design-web-browser.md §4.1): `PageInputRouter` sends each pointer event
+  to the deepest cross-site frame's DevTools session and keys and text on the page's, through one sink that checks the epoch
+  and the session synchronously; press records are the only press state; every external await (commands, hit-test queries,
+  detached sends, calls) has a deadline and counts as outstanding on its road, and the renderer going is a full reset. Its
+  contract is checked by the seeded fuzz `test/unit/page-input.fuzz.test.ts` (`FUZZ_SEEDS=n`; never relax a check inside a
+  fix commit) and in real Electron by `scripts/offscreen-input-check.mjs` (run it on macOS and Linux after a change there).
+  Input held in `webview-input.ts` carries the epoch it arrived under. A frame budget (`frame-budget.ts`) lowers animating
+  pages' frame rates together past 250 Mpx/s (floor 5 fps; bench phase 8).
+- Hung streamed pages (`main/webview/hung-navigation.ts`, pure): main's own reload, load, back or forward of an off-screen
+  page that has not ended in 3 s while the page answers no probe gets its renderer SIGKILLed and is retried once it is gone,
+  unless a newer navigation started; the pid is read and the kill sent only in `main/webview/renderer-kill.ts` (grep test
+  `no-direct-renderer-kill.test.ts`), re-read in the same step, never `forcefullyCrashRenderer` (a core-dumping Linux host
+  holds that crash about 40 s); that kill's `render-process-gone` is not the manager's `gone`.
 - Remote servers (design-remote-desktop.md, `main/remote/`): a remote window is a browser tab, never a project window: no
   preload, sandboxed, partition `persist:remote-<id>` (only `electron-remote-window.ts` makes one; grep test), the webview
   hardening plus a loopback-request block, and `WindowManager` only counts it (`remoteWindowCount`). The device cookie lives
