@@ -124,6 +124,8 @@ iframe{position:absolute;border:0} #A{left:0;top:200px;width:600px;height:300px}
 <input id="i" autocomplete="off" value=""><div id="box"><div>scroll</div></div><a id="l" href="#x">a link</a><textarea id="t"></textarea>${frames}
 <script>
   window.__log = []
+  // The spin case: once armed, a press makes the renderer spin forever 30 ms later (after its click answered).
+  document.addEventListener('mousedown', () => { if (window.__arm) setTimeout(() => { for (;;) {} }, 30) }, true)
   window.__prevent = false
   window.__preventPlain = ''
   for (const t of ['mousedown', 'mouseup', 'click', 'keydown', 'keypress', 'wheel', 'focusin', 'mouseout']) {
@@ -815,6 +817,108 @@ async function main() {
         `a held key's repeat ${repeatMs.toFixed(2)} (${repeated.length} of ${N + 1} typed)`
     )
     want(typed.length === N && repeated.length === N + 1, `view: fast typing typed ${typed.length} of ${N}, a held key ${repeated.length} of ${N + 1}`)
+  }
+
+  // --- a renderer that spins forever, then (a) a reload and (b) a cross-site navigation ---
+  // Rulings 2026-11-19 #7 and #9 keep the detached and call stalls past a reconnect until they settle
+  // or the renderer goes, and a command the spinning page never answers stalls its session: the
+  // typing after the reload or navigation must still reach the new page within a few seconds.
+  // Printed: which events fire, what the pending promises do, and the main frame's process.
+  {
+    // Measured (Electron 45, macOS): a spinning renderer never commits a reload or a cross-site
+    // navigation (45 s waited; no unresponsive, no render-process-gone, the main frame's process the same).
+    const SPIN_WAIT_MS = 20_000
+    const events = []
+    const t0 = performance.now()
+    const stamp = () => Math.round(performance.now() - t0)
+    const pid = () => {
+      try {
+        return wc.isDestroyed() ? -1 : wc.mainFrame.osProcessId
+      } catch {
+        // Between two documents: "Render frame was disposed before WebFrameMain could be accessed".
+        return 'none'
+      }
+    }
+    const note = (text) => events.push(`${stamp()} ${text} [pid ${pid()}]`)
+    const on = (name, fmt = () => '') => wc.on(name, (...a) => note(name + fmt(...a)))
+    on('render-process-gone', (_e, d) => ` ${d.reason}`)
+    on('unresponsive')
+    on('responsive')
+    on('did-start-navigation', (e, url, inPlace, isMain) => ((e.isMainFrame ?? isMain) ? ` ${e.url ?? url}${(e.isSameDocument ?? inPlace) ? ' same-doc' : ''}` : ' (subframe)'))
+    on('frame-created', (_e, d) => (d.frame && !d.frame.parent ? ` main frame, its pid ${d.frame.osProcessId}` : ' (subframe)'))
+    let navigated = 0
+    wc.on('did-navigate', () => navigated++)
+    on('did-navigate', (_e, url) => ` ${url}`)
+    on('did-finish-load')
+    on('did-start-loading')
+    on('did-stop-loading')
+    on('did-fail-load', (_e, code, desc, url, isMain) => ` ${code} ${desc} ${isMain ? 'main' : 'sub'} ${url}`)
+    wc.debugger.on('detach', (_e, reason) => note(`debugger detach ${reason}`))
+    const outcome = (name, p) =>
+      p.then(
+        (v) => note(`${name} resolved ${String(JSON.stringify(v ?? null)).slice(0, 40)}`),
+        (e) => note(`${name} rejected: ${e instanceof Error ? e.message : String(e)}`)
+      )
+    const waitFor = async (fn, ms) => {
+      const end = performance.now() + ms
+      while (performance.now() < end) {
+        if (await fn()) return true
+        await sleep(100)
+      }
+      return false
+    }
+    const field = () => within(Promise.resolve().then(() => wc.mainFrame.executeJavaScript('document.getElementById("i") ? document.getElementById("i").value : ""')).catch(() => 'no frame'), 1000, 'unresponsive')
+    const spinThen = async (label, go) => {
+      await within(wc.mainFrame.executeJavaScript('window.__arm = true'), 3000)
+      note(`${label}: click (the page spins 30 ms later)`)
+      click(roads.view, LOCAL.input)
+      await sleep(100)
+      // A call (the selection read), keys and a text: each one the spinning renderer never answers.
+      outcome(`${label}: call`, view.readSelection())
+      typeView('zz')
+      outcome(`${label}: text`, view.insertText('y'))
+      await sleep(1200)
+      note(`${label}: go`)
+      const before = navigated
+      await go()
+      const ready = () => within(Promise.resolve().then(() => wc.mainFrame.executeJavaScript('document.readyState')).catch(() => ''), 1000, '')
+      const loaded = await waitFor(async () => navigated > before && (await ready()) === 'complete', SPIN_WAIT_MS)
+      note(`${label}: new page ${loaded ? 'complete' : 'never complete'}`)
+      const t1 = performance.now()
+      click(roads.view, LOCAL.input)
+      typeView('ok')
+      const typed = await waitFor(async () => (await field()).includes('ok'), 5000)
+      const got = await field()
+      note(`${label}: typed after ${Math.round(performance.now() - t1)} ms: ${JSON.stringify(got)}`)
+      want(typed && got === 'ok', `spin ${label}: the typing after it did not reach the new page within 5 s (${JSON.stringify(got)})`)
+      return got
+    }
+    await view.load(`http://127.0.0.1:${port}/?role=spin`)
+    note('spin page loaded')
+    await spinThen('reload', async () => view.reload())
+    await spinThen('cross-site', async () => {
+      void within(
+        view.load(`http://localhost:${port}/?role=spin`).then(
+          () => note('cross-site: load resolved'),
+          (e) => note(`cross-site: load rejected: ${e instanceof Error ? e.message : String(e)}`)
+        ),
+        SPIN_WAIT_MS
+      )
+    })
+    // (c) What main can do about such a page: crash its renderer, then reload.
+    if (navigated === 0 || (await field()) === 'unresponsive') {
+      wc.forcefullyCrashRenderer()
+      await sleep(500)
+      await within(view.load(`http://127.0.0.1:${port}/?role=spin`).catch(() => {}), 10000)
+      note('crashed and loaded again before (c)')
+    }
+    await spinThen('crash, reload', async () => {
+      wc.forcefullyCrashRenderer()
+      await sleep(500)
+      view.reload()
+    })
+    await sleep(2000)
+    console.log('spin then reload / navigate:\n  ' + events.join('\n  '))
   }
 
   if (logs.length) console.log('log:', JSON.stringify(logs))
