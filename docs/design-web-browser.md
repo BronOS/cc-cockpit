@@ -270,7 +270,7 @@ the fallback when the protocol detached:
   waits but keeps it, and at most one is outstanding across attachments; a deadline or answer the renderer that went
   owed changes nothing. The protocol's sends never wait on it. A call (a script run in the page, a select's hit test, a
   selection read) is one at a time too, attached or not: the next call waits for the one on its way, and past its
-  deadline holds what follows it until it settles. A key down refused late still drops its `char`. Each attachment of the protocol has an epoch, bumped
+  deadline holds what follows it until it settles or the renderer goes (that stall is the renderer's too). A key down refused late still drops its `char`. Each attachment of the protocol has an epoch, bumped
   only by the reset its detach brings (which drops the queue and every press record), each step the epoch it was taken
   in, and each session its own lifetime. The one sender checks both synchronously right before it sends, so no wait
   inside a step can carry it across: a step of an older attachment sends nothing by any road, and a pointer event

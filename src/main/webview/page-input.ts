@@ -550,10 +550,10 @@ export class PageInputRouter implements ChildFrameObserver {
    * The call (`call`) on its way: at most one, attached or not, across resets (C5 / C9: codex, a
    * thousand unanswered selection reads, one let through per missed deadline). A queued call waits
    * for it, STEP_TIMEOUT_MS at most (`due`); past that (`late`) the call stalls what follows it until
-   * it settles, as a command stalls its session. Calls are not the detached road's: a renderer that
-   * goes leaves this one counted until it settles.
+   * it settles, as a command stalls its session. Like the detached stall it is the renderer's
+   * (ruling 2026-11-19 #9): `rendererGone` ends it (`drop`), and its settling later changes nothing.
    */
-  private callOut: { late: boolean; due: Promise<void> } | undefined
+  private callOut: { late: boolean; due: Promise<void>; drop: () => void } | undefined
   /** The key down the page's session just refused (`key:<code>`): its `char`, next in the queue, is dropped too. */
   private refusedDown: string | undefined
   /** Where the pointer was last delivered (for the hover moves when it changes session). */
@@ -600,6 +600,7 @@ export class PageInputRouter implements ChildFrameObserver {
     this.renderer++
     this.detachedStall = undefined
     this.detachedWake?.()
+    this.callOut?.drop()
     void this.pump()
   }
 
@@ -1225,7 +1226,7 @@ export class PageInputRouter implements ChildFrameObserver {
     }
     pending.then(step.resolve, step.reject)
     let fire = (): void => {}
-    const out = { late: false, due: new Promise<void>((done) => (fire = done)) }
+    const out = { late: false, due: new Promise<void>((done) => (fire = done)), drop: (): void => {} }
     this.callOut = out
     const timer = this.timers.set(() => {
       out.late = true
@@ -1239,6 +1240,13 @@ export class PageInputRouter implements ChildFrameObserver {
       if (this.callOut !== out) return
       this.callOut = undefined
       if (out.late) void this.pump()
+    }
+    // The renderer went: the call no longer counts and what waits for it goes on (`rendererGone` pumps);
+    // its settling later finds another `callOut` (or none) and changes nothing.
+    out.drop = (): void => {
+      this.timers.clear(timer)
+      fire()
+      if (this.callOut === out) this.callOut = undefined
     }
     pending.then(end, end)
     return { pending, due: out.due }

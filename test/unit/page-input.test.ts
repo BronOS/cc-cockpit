@@ -1656,6 +1656,31 @@ describe('PageInputRouter scheduling: review 6', () => {
     expect(s.page.sent.map((x) => x.params.key)).toEqual(['a'])
   })
 
+  // Ruling 2026-11-19 #9: the call stall is the renderer's; the renderer going ends it.
+  it('the renderer going ends a hung call: what waited goes on, and its late settling changes nothing', async () => {
+    const s = setup()
+    const ran: string[] = []
+    let finishOld = (): void => {}
+    let finishNew = (): void => {}
+    void s.router.call(() => (ran.push('old'), new Promise<void>((r) => (finishOld = r))))
+    void s.router.call(() => (ran.push('new'), new Promise<void>((r) => (finishNew = r))), false)
+    void s.router.call(() => (ran.push('last'), 'ok'))
+    await s.flush()
+    s.fire()
+    await s.flush()
+    expect(ran).toEqual(['old'])
+    s.router.rendererGone()
+    await s.flush()
+    expect(ran).toEqual(['old', 'new'])
+    // The old call settling now does not stand in for the new one.
+    finishOld()
+    await s.flush()
+    expect(ran).toEqual(['old', 'new'])
+    finishNew()
+    await s.flush()
+    expect(ran).toEqual(['old', 'new', 'last'])
+  })
+
   // SHOULD: "Deliver KeyA down; reset/reconnect; stall the new page and fill its queue with 512
   // steps; submit KeyA up. pressed still contains the old attachment's KeyA, admitting step 513."
   it("a reset forgets the presses it discarded: past the new queue's cap their releases are dropped", async () => {
