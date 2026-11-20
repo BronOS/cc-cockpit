@@ -511,15 +511,20 @@ External review: sol / high
   does the same); a fix would apply the subtraction to an open review's draft and broadcast the deletes.
 
 ### Task 14: Verify acceptance criteria [model: sonnet]
-- [ ] every requirement in the Overview and every D-1..D-4 rule is implemented (walk the design's sections)
-- [ ] non-`perView` plugins behave as before (Take over among owner views) apart from the D-4 fix and `from`
-- [ ] run the full suite: `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint`
-- [ ] run e2e: `npm run test:e2e` (one run at a time on this Mac, screen unlocked)
+- [x] every requirement in the Overview and every D-1..D-4 rule is implemented (walk the design's sections)
+- [x] non-`perView` plugins behave as before (Take over among owner views) apart from the D-4 fix and `from`
+- [x] run the full suite: `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint`
+- [x] run e2e: `npm run test:e2e` (one run at a time on this Mac, screen unlocked)
 
 ### Task 15: [Final] Update documentation
-- [ ] README.md if the guest or overlay summary there needs a line
-- [ ] CLAUDE.md "State" paragraph: overlays in every view implemented, with the design and this plan
-- [ ] move this plan to `docs/plans/completed/`
+- [x] README.md if the guest or overlay summary there needs a line
+- [x] CLAUDE.md "State" paragraph: overlays in every view implemented, with the design and this plan
+- [x] move this plan to `docs/plans/completed/`
+
+- ➕ verification (2026-11-20, master e784f61 + the test fix): typecheck, lint, unit 8930 passed / 3 skipped, plugins 798,
+  e2e 378 passed / 3 skipped; the one failure (web-access-plugins.spec.ts:66) was a race in that test (it typed into the
+  first tab's pane before the second tab's showed), fixed in the spec. Acceptance walk: one unrecorded deviation (the
+  D-4 scope limit missing on the Plugins page), fixed. External review: three codex sol/high passes, the last clean.
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
