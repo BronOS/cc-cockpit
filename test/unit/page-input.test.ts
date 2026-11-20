@@ -2311,3 +2311,54 @@ describe("PageInputRouter: main's scripts (scriptAt, scriptIn, scriptInFocus)", 
     expect(s.tops).toEqual([])
   })
 })
+
+describe('PageInputRouter: ruling 2026-11-20 #13', () => {
+  // Ruling #13 (fuzz seeds 1042, 16720, 4016): the pump waited, detached, for the call on its way before a
+  // script's call, the protocol came back meanwhile, and the script went by the detached road's branch,
+  // which holds nothing after a 'route' call: the key behind it went while its frame's script ran.
+  it('#13: a reattach while the pump waits for a call: the script after it goes by the attached road and holds the key behind it', async () => {
+    const s = setup()
+    const sc = scripts(s)
+    s.detach()
+    s.router.reset()
+    let settle = (): void => {}
+    // A read on its way (nothing waits for it), then a script's call that waits for it, then a key.
+    void s.router.call(() => new Promise<void>((done) => (settle = done)), false)
+    const result = s.router.scriptAt(20, 220, () => 'hit')
+    s.router.input([keyDown('a')])
+    await s.flush()
+    expect(s.fallback).toEqual([])
+    // The protocol is back, with a frame under the point whose script answers only when released.
+    s.attach()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    sc.opts.hold.add('A Runtime.evaluate')
+    settle()
+    await s.flush()
+    // The script's frame run is on its way: the key waits for it, and nothing went by the detached road.
+    expect(sc.calls.some((c) => c.session === 'A' && c.method === 'Runtime.evaluate')).toBe(true)
+    expect(s.page.sent.filter((x) => x.method === 'Input.dispatchKeyEvent')).toEqual([])
+    expect(s.fallback).toEqual([])
+    sc.release('A Runtime.evaluate')
+    await expect(result).resolves.toMatchObject({ value: 'A:hit' })
+    await s.flush()
+    expect(s.page.sent.filter((x) => x.method === 'Input.dispatchKeyEvent').map((x) => x.params.type)).toEqual(['rawKeyDown'])
+  })
+
+  // Ruling #13, the mirror (fuzz seeds 10114, 17723, 34454): the pump waited, attached, for the call on
+  // its way; the protocol went (and was reset) meanwhile and a key came under the new attachment. It went
+  // on the protocol (refused there) instead of by the detached road.
+  it('#13: a detach while the pump waits for a call: the key after it goes by the detached road', async () => {
+    const s = setup()
+    let settle = (): void => {}
+    void s.router.call(() => new Promise<void>((done) => (settle = done)), false)
+    void s.router.call(() => 'second').catch(() => {})
+    await s.flush()
+    s.detach()
+    s.router.reset()
+    s.router.input([keyDown('a')])
+    settle()
+    await s.flush()
+    expect(s.page.sent.filter((x) => x.method === 'Input.dispatchKeyEvent')).toEqual([])
+    expect(s.fallback).toEqual([keyDown('a')])
+  })
+})

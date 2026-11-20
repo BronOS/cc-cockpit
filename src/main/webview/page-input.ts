@@ -1138,6 +1138,14 @@ export class PageInputRouter implements ChildFrameObserver {
    * answer, or a detach, calls `pump` again. The check is made at the top of each turn with no wait
    * between it and the return, so a wake that came while a step ran (and found the pump busy) is
    * seen there (review finding: a lost wakeup left a key queued with nothing to restart it).
+   *
+   * The road is read at the top of every turn and never carried across a wait (ruling 2026-11-20
+   * #13): every await in the loop is followed by `continue`, so the attached and the detached road
+   * are picked again from `attached()` (and the stalls, and the head of the queue) before the next
+   * step. Fuzz seeds 1042, 16720, 4016: a reattach while the detached branch waited for a call sent
+   * the next step by the detached road while attached (a focus walk without its hold, a press
+   * hit-tested mid-walk, a move lost); seeds 10114, 17723, 34454: a detach while the attached branch
+   * waited sent the next key or press on the protocol, which refused it.
    */
   private async pump(): Promise<void> {
     if (this.pumping) {
@@ -1151,7 +1159,10 @@ export class PageInputRouter implements ChildFrameObserver {
           // The detached road owes an answer past its deadline: everything waits, in order (by the
           // cap), until it settles or the renderer goes (either pumps again).
           if (this.detachedStall) return
-          if (this.callAhead() && (await this.callHeld())) return
+          if (this.callAhead()) {
+            if (await this.callHeld()) return
+            continue
+          }
           // The protocol went: what waits goes by the roads of a detached view, in order. A text, an
           // edit command or a blocking call answers later (an IPC of its own), so what comes after it
           // waits for that answer, STEP_TIMEOUT_MS at most, as for a command on the protocol.
@@ -1164,7 +1175,10 @@ export class PageInputRouter implements ChildFrameObserver {
           this.queue = this.queue.filter((s) => !isMove(s))
           return
         }
-        if (this.callAhead() && (await this.callHeld())) return
+        if (this.callAhead()) {
+          if (await this.callHeld()) return
+          continue
+        }
         const step = this.queue.shift()
         if (!step) return
         let end: StepEnd = 'done'
@@ -1193,14 +1207,18 @@ export class PageInputRouter implements ChildFrameObserver {
     return this.callOut !== undefined && this.queue[0]?.kind === 'call'
   }
 
-  /** Checked synchronously first (`callAhead`): a pump turn with no wait shifts its step at once. */
+  /**
+   * Checked synchronously first (`callAhead`): a pump turn with no wait shifts its step at once.
+   * True: the call on its way is late (the pump stops; its settle pumps again). False: it settled or
+   * went late while awaited, and the pump turns again from the top (ruling #13: the road, a reset, a
+   * stall are all read anew), where `callAhead` looks at it once more.
+   */
   private async callHeld(): Promise<boolean> {
     const out = this.callOut
     if (this.queue[0]?.kind !== 'call' || !out) return false
     if (out.late) return true
     await out.due
-    // Settled or late now; the pump's own checks (a reset, a stall) come first again, then this one.
-    return this.callHeld()
+    return false
   }
 
   /** A step of an attachment that went (`lost`): nothing of it is sent; a text's, command's or call's caller hears it. */
