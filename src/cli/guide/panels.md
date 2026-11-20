@@ -111,8 +111,9 @@ load, the strip shows the title's first letter.
   animations (`cc-edge-top`, `cc-edge-bottom`) and a `mask-image` on the element, set only while
   an edge is hidden; a page that listens for `animationstart` / `animationend` on a scroller or its
   ancestors should check `event.animationName`. A mask clips everything inside the element to its
-  box, `position: fixed` children too: put a menu or popup (`.cc-menu`) on `body`, not inside a
-  scroller. It also clips a scroller's own drop shadow and fades its border at a hidden edge, so a
+  box, `position: fixed` children too, so a scroller holding an open `.cc-menu`, `role="menu"` or
+  non-modal `<dialog open>` drops its fade while that is open; any other fixed popup belongs on
+  `body` or in the top layer (`popover`), not inside a scroller. It also clips a scroller's own drop shadow and fades its border at a hidden edge, so a
   scroller that is itself a popup or a bordered box should set `mask-image: none` (`.cc-menu` does). When the page's own document scrolls, a veil in the page's background colour (or
   `--cc-bg` when the page has none) covers the edges instead. Every rule is in the layer
   `cc.scroll` at zero specificity, so your own `mask-image` (`none` drops the fade), `animation` or

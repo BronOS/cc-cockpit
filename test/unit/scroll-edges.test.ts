@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   EDGE_TIMELINES,
   NEAR_EDGE_PX,
+  OPEN_POPUP,
   SCROLLING_MS,
   SCROLL_EDGES_CSS,
   ScrollingMarks,
@@ -130,6 +131,14 @@ describe('SCROLL_EDGES_CSS', () => {
   it('fades the content with a mask, gated off while neither edge is hidden, and draws no shadow', () => {
     expect(SCROLL_EDGES_CSS).not.toContain('box-shadow')
     expect(SCROLL_EDGES_CSS).toContain('mask-image: if(style(--cc-edge-top: 0) and style(--cc-edge-bottom: 0): none; else: linear-gradient(')
+  })
+
+  it('drops the mask on a scroller holding an open menu, after (so over) both mask rules', () => {
+    const rule = `:where([data-cc-scroller]:has(${OPEN_POPUP})) { mask-image: none; }`
+    expect(SCROLL_EDGES_CSS).toContain(rule)
+    expect(SCROLL_EDGES_CSS.indexOf(rule)).toBeGreaterThan(SCROLL_EDGES_CSS.lastIndexOf('mask-image: linear-gradient('))
+    // The shell's menus and the SDK's, by class and by role; a hidden one does not count.
+    for (const part of ['.menu', '.cc-menu', '[role="menu"]', ':not([hidden])']) expect(OPEN_POPUP).toContain(part)
   })
 
   it('takes the CSS path on the same two conditions the script asks, the attribute path otherwise', () => {

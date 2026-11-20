@@ -68,6 +68,15 @@ const EDGE_MASK = `linear-gradient(to bottom, ${fadeStop('--cc-edge-top')} 0, #0
 // get it: it would clip their focus ring and outer shadow, which paint outside the box.
 const MASKED = `[${SCROLLER_ATTR}]:not(textarea):not(select)`
 const EDGE_MASK_GATED = `if(style(--cc-edge-top: 0) and style(--cc-edge-bottom: 0): none; else: ${EDGE_MASK})`
+/**
+ * An open popup that is not in the top layer: the shell's menus (`.menu`, `role="menu"`), the SDK's
+ * `.cc-menu`, the streamed page's select popup, the terminal font list, Discuss's popover and a
+ * non-modal `<dialog>`. A scroller holding one drops its mask while it is open: a mask clips
+ * descendants to the box, `position: fixed` ones included, and exempting the menu itself does not
+ * escape its ancestor's mask (the Remote servers row menu in `.picker-list` lost Edit and Forget
+ * near the list's bottom). Top-layer popups (`popover`, a modal dialog) are never clipped.
+ */
+export const OPEN_POPUP = ':is(.menu, .cc-menu, [role="menu"], .webview-select-menu, .font-picker-list, .discuss-popover, dialog[open]):not([hidden])'
 // The document scroller has no box that stays at the viewport's edges (a mask on the root scrolls
 // with the document), so a fixed overlay above the content veils it in the page's own background:
 // the colour the script found, or the theme's, or the system's canvas.
@@ -113,6 +122,9 @@ export const SCROLL_EDGES_CSS = `@property --cc-edge-top { syntax: '<number>'; i
     :where([${SCROLLER_ATTR}][${EDGE_TOP_ATTR}]), :where(:root[${EDGE_TOP_ATTR}])::after { --cc-edge-top: 1; }
     :where([${SCROLLER_ATTR}][${EDGE_BOTTOM_ATTR}]), :where(:root[${EDGE_BOTTOM_ATTR}])::after { --cc-edge-bottom: 1; }
     :where(${MASKED}[${EDGE_TOP_ATTR}]), :where(${MASKED}[${EDGE_BOTTOM_ATTR}]) { mask-image: ${EDGE_MASK}; }
+  }
+  @supports selector(:has(a)) {
+    :where([${SCROLLER_ATTR}]:has(${OPEN_POPUP})) { mask-image: none; }
   }
 }`
 

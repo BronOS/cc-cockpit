@@ -38,8 +38,12 @@
    them. */
 
 /* The fade is a mask, which clips a box's own drop shadow and fades its border and background at a
-   hidden edge: scrollers that are themselves popups or bordered boxes keep their chrome whole. */
+   hidden edge: scrollers that are themselves popups, dialogs or bordered boxes keep their chrome
+   whole (`.confirm-dialog` and its kin: the guest, room, Claude offer, remote secret and page-tab
+   Discuss dialogs scroll in a short window). A scroller holding an open menu drops its mask by the
+   sheet's own rule (OPEN_POPUP). */
 .menu,
+.confirm-dialog,
 .settings .font-picker-list,
 .picker-dialog,
 .room-dialog-doc-text,

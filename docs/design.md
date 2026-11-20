@@ -677,7 +677,8 @@ mouse in flips Chromium's bars); overlay bars already hide at rest, so the sheet
 `mask-image` gradient that takes the content from opaque 24px in to transparent at a hidden edge (a shadow painted under
 opaque cards and was lost); its stops are two registered numbers driven by scroll-driven animations, so nothing runs on
 the scroll path, and `if()` keeps the mask `none` while neither edge is hidden (a mask is a stacking context and clips
-fixed descendants to the box; textareas and selects never get it). Browsers without scroll timelines or `if()` get the
+fixed descendants to the box; textareas and selects never get it, nor scrollers that are menus or dialogs, and a
+scroller holding an open menu, `role="menu"` or non-modal dialog drops it through `:has()` while that is open). Browsers without scroll timelines or `if()` get the
 same from attributes the script sets. The document scroller gets a fixed `:root::after` veil instead, a gradient of the
 page's own background (`--cc-edge-canvas`, read by the script; else `--cc-bg`), since a mask on the root scrolls with the
 document. The shell adopts the same sheets and runs the same script (`startShellScrolling`).

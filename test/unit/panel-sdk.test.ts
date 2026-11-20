@@ -282,19 +282,54 @@ describe('panel SDK: base scrollbar style', () => {
       for (const { prelude } of statements) expect(prelude === '@layer cc.scroll' || prelude.startsWith('@property --cc-edge-')).toBe(true)
       const layer = statements.find((s) => s.prelude === '@layer cc.scroll')!
       for (const selector of selectorsOf(layer.body)) {
-        expect(selector.replace(/:where\([^()]*(\([^()]*\)[^()]*)*\)/g, '').replace(/::after/g, '').trim()).toBe('')
+        expect(withoutWhere(selector).replace(/::after/g, '').trim()).toBe('')
       }
     }
   })
 })
 
 /** The style rules' selectors in a sheet body, through @media / @supports blocks, @keyframes left out. */
+/** The selector with every `:where(...)` removed, its parentheses matched at any depth. */
+function withoutWhere(selector: string): string {
+  let out = ''
+  let i = 0
+  while (i < selector.length) {
+    if (selector.startsWith(':where(', i)) {
+      let depth = 0
+      let j = i + ':where'.length
+      for (; j < selector.length; j++) {
+        if (selector[j] === '(') depth++
+        else if (selector[j] === ')' && --depth === 0) break
+      }
+      i = j + 1
+    } else out += selector[i++]
+  }
+  return out
+}
+
+/** A selector list split at its own commas, not at those inside `:is(...)` or `:has(...)`. */
+function splitTopLevel(list: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < list.length; i++) {
+    if (list[i] === '(') depth++
+    else if (list[i] === ')') depth--
+    else if (list[i] === ',' && depth === 0) {
+      out.push(list.slice(start, i).trim())
+      start = i + 1
+    }
+  }
+  out.push(list.slice(start).trim())
+  return out
+}
+
 function selectorsOf(body: string): string[] {
   const out: string[] = []
   for (const { prelude, body: inner } of topLevel(body)) {
     if (prelude.startsWith('@keyframes')) continue
     if (prelude.startsWith('@media') || prelude.startsWith('@supports')) out.push(...selectorsOf(inner))
-    else out.push(...prelude.split(',').map((s) => s.trim()))
+    else out.push(...splitTopLevel(prelude))
   }
   return out
 }
