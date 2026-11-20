@@ -864,16 +864,20 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     const owedRelease = String(p.type) === 'mouseReleased' && live.filter((c) => c.session === id).every((c) => clock.now - c.sentAt >= STEP_TIMEOUT_MS)
     if (!owedRelease && live.some((c) => c.session === id)) violate('C5', 'session-busy', `${method} ${String(p.type ?? '')} to ${id || 'page'}, which owes an answer`)
     // C5 / C9 (O4): a session never holds more than 1 + its live records' owed releases outstanding commands.
+    // Ruling 2026-11-19 #6: a release sent to a stalled session counts as outstanding until it answers though its record ended at send:
+    // the bound is 1 (the stalling command) + the releases owed to it (one per record live when they were sent).
+    const releases = live.filter((c) => c.session === id && c.params.type === 'mouseReleased').length + (String(p.type) === 'mouseReleased' ? 1 : 0)
     const outstanding = live.filter((c) => c.session === id).length + 1
-    const owedSlots = allRecs().filter((r) => r.session === id).length
+    const owedSlots = allRecs().filter((r) => r.session === id).length + releases
     if (outstanding > 1 + owedSlots) violate('C9', 'session-outstanding', `${outstanding} commands outstanding at ${id || 'page'} (live records there: ${owedSlots})`)
     const inFlight = live.filter((c) => clock.now - c.sentAt < STEP_TIMEOUT_MS)
     if (inFlight.length > 0) violate('C5', 'two-in-flight', `${method} ${String(p.type ?? '')} to ${id || 'page'} while ${inFlight[0]!.session || 'page'} ${String(inFlight[0]!.params.type ?? '')} is on its way`)
     const c: Command = { session: id, gen, sentAt: clock.now, answered: false, method, params: p, detached: false, resolve: () => {}, reject: () => {} }
     commands.push(c)
     if (createdRecord) {
-      const rec = records.get(ev?.rid ?? '') ?? [...records.values()].find((r) => r.session === id && r.by === undefined && r.n === (ev?.n ?? -1))
-      if (rec) rec.by = c
+      // Ruling 2026-11-19 #6: a refused repeat key down keeps the existing record; only the down that made the record is tied to its command.
+      const rec = records.get(ev?.rid ?? '')
+      if (rec && rec.n === (ev?.n ?? -1)) rec.by = c
     }
     const mode = modes.get(doc) as Mode
     return new Promise((resolve, reject) => {
@@ -1088,7 +1092,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     }
     // C9 (O4): unsettled detached-road deliveries are bounded (the router moves on at its deadline, and must not pile them up).
     detachedOut++
-    if (detachedOut > 2) violate('C9', 'detached-outstanding', `${detachedOut} detached-road deliveries unsettled (${entry})`)
+    if (detachedOut > 1) violate('C9', 'detached-outstanding', `${detachedOut} detached-road deliveries unsettled (${entry}); the contract allows one`)
     if (detachedHang) {
       return new Promise((resolve) => {
         hung.push(() => {
