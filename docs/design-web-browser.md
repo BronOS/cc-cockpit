@@ -479,7 +479,14 @@ most 512 boxes), its drawn size its layout size and its viewport its content box
 else is refused: no popup, the press goes to the page as a click (a popup over the wrong place would be worse). The
 kept select may sit in a child document the world outlives (a same-origin frame that navigates keeps its parent's
 world), so the choice walks from the select's document back up to the script's own and chooses nothing unless each
-frame element is still connected and still holds that document. The copy read follows `document.activeElement` through
+frame element is still connected and still holds that document. The select takes the focus before anything is read
+(without scrolling: it is under the pointer, and a click's focus scrolls nothing), since the page's focus listeners
+run inside it and may move or transform a frame: the select is checked again, and its options, rectangle and the
+frame chain's offsets and eligibility are read after it, walked up from the select's document (codex review
+2026-11-20). Accepted (codex review 2026-11-20), as a same-origin frame is its parent's origin and gains nothing the
+parent's own document cannot already do: a select partly outside its frame's box gets the popup at its whole
+rectangle, beyond the frame; a zero-size or hidden same-origin frame can hold the focused selection copy reads; a kept
+select the page moves into another document is still chosen by the old popup. The copy read follows `document.activeElement` through
 open shadow roots and same-origin frames (at most 64 steps) and reads the innermost document's field or selection;
 the router's focus walk already looked through same-origin frames for a cross-site owner (`FOCUSED_FRAME_SCRIPT`), so a
 same-origin frame under a cross-site one is read from that frame's world. Proven under Electron

@@ -117,9 +117,12 @@ function world(at: unknown) {
       return at
     }
   }
-  // The select found there lives in this document (chooseScript checks its document is the script's).
-  const found = (at as { closest?: (q: string) => unknown } | null)?.closest?.('select')
-  if (found && typeof found === 'object' && !('ownerDocument' in found)) Object.assign(found, { ownerDocument: document })
+  // The select found there (from an option, or in a shadow root) lives in this document: the scripts
+  // check its document is the script's.
+  const hit = at as { closest?: (q: string) => unknown; shadowRoot?: { elementFromPoint?: () => unknown } | null } | null
+  for (const found of [hit?.closest?.('select'), (hit?.shadowRoot?.elementFromPoint?.() as typeof hit)?.closest?.('select')]) {
+    if (found && typeof found === 'object') Object.assign(found, { ownerDocument: document })
+  }
   const context = createContext({ document, Event: FakeEvent })
   return { run: (code: string): unknown => runInContext(code, context), calls, context }
 }
@@ -459,6 +462,52 @@ describe('hitScript and chooseScript in same-origin frames (design-web-browser.m
     selectIn(child)
     top.at = fakeFrame(top, child, { parentElement: parent })
     expect(frameWorld(top)(hitScript(150, 260, ID))).toBeNull()
+  })
+
+  it('reads the frame chain after the focus: a focus listener that moves the frame moves the popup (review 2026-11-20)', () => {
+    const top = fakeDoc()
+    const child = fakeDoc()
+    const select = selectIn(child)
+    const frame = fakeFrame(top, child, { left: 100, top: 200 })
+    top.at = frame
+    // The page's focus listener (it runs inside focus(), synchronously) moves the frame 40 right, 30 down.
+    select.focus = () => {
+      select.focused = true
+      frame.getBoundingClientRect = () => ({ left: 140, top: 230, width: 300, height: 150 })
+    }
+    expect(frameWorld(top)(hitScript(150, 260, ID))).toMatchObject({ select: true, rect: { x: 150, y: 250 } })
+  })
+
+  it('refuses when a focus listener makes the chain ineligible or the select unfit, or takes it out', () => {
+    const changes: Array<(frame: ReturnType<typeof fakeFrame>, select: ReturnType<typeof fakeSelect>) => void> = [
+      (frame) => {
+        frame.style.transform = 'matrix(0.5, 0, 0, 0.5, 0, 0)'
+      },
+      (frame) => {
+        frame.contentDocument = fakeDoc()
+      },
+      (_frame, select) => {
+        select.multiple = true
+      },
+      (_frame, select) => {
+        select.isConnected = false
+      }
+    ]
+    for (const change of changes) {
+      const top = fakeDoc()
+      const child = fakeDoc()
+      const select = selectIn(child)
+      const frame = fakeFrame(top, child)
+      top.at = frame
+      select.focus = () => change(frame, select)
+      expect(frameWorld(top)(hitScript(150, 260, ID))).toBeNull()
+    }
+    // The top document's own select: its rectangle is read after the focus too.
+    const select = fakeSelect()
+    select.focus = () => {
+      select.getBoundingClientRect = () => ({ left: 70, top: 80, width: 150, height: 24 })
+    }
+    expect(world(select).run(hitScript(1, 1, ID))).toMatchObject({ rect: { x: 70, y: 80 } })
   })
 
   it('chooses nothing once the frame navigated, was replaced or removed, or its document left (a same-origin frame keeps the world)', () => {

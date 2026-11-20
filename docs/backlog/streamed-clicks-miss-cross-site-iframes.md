@@ -41,6 +41,12 @@ proven on macOS and the Linux VM, Electron 45.1.0, 2026-11-20, by `scripts/offsc
 - Copy after the focus moves mid-walk: the walk finds frame A, a page script focuses B during the remaining round
   trips, and the read takes A's selection. That is text the person really selected in A. Later; the fix would be a
   re-check of the focus after the read (codex review, 2026-11-20).
+- Accepted, not a bug (codex review 2026-11-20), each because a same-origin frame is its parent's origin and gains
+  nothing the parent's own document cannot already do: a select partly outside its same-origin iframe's box anchors
+  the popup at its whole rectangle, beyond the frame (the parent can place a select there anyway); a zero-size or
+  hidden same-origin frame can hold the focused selection copy reads (a page can focus a hidden input and select text
+  in its own document); a kept select the page moves into another document is still chosen by the old popup (the
+  page moved its own element).
 - Accepted, not a bug: a frame that navigates between the route's hit test and the script gets the hit script in its
   replacement document at the same frame-relative point. A browser does the same (a press lands in whatever document
   the frame holds) (codex review, 2026-11-20).

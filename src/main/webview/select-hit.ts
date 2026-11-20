@@ -103,7 +103,9 @@ function numberOf(v: number): string {
  * ≤ 1. Then its options (hidden ones skipped, each with its index in `select.options`; the first
  * MAX_SELECT_OPTIONS, labels cut here before they cross), the selected index, its rectangle in this
  * document's viewport CSS px (a same-origin frame's offsets added back), and it takes the focus as a
- * click would. Anything else returns null. The element is kept under `id` for chooseScript.
+ * click would, before any of that is read (the page's focus listeners run in it). Anything else, or
+ * a select or frame chain no longer eligible after the focus, returns null. The element is kept
+ * under `id` for chooseScript.
  */
 export function hitScript(x: number, y: number, id: string): string {
   return `(() => {
@@ -155,7 +157,7 @@ export function hitScript(x: number, y: number, id: string): string {
     const ox = r.left + bl + pl, oy = r.top + bt + pt;
     return Number.isFinite(ox) && Number.isFinite(oy) ? { x: ox, y: oy } : null;
   };
-  let doc = document, px = x, py = y, dx = 0, dy = 0, el = null;
+  let doc = document, px = x, py = y, el = null;
   for (let depth = 0; ; depth++) {
     el = doc.elementFromPoint(px, py);
     while (el && el.shadowRoot) {
@@ -168,11 +170,30 @@ export function hitScript(x: number, y: number, id: string): string {
     if (depth >= ${MAX_SAME_ORIGIN_DEPTH}) return null;
     const at = frameOffset(el);
     if (!at) return null;
-    px -= at.x; py -= at.y; dx += at.x; dy += at.y;
+    px -= at.x; py -= at.y;
     doc = inner;
   }
   const select = el && typeof el.closest === 'function' ? el.closest('select') : null;
-  if (!select || select.multiple || select.size > 1 || select.matches(':disabled')) return null;
+  const single = () => !select.multiple && !(select.size > 1) && !select.matches(':disabled');
+  if (!select || !single()) return null;
+  // The focus first, as a click's: the page's own focus listeners run in it, synchronously, and may
+  // move or transform a frame, scroll a document, or change the select (codex review 2026-11-20).
+  // Everything returned is read after it: the select checked again, its options, and its rectangle
+  // with the frame chain's offsets and eligibility walked anew from where the select is now.
+  // preventScroll: the select is under the person's pointer, so in view already, and a click's
+  // focus scrolls nothing in Chromium either; a scroll here would move the page under the popup.
+  try { select.focus({ preventScroll: true }); } catch (e) {}
+  if (!select.isConnected || !single()) return null;
+  let dx = 0, dy = 0;
+  for (let d = select.ownerDocument, n = 0; d !== document; n++) {
+    const view = d && d.defaultView;
+    const owner = view ? view.frameElement : null;
+    if (n >= ${MAX_SAME_ORIGIN_DEPTH} || !owner || !owner.isConnected || owner.contentDocument !== d) return null;
+    const at = frameOffset(owner);
+    if (!at) return null;
+    dx += at.x; dy += at.y;
+    d = owner.ownerDocument;
+  }
   const cut = (s) => String(s == null ? '' : s).slice(0, ${MAX_OPTION_LABEL * 2}).trim().slice(0, ${MAX_OPTION_LABEL});
   const options = [];
   const all = select.options;
@@ -190,7 +211,6 @@ export function hitScript(x: number, y: number, id: string): string {
   reg.delete(id);
   reg.set(id, new WeakRef(select));
   while (reg.size > ${REGISTRY_CAP}) reg.delete(reg.keys().next().value);
-  try { select.focus({ preventScroll: true }); } catch (e) {}
   const r = select.getBoundingClientRect();
   return { select: true, options, selected: select.selectedIndex, rect: { x: r.left + dx, y: r.top + dy, width: r.width, height: r.height } };
 })()`
