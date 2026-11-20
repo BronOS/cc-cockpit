@@ -1584,6 +1584,28 @@ describe('PageInputRouter scheduling: review 6', () => {
     expect(s.fallback.map((e) => e.type)).toEqual(['keyDown'])
   })
 
+  // Rulings 2026-11-19 #5 and #7: a detached delivery that misses its deadline stalls the detached
+  // road until it settles or the renderer goes; a reset drops what waits but keeps the stall.
+  it('detached: a text that never settles holds the next one, across a reset, until the renderer goes', async () => {
+    const s = setup()
+    s.detach()
+    const roads: string[] = []
+    void s.router.command('Input.insertText', { text: 'a' }, () => (roads.push('a'), new Promise(() => {}))).catch(() => {})
+    await s.flush()
+    s.fire()
+    await s.flush()
+    s.router.reset()
+    void s.router.command('Input.insertText', { text: 'b' }, () => (roads.push('b'), 'b')).catch(() => {})
+    s.router.input([keyDown('c')])
+    await s.flush()
+    expect(roads).toEqual(['a'])
+    expect(s.fallback).toEqual([])
+    s.router.rendererGone()
+    await s.flush()
+    expect(roads).toEqual(['a', 'b'])
+    expect(s.fallback.map((e) => e.type)).toEqual(['keyDown'])
+  })
+
   // SHOULD: "Deliver KeyA down; reset/reconnect; stall the new page and fill its queue with 512
   // steps; submit KeyA up. pressed still contains the old attachment's KeyA, admitting step 513."
   it("a reset forgets the presses it discarded: past the new queue's cap their releases are dropped", async () => {

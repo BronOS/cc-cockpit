@@ -265,8 +265,9 @@ the fallback when the protocol detached:
   are dropped, so a page busy for a second loses no key and no press lands in a frame before a key to the page was
   answered; its answer or a reset starts the queue again. A hit-test query that missed its 200 ms deadline marks its
   session the same way for queries (the event goes on unrouted). The detached road is a session too: a text, edit
-  command or blocking call there that missed its deadline holds everything after it, in order, until it settles or a
-  reset, so at most one is outstanding. A key down refused late still drops its `char`. Each attachment of the protocol has an epoch, bumped
+  command or blocking call there that missed its deadline holds everything after it on that road, in order, until it
+  settles or the renderer goes (`render-process-gone`, `destroyed`); the stall is the renderer's, so a reset drops what
+  waits but keeps it, and at most one is outstanding across attachments. The protocol's sends never wait on it. A key down refused late still drops its `char`. Each attachment of the protocol has an epoch, bumped
   only by the reset its detach brings (which drops the queue and every press record), each step the epoch it was taken
   in, and each session its own lifetime. The one sender checks both synchronously right before it sends, so no wait
   inside a step can carry it across: a step of an older attachment sends nothing by any road, and a pointer event

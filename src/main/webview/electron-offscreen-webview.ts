@@ -145,6 +145,9 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       log: this.log
     })
     cancelOffscreenNativeUi(wc, this.log, input)
+    // A detached delivery the renderer owed never settles once it is gone: the router stops waiting.
+    wc.on('render-process-gone', () => input.rendererGone())
+    wc.on('destroyed', () => input.rendererGone())
     wc.setFrameRate(OFFSCREEN_FRAME_RATE)
     // Hidden until the manager says a browser shows it, like the desktop view's zero bounds.
     let painting = false

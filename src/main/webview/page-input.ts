@@ -93,7 +93,8 @@
 //              it landed); its answer, or a reset, starts the pump again. A hit test's query that
 //              missed ROUTE_TIMEOUT_MS likewise: that session is asked nothing until it answers. The
 //              detached road is a session too: a text, edit command or blocking call there that
-//              missed its deadline holds everything after it until it settles or a reset.
+//              missed its deadline holds everything after it on that road until it settles or the
+//              renderer goes (`rendererGone`); a reset keeps it (the renderer's, not the attachment's).
 //   epoch      each attachment has a number, bumped only when the protocol detaches (`reset`, which
 //              also drops the queue and every press record), and each step carries the one it was
 //              taken in. Each session is an object of its own (`Lane`) that `end` marks gone, the one
@@ -524,8 +525,10 @@ export class PageInputRouter implements ChildFrameObserver {
   /**
    * Set while a detached road's delivery (a text, an edit command, a blocking call) missed its
    * deadline and has not settled: the detached road is a session too (C5, ruling 2026-11-19 #5), so
-   * nothing after it goes until it settles or the attachment changes (codex: `wc.insertText` calls
-   * that never settled piled up, one per text). At most one is outstanding.
+   * nothing after it goes that way until it settles (codex: `wc.insertText` calls that never settled
+   * piled up, one per text). The stall is the renderer's, not the attachment's (ruling #7): a reset
+   * keeps it, so at most one is outstanding across attachments; `rendererGone` clears it. While
+   * attached the protocol's sends never wait on it.
    */
   private detachedStall: object | undefined
   /** The key down the page's session just refused (`key:<code>`): its `char`, next in the queue, is dropped too. */
@@ -563,6 +566,16 @@ export class PageInputRouter implements ChildFrameObserver {
 
   reset(): void {
     this.lost()
+    void this.pump()
+  }
+
+  /**
+   * The page's renderer went or was replaced (`render-process-gone`, `destroyed`): a detached
+   * delivery it owed will never settle, so the detached road takes input again (ruling 2026-11-19 #7).
+   */
+  rendererGone(): void {
+    if (!this.detachedStall) return
+    this.detachedStall = undefined
     void this.pump()
   }
 
@@ -683,10 +696,10 @@ export class PageInputRouter implements ChildFrameObserver {
     this.pumping = true
     try {
       for (;;) {
-        // The detached road owes an answer past its deadline: everything waits, in order (by the
-        // cap), until it settles (which pumps again) or a reset.
-        if (this.detachedStall) return
         if (!this.deps.attached()) {
+          // The detached road owes an answer past its deadline: everything waits, in order (by the
+          // cap), until it settles or the renderer goes (either pumps again).
+          if (this.detachedStall) return
           // The protocol went: what waits goes by the roads of a detached view, in order. A text, an
           // edit command or a blocking call answers later (an IPC of its own), so what comes after it
           // waits for that answer, STEP_TIMEOUT_MS at most, as for a command on the protocol.
@@ -724,7 +737,7 @@ export class PageInputRouter implements ChildFrameObserver {
   private async runDetached(step: Step): Promise<void> {
     if (step.kind === 'call') {
       const pending = this.runCall(step)
-      if (step.blocking) await this.detachedWait(pending, step.epoch)
+      if (step.blocking) await this.detachedWait(pending)
       return
     }
     if (step.kind === 'command') {
@@ -732,7 +745,7 @@ export class PageInputRouter implements ChildFrameObserver {
       sent.then(step.resolve, step.reject)
       const key = pressKey(step)
       if (key) this.keyRecord(key.id, 'detached')
-      await this.detachedWait(sent, step.epoch)
+      await this.detachedWait(sent)
       return
     }
     this.detachedEvent(step.event, step.epoch)
@@ -740,16 +753,16 @@ export class PageInputRouter implements ChildFrameObserver {
 
   /**
    * A detached delivery's answer, STEP_TIMEOUT_MS at most; one that missed it stalls the detached
-   * road (`detachedStall`) until it settles, unless the attachment changed meanwhile.
+   * road (`detachedStall`) until it settles, across resets (ruling 2026-11-19 #7).
    */
-  private async detachedWait(pending: Promise<unknown>, epoch: number): Promise<void> {
+  private async detachedWait(pending: Promise<unknown>): Promise<void> {
     let settled = false
     const mark = (): void => {
       settled = true
     }
     pending.then(mark, mark)
     await this.within(pending, STEP_TIMEOUT_MS)
-    if (settled || epoch !== this.epoch) return
+    if (settled) return
     const token = {}
     this.detachedStall = token
     this.warn('detached', 'webview: the detached view did not answer input in time; input waits for it')
@@ -1192,7 +1205,6 @@ export class PageInputRouter implements ChildFrameObserver {
     this.page = newLane('', this.epoch)
     this.records = []
     this.refusedDown = undefined
-    this.detachedStall = undefined
     this.hover = undefined
     this.onWay = undefined
   }
