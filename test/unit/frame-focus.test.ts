@@ -211,6 +211,40 @@ describe('pointer evidence', () => {
     expect([p.keyAfterPointer(), calls]).toEqual([false, ['through', 'through']])
   })
 
+  it('a pointerout into another element of the shell is no move, wherever it says the pointer is', () => {
+    const win = new EventTarget()
+    let now = 1000
+    const p = new PointerEvidence(() => now)
+    const calls: string[] = []
+    watchShellEvidence(win, new EventTarget(), p, {
+      check: () => void calls.push('check'),
+      endPassThrough: () => void calls.push('through'),
+      shellFocused: () => void calls.push('focused'),
+      isFrame: () => false,
+      later: (fn) => fn()
+    })
+    const header = new EventTarget()
+    const out = (x: number, y: number, relatedTarget: EventTarget | null): Event =>
+      Object.assign(new Event('pointerout'), { clientX: x, clientY: y, relatedTarget })
+    // The pointer came in over the shell, then the person typed; stale by the time the panes re-render.
+    win.dispatchEvent(Object.assign(new Event('pointermove'), { clientX: 150, clientY: 80 }))
+    win.dispatchEvent(new Event('keydown'))
+    now += POINTER_FRESH_MS + 1
+    calls.length = 0
+    // A re-layout's boundary event at a position the shell never recorded (the pointer resting inside a
+    // frame) names the element now under it: it revives nothing and ends no passThrough.
+    win.dispatchEvent(out(400, 300, header))
+    expect([p.keyAfterPointer(), p.fresh(), p.near(viewportRect({ left: 390, top: 290, width: 100, height: 100 })), calls]).toEqual([
+      true,
+      false,
+      false,
+      []
+    ])
+    // Out of the document (relatedTarget null) is the pointer moving.
+    win.dispatchEvent(out(400, 300, null))
+    expect([p.keyAfterPointer(), p.fresh(), calls]).toEqual([false, true, ['through']])
+  })
+
   it('the last position is fresh for POINTER_FRESH_MS', () => {
     let now = 1000
     const p = new PointerEvidence(() => now)
