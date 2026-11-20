@@ -482,14 +482,33 @@ External review: sol / high
 - Create: `test/e2e/guest-overlay-views.spec.ts`
 - Modify: `test/e2e/guest-fixtures.ts` (helpers only if needed)
 
-- [ ] owner desktop and an owner browser both show a Reviewer overlay live (no Take over)
-- [ ] a read guest sees it, cannot add a note (its op dropped), its ✕ hides only its copy
-- [ ] a write guest adds a note the owner sees with the guest's name; the write guest's ✕ closes it for all
-- [ ] an overlay opened through the Reviewer by a hidden plugin (a fixture plugin using the `reviewer` service) never
+- [x] owner desktop and an owner browser both show a Reviewer overlay live (no Take over)
+- [x] a read guest sees it, cannot add a note (its op dropped), its ✕ hides only its copy
+- [x] a write guest adds a note the owner sees with the guest's name; the write guest's ✕ closes it for all
+- [x] an overlay opened through the Reviewer by a hidden plugin (a fixture plugin using the `reviewer` service) never
   reaches the guest, title included
-- [ ] a guest's link click in the overlay opens on the guest's side only (the owner's `shell.openExternal` recorder
+- [x] a guest's link click in the overlay opens on the guest's side only (the owner's `shell.openExternal` recorder
   stays empty)
-- [ ] run the new spec and the existing `guest-*.spec.ts` - must pass before task 14
+- [x] run the new spec and the existing `guest-*.spec.ts` - must pass before task 14
+
+- ➕ notes from Task 13: no new fixture or helper; a guest is its invite link opened in `openBrowser` (the page redeems
+  it), and `test.annotatecaller` (reviewer-annotate's fixture) is the hidden service caller. Reviews are opened with
+  `ccc --project <dir> review <file>` through the data dir's wrapper (a terminal under an open overlay cannot be typed
+  into). Also driven: notes both ways between the desktop and an owner browser, a per-copy loader gone in every copy,
+  forged `global` / `note-add` ops from a read guest's page dropped (the same `note-add` from an owner copy applied,
+  after it, as the control and the barrier), a read
+  guest's page `{ result }` as its hide, a reload not bringing a hidden overlay back (a review opened after it does
+  arrive), the author label (`.note-author` text and `Note by <name>`), Discuss queued to a working tab sending both
+  screens' notes and, once delivered, leaving only the note a write guest added on the reopened review, D-4 for the
+  `ready` snapshot (a later `ready` shows the snapshot does carry the guest's overlays) and for live events (raw guest
+  socket frames and the guest page), the same service call reaching guests once its caller is shown, the
+  non-`perView` guest note with no Take over, and in server mode (`launchServer`) the hidden page loading no copy
+  while a browser holds a live one. A visibility change reconnects every guest (D-30), so a raw guest socket must be
+  opened again after one.
+- ⚠️ (found reading the code, not driven) a queued Discuss's delivery (`watchQueued`) subtracts the sent notes from
+  storage only: a review of that file open at that moment keeps them in its host draft and pages, and its next save
+  writes them back. The spec closes the reopened review before delivery. Older than this plan (master's watchQueued
+  does the same); a fix would apply the subtraction to an open review's draft and broadcast the deletes.
 
 ### Task 14: Verify acceptance criteria [model: sonnet]
 - [ ] every requirement in the Overview and every D-1..D-4 rule is implemented (walk the design's sections)
