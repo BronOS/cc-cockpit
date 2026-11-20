@@ -141,7 +141,7 @@ describe('off', () => {
     const port = await freePort()
     const { gw, loadWs } = make()
     expect(await gw.apply(webAccessOf({ enabled: false, port, mode: 'none' }))).toEqual({ state: 'off' })
-    expect(await gw.apply(webAccessOf(undefined))).toEqual({ state: 'off' })
+    expect(await gw.apply(webAccessOf({ enabled: false }))).toEqual({ state: 'off' })
     expect(gw.address()).toBeUndefined()
     expect(loadWs).not.toHaveBeenCalled()
     await expect(http(port, { headers: { Host: `127.0.0.1:${port}` } })).rejects.toThrow(/ECONNREFUSED/)

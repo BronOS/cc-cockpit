@@ -5,6 +5,7 @@
 // renderer reads. A browser view reaches only the read side and Revoke/Disconnect, and only in server
 // mode (`adapted`, ipc/router.ts registerWebAccessHandlers, design-web.md §9.4, §9.6); everything
 // that adds or widens access is `no`-class, so a browser never widens its own access.
+import { isPlainObject } from '../../shared/guards'
 import { createHash, X509Certificate } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { WebAccessSettings } from '../../shared/types'
@@ -271,7 +272,11 @@ export class WebAccessService {
    */
   serverStart(): string | undefined {
     if (this.deps.server !== true) return undefined
-    const next = serverStartSettings(this.settings())
+    // A record with no stored `enabled` reads as on now (the default), but a server's first start still
+    // writes it and prints the "turned on" line: what runs is then in the file.
+    const raw = this.deps.read()
+    const stored = isPlainObject(raw) && typeof raw['enabled'] === 'boolean'
+    const next = serverStartSettings(stored ? this.settings() : { ...this.settings(), enabled: false })
     if (next === undefined) return undefined
     this.deps.write(next)
     return SERVER_TURNED_ON_LINE

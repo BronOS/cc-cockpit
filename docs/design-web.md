@@ -141,7 +141,7 @@ fit); a terminal snapshot larger than that is sent in numbered parts.
 
 ## 4. Access and identity
 
-Off by default (Settings > General > Web access). **A signed-in device is the person at the keyboard** (a shell and
+On by default, listening on this computer only (127.0.0.1; Settings > General > Web access; owner decision 2026-11-20). A fresh install has browser access and Share with no setup, and nothing is reachable from the network: the bind is loopback and the §4.1 checks are always on, so a browser on this computer still needs the access link. A stored `false` stays off; a taken port leaves the gateway `failed` and the desktop running. **A signed-in device is the person at the keyboard** (a shell and
 Claude on the host). How exposed to be is the person's choice; the app makes each choice explicit and keeps the
 protections that cost nothing always on.
 

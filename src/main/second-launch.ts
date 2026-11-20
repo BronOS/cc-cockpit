@@ -30,6 +30,7 @@ import { dataPaths, fallbackSocketDir, isPrivateDir, socketPath } from './paths'
 import { pidAlive } from './pty/exit-drain'
 import type { ServerDecision } from './server-mode'
 import { plainText } from './web/access-log'
+import { webAccessOf } from './web/settings'
 
 /** The losing launch's deadline for each socket ask (`web.status`, then `web.stop`). */
 export const SECOND_LAUNCH_ASK_MS = 2000
@@ -102,12 +103,13 @@ export function losingLaunchAsks(input: { platform: string; display: boolean; we
   return input.display && (input.platform === 'linux' || input.platform === 'darwin') && input.webAccessOn
 }
 
-/** `app.json`'s `webAccess.enabled`, from its text; a missing, damaged or other value reads as off. */
+/** `app.json`'s `webAccess.enabled`, from its text; a missing or other value reads as the default (on, `webAccessOf`); a damaged file reads as off
+ * (nothing is known about it, so the launch quits as before). */
 export function storedWebAccessOn(readAppJson: () => string): boolean {
   try {
     const parsed: unknown = JSON.parse(readAppJson())
-    if (!isPlainObject(parsed) || !isPlainObject(parsed.webAccess)) return false
-    return parsed.webAccess.enabled === true
+    if (!isPlainObject(parsed)) return false
+    return webAccessOf(parsed.webAccess).enabled
   } catch {
     return false
   }

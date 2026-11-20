@@ -345,8 +345,8 @@ export interface AppSettings {
    */
   projectDefaultsMigrated?: true
   /**
-   * Web access (design-web.md §4): the gateway that serves the cockpit to a browser. Off unless
-   * `enabled` is exactly `true`. The file is user-writable, so main reads it field by field
+   * Web access (design-web.md §4): the gateway that serves the cockpit to a browser. On unless
+   * `enabled` is a stored `false` (loopback bind by default). The file is user-writable, so main reads it field by field
    * (main/web/settings.ts `webAccessOf`): a damaged field reads as its default, and a network bind
    * whose §4.3 risk was never confirmed is refused (nothing listens), never quietly moved to loopback.
    */

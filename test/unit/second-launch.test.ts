@@ -83,11 +83,11 @@ describe('the decision table', () => {
     expect(losingLaunchAsks({ platform: 'linux', display: true, webAccessOn: false })).toBe(false)
   })
 
-  it("reads web access on from app.json's text; missing, damaged or anything but true is off", () => {
+  it("reads web access on from app.json's text; a stored false and a damaged file are off, a missing or odd value is the default (on)", () => {
     expect(storedWebAccessOn(() => JSON.stringify({ webAccess: { enabled: true, port: 7330 } }))).toBe(true)
     expect(storedWebAccessOn(() => JSON.stringify({ webAccess: { enabled: false } }))).toBe(false)
-    expect(storedWebAccessOn(() => JSON.stringify({ webAccess: { enabled: 'yes' } }))).toBe(false)
-    expect(storedWebAccessOn(() => JSON.stringify({}))).toBe(false)
+    expect(storedWebAccessOn(() => JSON.stringify({ webAccess: { enabled: 'yes' } }))).toBe(true)
+    expect(storedWebAccessOn(() => JSON.stringify({}))).toBe(true)
     expect(storedWebAccessOn(() => '{not json')).toBe(false)
     expect(
       storedWebAccessOn(() => {

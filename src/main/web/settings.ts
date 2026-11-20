@@ -35,8 +35,15 @@ export const MAX_WEB_HOSTS = 32
 
 const MODES: readonly WebAccessMode[] = ['link', 'password', 'confirm', 'none']
 
+/**
+ * On by default (owner decision 2026-11-20): a fresh install has browser access and the Share button
+ * with no setup. Safe because the bind stays loopback (nothing reachable from the network) and the
+ * gateway's Host, Origin and secret checks are always on (design-web.md §4.1); a browser on this
+ * computer still needs the access link. A stored `false` (the person turned it off) stays off, so
+ * only installs that never touched the setting turn on at the update.
+ */
 export const DEFAULT_WEB_ACCESS: WebAccessSettings = {
-  enabled: false,
+  enabled: true,
   bind: DEFAULT_WEB_BIND,
   port: DEFAULT_WEB_PORT,
   hosts: [],
@@ -174,7 +181,7 @@ export function webAccessOf(stored: unknown): WebAccessSettings {
     }
   }
   const mode = MODES.find((m) => m === s['mode']) ?? DEFAULT_WEB_ACCESS.mode
-  const out: WebAccessSettings = { enabled: s['enabled'] === true, bind, port, hosts, mode }
+  const out: WebAccessSettings = { enabled: typeof s['enabled'] === 'boolean' ? s['enabled'] : DEFAULT_WEB_ACCESS.enabled, bind, port, hosts, mode }
   const origin = externalOriginOf(s['externalOrigin'])
   if (origin !== undefined) out.externalOrigin = origin
   // A damaged TLS entry (a relative path, one file missing) reads as none: plain http, which on a
