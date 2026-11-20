@@ -47,13 +47,23 @@ export interface GuestEventContext extends GuestFilterContext {
   downloadOrigin(requestId: string): string | undefined
   /** The owner's name for the banner (the Web access setting, D-24). */
   ownerName(): string
+  /**
+   * Whether `copy` is (or, just released, was) the receiving view's own copy of the perView overlay
+   * (OverlayManager.copyViewOf, main's record). Absent: false, so no per-copy event reaches a guest.
+   */
+  ownCopy?(overlayId: string, copy: string): boolean
 }
 
 /** Main's live sources a guest view's filter context reads (index.ts wires them, task 07). */
 export interface GuestContextSources {
   guests: Pick<GuestService, 'tabVisible' | 'pluginVisible'>
-  /** Whether a shared tab or a visible plugin opened the overlay (OverlayManager's origin), for this guest. */
+  /**
+   * Whether the guest sees the overlay (guest-wiring.ts overlayVisibleOf): opened from a tab it sees or by a plugin
+   * it sees, AND every plugin of the overlay's `via` visible to it (D-4), and not hidden by that guest.
+   */
   overlayVisible(guestId: string, overlayId: string): boolean
+  /** `copy` of the overlay is `viewId`'s own, live or just released (OverlayManager.copyViewOf). Absent: never. */
+  ownCopy?(viewId: string, overlayId: string, copy: string): boolean
   /** The person behind a view (presence.ts `personOf`). */
   personOf(viewId: string | null): string | undefined
   /** The project's tab order now (TabManager). */
@@ -85,6 +95,7 @@ export function guestContext(src: GuestContextSources, viewId: string, access: G
     tabOrder: () => src.tabOrder(access.projectId),
     downloadOrigin: (requestId) => src.downloadOrigin?.(viewId, requestId),
     ownerName: () => src.ownerName(),
+    ownCopy: (overlayId, copy) => src.ownCopy?.(viewId, overlayId, copy) === true,
     projectRoot: () => src.projectPath?.(access.projectId)
   }
 }
@@ -104,6 +115,21 @@ export function guestDownloadOffer(p: IpcEventMap['downloads.offer'], g: GuestEv
   const out = { ...p, path: basename(p.path) }
   delete out.real
   return out
+}
+
+/**
+ * A perView overlay's per-copy events (docs/design-overlay-views.md §5): to a guest only for its own copy, by main's
+ * record of which view the copy is for (`ownCopy`), never the payload's word alone; a payload with no `copy` (a
+ * holder's message) never. `visible`: the overlay must also still be visible to the guest now (a message, a reload);
+ * a hide is not gated on it, since the hide a growth sends comes exactly when the guest stopped seeing it.
+ */
+function ownCopyEvent<P extends { overlayId: string; copy?: string }>(visible: boolean): (p: P, g: GuestEventContext) => P | undefined {
+  return (p, g) => {
+    if (typeof p.copy !== 'string' || typeof p.overlayId !== 'string') return undefined
+    if (g.ownCopy?.(p.overlayId, p.copy) !== true) return undefined
+    if (visible && !g.overlayVisible(p.overlayId)) return undefined
+    return p
+  }
 }
 
 /** `project.updated`: id, name and colour only (D-33). */
@@ -160,8 +186,12 @@ export const GUEST_EVENT: { readonly [E in EventChannel]: GuestEventRule<E> } = 
   'layout.updated': guestLayout,
   'overlays.updated': (p, g) => guestOverlays(p, g),
   'overlays.data': guestByOverlay,
-  // A guest never holds an html overlay (design §16.3): its page messages are the holder's.
-  'overlays.message': 'drop',
+  // A guest never holds an html overlay (design §16.3): a holder's page messages never reach it; a perView
+  // overlay's copy messages only for its own live copy of an overlay it still sees.
+  'overlays.message': ownCopyEvent<IpcEventMap['overlays.message']>(true),
+  // Its own copy only (docs/design-overlay-views.md §5): a hide even once the overlay is no longer visible to it.
+  'overlays.hide': ownCopyEvent<IpcEventMap['overlays.hide']>(false),
+  'overlays.reload': ownCopyEvent<IpcEventMap['overlays.reload']>(true),
   'commands.updated': guestCommands,
   'panels.reload': guestPanelsReload,
   'webviews.navigated': guestByPanel,

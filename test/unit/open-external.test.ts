@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createOpenExternal, NO_BROWSER_TEXT, urlForLog, type OpenExternal } from '../../src/main/external/open-external'
+import {
+  createOpenExternal,
+  NO_BROWSER_TEXT,
+  NO_SCREEN_TEXT,
+  urlForLog,
+  VIEW_GONE_TEXT,
+  type OpenExternal
+} from '../../src/main/external/open-external'
 import { checkOAuthSpec, PluginOAuth } from '../../src/main/oauth/plugin-oauth'
 import { ViewRegistry, type ViewSink } from '../../src/main/views/view-registry'
 import { remoteViewId } from '../../src/shared/views'
@@ -192,6 +199,61 @@ describe('openExternal adapter in server mode', () => {
   it('urlForLog keeps scheme, host and path only', () => {
     expect(urlForLog('https://user:pw@example.com:8443/p/q?x=1#y')).toBe('https://example.com:8443/p/q')
     expect(urlForLog('not a url')).toBe('(not a URL)')
+  })
+})
+
+// ctx.openExternal's `{ view }` (docs/design-overlay-views.md §3): the view named, alone, or refused; never the
+// OS browser for a browser view, a gone one, or the hidden page. Who may be named is HostApi's (host-api.test.ts).
+describe('an addressed open (the plugin named the view)', () => {
+  for (const server of [false, true]) {
+    const mode = server ? 'server mode' : 'the desktop'
+    it(`${mode}: a browser view gets its own notice, stamped \`to\` (the guest sink's pass), and nothing else does`, async () => {
+      const open = adapter(server)
+      await open(URL_A, { windowId: 1, viewId: 'web:2', addressed: true })
+      expect(system).toEqual([])
+      expect(notices()).toEqual({ web2: [URL_A] })
+      // The URL and the stamp only (D-33: nothing of the host or the project in a guest's notice).
+      expect(w.web2.payloads).toEqual([{ url: URL_A, to: 'web:2' }])
+    })
+
+    it(`${mode}: a gone view is refused, never the OS browser nor another view of the window`, async () => {
+      const open = adapter(server)
+      w.web1.closed = true
+      await expect(open(URL_A, { windowId: 1, viewId: 'web:1', addressed: true })).rejects.toThrow(VIEW_GONE_TEXT)
+      // One main never minted: the same.
+      await expect(open(URL_A, { windowId: 1, viewId: 'web:99', addressed: true })).rejects.toThrow(VIEW_GONE_TEXT)
+      expect(system).toEqual([])
+      expect(notices()).toEqual({})
+      expect(logs).toHaveLength(2)
+    })
+
+    it(`${mode}: a desktop id other than the window's own, or none at all, is refused`, async () => {
+      const open = adapter(server)
+      await expect(open(URL_A, { windowId: 1, viewId: 'desktop:2', addressed: true })).rejects.toThrow(VIEW_GONE_TEXT)
+      await expect(open(URL_A, { windowId: 1, addressed: true })).rejects.toThrow(VIEW_GONE_TEXT)
+      expect(system).toEqual([])
+      expect(notices()).toEqual({})
+    })
+  }
+
+  it("the desktop: the window's own desktop page opens the OS browser", async () => {
+    await adapter(false)(URL_A, { windowId: 1, viewId: 'desktop:1', addressed: true })
+    expect(system).toEqual([URL_A])
+    expect(notices()).toEqual({})
+  })
+
+  it("server mode: the hidden page is refused (no screen), not sent to the window's browsers as an unaddressed call is", async () => {
+    await expect(adapter(true)(URL_A, { windowId: 1, viewId: 'desktop:1', addressed: true })).rejects.toThrow(NO_SCREEN_TEXT)
+    expect(system).toEqual([])
+    expect(notices()).toEqual({})
+  })
+
+  it('the desktop: a gone browser view that was not named still resolves silently (unchanged), a named one rejects', async () => {
+    const open = adapter(false)
+    w.web2.closed = true
+    await expect(open(URL_A, { windowId: 1, viewId: 'web:2' })).resolves.toBeUndefined()
+    await expect(open(URL_A, { windowId: 1, viewId: 'web:2', addressed: true })).rejects.toThrow(VIEW_GONE_TEXT)
+    expect(system).toEqual([])
   })
 })
 

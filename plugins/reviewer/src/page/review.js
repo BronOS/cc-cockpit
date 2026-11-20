@@ -26,18 +26,29 @@
 // companion's html comes in { type: 'html', doc: 'companion', index, part } messages; the assets are
 // one set for both. A note on the companion has `doc: 'companion'`; its button posts { type:
 // 'open-url', doc: 'companion' }.
-// The page shows the two sides, collects notes and the global comment, and posts
-//   { type: 'draft', draft }                          on every change, and when the host asks
-//                                                     ({ type: 'draft-request' }: Discuss with Claude);
-//   { type: 'draft-unsaved' }                         for a request while the draft is too large;
+// The page shows the two sides, collects notes and the global comment. The draft is the host's, one for
+// every copy of the page (each screen and guest has its own copy, design-overlay-views §6): the init
+// brings it, and the page sends each change as an op (note-ops.mjs), at once:
+//   { type: 'note-add', tag, note }                   a new note; the host answers { type: 'note-added',
+//                                                     tag, note } with its id (and a guest's name as author)
+//   { type: 'note-change', id | tag, text }           a note's text (by its tag until the id came)
+//   { type: 'note-delete', id | tag }
+//   { type: 'global', text }                          the comment on the whole thing
+//   { type: 'draft-sync' }                            to { type: 'draft-request' } (Discuss with Claude):
+//                                                     every op before it is out;
+//   { type: 'draft-unsaved' }                         instead, while this page holds text over its cap.
+// The other copies' changes come as { type: 'note', note } (added or changed), { type: 'note-deleted',
+// id } and { type: 'global', text }. A read guest's copy (`canNote: false` in the init) shows the notes
+// and no way to change them.
 // Discuss with Claude, New session and Edit are the app's overlay toolbar now (the host answers
 // Discuss with the review text; the editor adds "Edit" for the overlay's `file` type), so the page
 // has no tab picker, no send buttons and no Close: the toolbar's ✕ and Esc close it (one action
 // bar per overlay, guide style.md). The status line sits at the right end of the header row.
 // Esc closes the overlay without asking the page, so drafts are posted as they change, at once (a
 // debounce here lost the last keystrokes to an Esc pressed within it; the host coalesces writes).
-// The host answers { type: 'draft-error', message } when a draft could not be stored and
-// { type: 'draft-saved' } once a later one was: the page shows the failure while it is open.
+// The host answers { type: 'draft-error', message } when the draft could not be stored or an op of this
+// page was refused (with `tag`: its add, whose note goes), and { type: 'draft-saved' } once that is over:
+// the page shows the failure while it is open.
 
 import { EditorState, StateField, StateEffect, RangeSetBuilder, Compartment } from '@codemirror/state'
 import { EditorView, Decoration, lineNumbers, highlightActiveLine, keymap, drawSelection } from '@codemirror/view'
@@ -72,6 +83,7 @@ import { markdownHtml, initialMarkdownView, markdownText } from './markdown.mjs'
 import { markHtmlLines, mdRangeLines, htmlRangeLines } from './html-lines.mjs'
 import { startBytes, formatSize } from './bytes.mjs'
 import { showPdfIn, pdfSelection, scrollToPage } from './pdf.js'
+import { tagOf, addOp, changeOp, deleteOp, draftSizeError, NoteSync, remapNoteId } from './note-ops.mjs'
 
 /* global ccPanel */
 
@@ -208,6 +220,7 @@ const state = {
   // draft holds both kinds of note; each is shown in its own view (scrollTo switches). null: not
   // a markdown file.
   md: null,
+  canNote: true, // false in a read guest's copy: the notes are shown, not editable
 }
 
 const $ = (id) => document.getElementById(id)
@@ -238,15 +251,60 @@ function showSaveState() {
   $('draft-error').hidden = !msg
 }
 
-/** Posts the draft, unless it is too large to store: then it says so and posts nothing. True when posted. */
-function postDraft() {
-  const size = JSON.stringify(state.draft).length
-  saveState.tooLarge =
-    size > DRAFT_JSON_MAX ? `Draft not saved: it is too large (${size} of ${DRAFT_JSON_MAX} characters). Shorten or delete a note; the last saved draft is kept.` : ''
+// The convergence state (note-ops.mjs NoteSync): the text ops out and not yet acked, the notes deleted here,
+// and `unsent`, the texts held back while the draft was over the size cap (sent with the next op that fits,
+// since a change carries the whole text).
+const sync = new NoteSync()
+const unsent = sync.unsent
+
+function sendChange(n) {
+  ccPanel.post(changeOp(n))
+  sync.sentChange(n)
+}
+function sendGlobal() {
+  ccPanel.post({ type: 'global', text: state.draft.global })
+  sync.sentGlobal()
+}
+
+/** The size check run again: also for another copy's change, which can shrink (or grow) the draft here. */
+function recheckSize() {
+  saveState.tooLarge = draftSizeError(state.draft, DRAFT_JSON_MAX)
   showSaveState()
+}
+
+/**
+ * Posts note op `op`, unless the draft (as this page has it) is too large to store: then it says so,
+ * keeps the change to send once it fits, and posts nothing. A delete always goes (it only shrinks the
+ * draft) and an add too (the host checks it; addNote does not make one while over the cap). True when
+ * the draft fits.
+ */
+function postOp(op, what) {
+  if (!state.canNote) return false
+  recheckSize()
+  if (saveState.tooLarge && op.type !== 'note-delete' && op.type !== 'note-add') {
+    if (what) unsent.add(what)
+    return false
+  }
+  if (op.type === 'global') sendGlobal()
+  else if (op.type === 'note-change') sendChange(what)
+  else ccPanel.post(op)
   if (saveState.tooLarge) return false
-  ccPanel.post({ type: 'draft', draft: state.draft })
+  if (what) unsent.delete(what)
+  for (const u of [...unsent]) {
+    unsent.delete(u)
+    if (u === 'global') sendGlobal()
+    else if (state.draft.notes.includes(u)) sendChange(u)
+  }
   return true
+}
+
+let noteTags = 0
+/** A new note of this page's into the draft, and its add op out. */
+function addLocalNote(note) {
+  note.tag = tagOf(noteTags++)
+  note.id = note.tag
+  state.draft.notes.push(note)
+  postOp(addOp(note))
 }
 
 function refreshHighlights() {
@@ -529,22 +587,23 @@ function collapseSelection(side) {
   if (v && !v.state.selection.main.empty) v.dispatch({ selection: { anchor: v.state.selection.main.to } })
 }
 
-let noteSeq = 0
 function addNote(sideHint) {
+  // A read guest's copy has no Add note (hidden), and its keys (a) make none either.
+  if (!state.canNote) return
   if (atNoteLimit()) return updateAddButton() // the hint says why
+  if (saveState.tooLarge) return // the draft error above the notes says why
   if (isHtml()) return addHtmlNote()
   if (isPreview()) return isPdf() ? addPdfNote() : undefined
   const side = sideHint && selectionOf(sideHint) ? sideHint : currentSelectionSide()
   if (!side) return
   const sel = selectionOf(side)
-  const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, side, from: sel.from, to: sel.to, quote: sel.quote, text: '' }
+  const note = { side, from: sel.from, to: sel.to, quote: sel.quote, text: '' }
   if (side === 'old') clearPick()
   collapseSelection(side)
-  state.draft.notes.push(note)
+  addLocalNote(note)
   renderNotes(note.id)
   refreshHighlights()
   updateAddButton()
-  postDraft()
 }
 
 function scrollTo(note) {
@@ -582,9 +641,14 @@ function fitText(t) {
 // width). Each row: where the note is (a click shows it in the text), the quote, the note's text
 // (beside the quote when both fit on one line, else under it) and a delete button. The list takes
 // no room while there is no note; the comment's placeholder says how to make one.
+// The note textareas by note object, so another copy's change sets one value without a new list (which
+// would take the focus and the caret from a note being typed).
+let noteInputs = new Map()
+
 function renderNotes(focusId) {
   const list = $('notes')
   list.replaceChildren()
+  noteInputs = new Map()
   // Source view: line notes by line, then a markdown file's text notes (taken in Rendered).
   // A PDF's notes are page notes: by page.
   const lineOrder = (a, b) => (a.anchor ? 1 : 0) - (b.anchor ? 1 : 0) || (a.anchor ? 0 : (a.page || a.from) - (b.page || b.from) || (a.side === 'old' ? -1 : 1))
@@ -610,31 +674,43 @@ function renderNotes(focusId) {
     body.append(where)
     // In HTML mode the label is the quote itself; a line note shows it after the line range.
     if (!n.anchor && !(isHtml() && !state.md) && n.quote) body.append(el('span', 'quote', shortQuote(n.quote)))
+    // A guest's note names the guest (the host sets `author` from who sent the add); the owner's do not.
+    if (n.author) {
+      const by = el('span', 'note-author', n.author)
+      by.title = `Note by ${n.author}`
+      body.append(by)
+    }
     const text = el('textarea', 'note-text')
-    text.placeholder = 'Your note'
+    text.placeholder = state.canNote ? 'Your note' : ''
     text.rows = 1
     text.value = n.text
+    text.readOnly = !state.canNote
     text.setAttribute('aria-label', `Note on ${n.anchor || (isHtml() && !state.md) ? shortQuote(n.quote) : where.textContent}`)
     text.addEventListener('input', () => {
       n.text = text.value
       fitText(text)
-      postDraft()
+      postOp(changeOp(n), n)
     })
+    noteInputs.set(n, text)
     const hint = el('div', 'limit')
     limitInput(text, hint, NOTE_MAX)
     body.append(text, hint)
-    const del = el('button', 'note-del', '✕')
-    del.type = 'button'
-    del.title = 'Delete this note'
-    del.setAttribute('aria-label', 'Delete note')
-    del.addEventListener('click', () => {
-      state.draft.notes = state.draft.notes.filter((x) => x.id !== n.id)
-      renderNotes()
-      refreshHighlights()
-      updateAddButton()
-      postDraft()
-    })
-    row.append(body, del)
+    row.append(body)
+    if (state.canNote) {
+      const del = el('button', 'note-del', '✕')
+      del.type = 'button'
+      del.title = 'Delete this note'
+      del.setAttribute('aria-label', 'Delete note')
+      del.addEventListener('click', () => {
+        state.draft.notes = state.draft.notes.filter((x) => x !== n)
+        sync.deleted(n)
+        postOp(deleteOp(n))
+        renderNotes()
+        refreshHighlights()
+        updateAddButton()
+      })
+      row.append(del)
+    }
     list.append(row)
     setTimeout(() => fitText(text), 0) // once laid out: scrollHeight is 0 before
     if (n.id === focusId) {
@@ -725,17 +801,16 @@ function addPdfNote() {
   if (!sel) return
   const long = sel.quote.length > QUOTE_MAX
   const quote = long ? sel.quote.slice(0, QUOTE_MAX) : sel.quote
-  const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, page: sel.page, quote, text: '' }
+  const note = { page: sel.page, quote, text: '' }
   // A long selection keeps its end too, so the message shows where it stops (as for markdown).
   if (long) {
     const tail = tailOf(sel.quote, QUOTE_MAX)
     if (tail) note.tail = tail
   }
   collapseSelection()
-  state.draft.notes.push(note)
+  addLocalNote(note)
   renderNotes(note.id)
   updateAddButton()
-  postDraft()
 }
 
 // ---- HTML mode (annotate with html) ----
@@ -947,7 +1022,7 @@ function addHtmlNote() {
   const sel = htmlSelection()
   if (!sel) return
   const { quote, anchor } = makeAnchor(sel.view.full, sel.start, sel.end)
-  const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, quote, anchor, text: '' }
+  const note = { quote, anchor, text: '' }
   // The quote keeps the selection's first chars (it is also what finds the note again); a longer
   // selection keeps its end too, so the message can show where it stops.
   if (anchor.length > quote.length) {
@@ -963,13 +1038,12 @@ function addHtmlNote() {
     if (lines) note.lines = lines
   }
   if (sel.view === companionView) note.doc = 'companion'
-  located.set(note.id, { view: sel.view, start: sel.start, end: sel.end })
   collapseSelection()
-  state.draft.notes.push(note)
+  addLocalNote(note)
+  located.set(note.id, { view: sel.view, start: sel.start, end: sel.end })
   renderNotes(note.id)
   refreshHighlights()
   updateAddButton()
-  postDraft()
 }
 
 /** HTML notes where they are in the text (the main document's, then the companion's), then the ones not found in this version (and old line notes). */
@@ -1442,7 +1516,7 @@ function onUpdate(m) {
 }
 
 function onAction(button) {
-  if (button.disabled) return
+  if (button.disabled || document.body.classList.contains('no-actions')) return
   button.disabled = true
   button.classList.add('busy')
   setStatus('')
@@ -1502,9 +1576,86 @@ function setStatus(text) {
   if (header.dataset.bare === 'true') header.hidden = !text
 }
 
-/** Discuss with Claude asks for the newest draft: posted, or `draft-unsaved` when it is too large to store. */
+/**
+ * Discuss with Claude asks whether every change is out: this page's ops went as they were made, on the
+ * same port, so the answer follows them; `draft-unsaved` while text over the cap is held back here.
+ */
 function answerDraftRequest() {
-  if (!postDraft()) ccPanel.post({ type: 'draft-unsaved' })
+  if (!state.canNote) return
+  ccPanel.post(saveState.tooLarge || unsent.size ? { type: 'draft-unsaved' } : { type: 'draft-sync' })
+}
+
+// ---- the other copies' changes (note-ops.mjs) ----
+
+/** A textarea's value set from another copy, the caret kept where it was (as far as the new text goes). */
+function setValueKeepingCaret(input, value) {
+  if (input.value === value) return
+  const focused = document.activeElement === input
+  const [start, end] = [input.selectionStart, input.selectionEnd]
+  input.value = value
+  if (focused) input.setSelectionRange(Math.min(start, value.length), Math.min(end, value.length))
+}
+
+/** The notes list drawn again for a note added or gone elsewhere, keeping the focus and caret of a note being typed. */
+function renderNotesKeepingFocus() {
+  const active = document.activeElement
+  let keep = null
+  for (const [n, input] of noteInputs) if (input === active) keep = { n, start: input.selectionStart, end: input.selectionEnd }
+  renderNotes()
+  refreshHighlights()
+  updateAddButton()
+  const input = keep && noteInputs.get(keep.n)
+  if (input) {
+    input.focus()
+    input.setSelectionRange(keep.start, keep.end)
+  }
+}
+
+function onNoteAdded(m) {
+  const r = sync.added(state.draft.notes, m.tag, m.note)
+  if (!r) return
+  // The maps keyed by the note's id follow it from its tag to the host's id.
+  focusedNote = remapNoteId(located, focusedNote, r.oldId, r.note.id)
+  if (r.note.author) renderNotesKeepingFocus()
+}
+
+function onAck(m) {
+  sync.ack(state.draft.notes, m)
+}
+
+// Each of the other copies' changes runs the size check again: a copy that showed "too large" recovers
+// when another screen shrinks the draft (Add note unblocked, Discuss no longer answered `draft-unsaved`).
+function onRemoteNote(m) {
+  const what = sync.remoteNote(state.draft.notes, m.note)
+  if (what) recheckSize()
+  if (what === 'added') renderNotesKeepingFocus()
+  else if (what === 'changed') {
+    const n = state.draft.notes.find((x) => x.id === m.note.id)
+    const input = noteInputs.get(n)
+    if (input) {
+      setValueKeepingCaret(input, n.text)
+      fitText(input)
+    }
+  }
+}
+
+function onRemoteDelete(m) {
+  if (!sync.remoteDelete(state.draft.notes, m.id)) return
+  recheckSize()
+  renderNotesKeepingFocus()
+}
+
+function onRemoteGlobal(m) {
+  if (!sync.remoteGlobal(state.draft, m.text)) return
+  recheckSize()
+  setValueKeepingCaret($('global'), m.text)
+}
+
+function onDraftError(m) {
+  saveState.hostError = typeof m.message === 'string' ? m.message : 'Draft not saved.'
+  showSaveState()
+  // An add the host refused: its note is not in the draft, so it goes here too.
+  if (typeof m.tag === 'string' && sync.refused(state.draft.notes, m.tag)) renderNotesKeepingFocus()
 }
 
 // ---- init ----
@@ -1515,8 +1666,17 @@ function init(m) {
   document.body.classList.remove('loading', 'failed')
   state.sides = m.sides
   state.draft = m.draft || { global: '', notes: [] }
+  // A read guest's copy: the notes and the comment are shown, not editable (the host drops its ops too).
+  state.canNote = m.canNote !== false
+  document.body.classList.toggle('read-only', !state.canNote)
+  $('global').readOnly = !state.canNote
+  sync.reset()
   state.layout = m.layout === 'unified' ? 'unified' : 'split'
   state.canOpenLinks = m.canOpenLinks === true
+  // A guest's copy (`canAct: false`): the caller's buttons are not the guest's to press (the host drops
+  // them too). Hidden by CSS, not left out of the DOM, so the text, and with it every note's anchor, is
+  // the same in every copy.
+  document.body.classList.toggle('no-actions', m.canAct === false)
   state.split = clampSplit(m.split)
   $('layout').textContent = state.layout === 'split' ? 'Unified' : 'Side by side'
   const s = state.sides
@@ -1552,6 +1712,7 @@ function init(m) {
     $('base').textContent = formatSize(Number(s.size) || 0)
     $('global').placeholder = s.kind === 'pdf' ? `Comment on the PDF (optional); ${how}` : 'Comment on the image (optional)'
   }
+  if (!state.canNote) $('global').placeholder = 'No comment yet'
   // A markdown or HTML file (state.md: its Rendered / Source view).
   state.md = (s.format === 'markdown' || s.format === 'html') && s.mode !== 'html' && s.mode !== 'text' ? initialMarkdownView(s) : null
   htmlView.body.classList.toggle('markdown', state.md !== null)
@@ -1566,7 +1727,7 @@ function init(m) {
 
 $('global').addEventListener('input', (e) => {
   state.draft.global = e.target.value
-  postDraft()
+  postOp({ type: 'global', text: state.draft.global }, 'global')
 })
 $('add-note').addEventListener('click', () => addNote())
 // Keep the removed-block pick when the click goes to the button itself.
@@ -1647,14 +1808,17 @@ ccPanel.onMessage((m) => {
   else if (m.type === 'failed') showFailed(m)
   else if (m.type === 'loading') showLoading()
   else if (m.type === 'error') setStatus(m.message)
-  else if (m.type === 'draft-error') {
-    saveState.hostError = typeof m.message === 'string' ? m.message : 'Draft not saved.'
-    showSaveState()
-  } else if (m.type === 'draft-saved') {
+  else if (m.type === 'draft-error') onDraftError(m)
+  else if (m.type === 'draft-saved') {
     saveState.hostError = ''
     showSaveState()
   }
   else if (m.type === 'draft-request') answerDraftRequest()
+  else if (m.type === 'note-added') onNoteAdded(m)
+  else if (m.type === 'ack') onAck(m)
+  else if (m.type === 'note') onRemoteNote(m)
+  else if (m.type === 'note-deleted') onRemoteDelete(m)
+  else if (m.type === 'global') onRemoteGlobal(m)
   else if (m.type === 'html') htmlPart(m)
   else if (m.type === 'aside') renderAside(m)
   else if (m.type === 'asset') htmlAsset(m)

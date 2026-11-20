@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chordOf, commandForEvent, registerHandlers, resetKeybindings, setCommands } from '../../src/renderer/commands/keybindings'
 import { alternativeOf, browserKeeps, webKeyTable, withAlt } from '../../src/renderer/commands/web-keys'
-import { holdsPage, isOwnView, markWebShell, resetShellKindForTest, setOwnView } from '../../src/renderer/shell-kind'
+import { holdsPage, isHiddenPage, isOwnView, markHiddenPage, markWebShell, resetShellKindForTest, setOwnView } from '../../src/renderer/shell-kind'
 import type { CommandsView } from '../../src/shared/ipc'
 import { CommandRegistry } from '../../src/main/commands/command-registry'
 
@@ -149,6 +149,19 @@ describe('holdsPage (an html overlay held by one view, design-web.md §5.4)', ()
     expect(holdsPage(undefined)).toBe(false)
     expect(holdsPage({ viewId: 'web:1' })).toBe(true)
     expect(holdsPage({ viewId: 'web:2' })).toBe(false)
+  })
+})
+
+describe('the hidden page (docs/design-overlay-views.md §5: no perView copy there)', () => {
+  it("is main's word for the desktop page only; the web shell never is one", () => {
+    expect(isHiddenPage()).toBe(false)
+    markHiddenPage(true)
+    expect(isHiddenPage()).toBe(true)
+    markHiddenPage(false)
+    expect(isHiddenPage()).toBe(false)
+    markWebShell()
+    markHiddenPage(true)
+    expect(isHiddenPage()).toBe(false)
   })
 })
 

@@ -135,6 +135,12 @@ var MANIFEST_SCHEMA = {
       additionalProperties: false,
       properties: { aware: { type: "boolean" } }
     },
+    // Strict inside like `guests`: a misspelt `perview` would silently leave one shared overlay.
+    overlays: {
+      type: "object",
+      additionalProperties: false,
+      properties: { perView: { type: "boolean" } }
+    },
     contributes: {
       type: "object",
       properties: {

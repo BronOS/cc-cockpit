@@ -40,6 +40,15 @@ export type CleanTypeButton = CleanOverlayButton & { pluginId: string }
 /** How long a toolbar click may run (design-next §3.3): the button is idle again after this. */
 export const OVERLAY_CLICK_TIMEOUT_MS = 30_000
 
+/**
+ * A floor on the plugin ids one overlay call may name as its sources (provenance, docs/design-overlay-views.md §4:
+ * a service caller chain or `handle.addSources`). Never a trim: `via` only narrows who sees an overlay, so a cut
+ * list would fail open. The host filters to its own plugins and dedupes first (a list bounded by its plugin count)
+ * and, with no such filter, throws past this at the call site; main refuses a list longer than this or than its
+ * host's plugin count, whichever is larger, and never truncates.
+ */
+export const MAX_OVERLAY_SOURCES = 32
+
 export interface CleanOverlayType {
   name: string
   /** Plain JSON, already round-tripped through JSON text. */

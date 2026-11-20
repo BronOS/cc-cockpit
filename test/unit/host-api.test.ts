@@ -53,11 +53,13 @@ import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { TabManager } from '../../src/main/tabs/tab-manager'
 import { RoomService } from '../../src/main/rooms/room-service'
 import type { TabInfo } from '../../src/shared/ipc'
+import type { GuestAccess } from '../../src/shared/guests'
 import { defaultLayout } from '../../src/shared/layout'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 import { unusedOAuth, unusedSecrets } from '../fakes/unused-host-services'
 import type { RpcMeta } from '../../src/host/rpc'
 import { DEFAULT_PLUGIN_LIMITS, type PluginLimits } from '../../src/shared/plugin-limits'
+import { MAX_OVERLAY_SOURCES } from '../../src/shared/overlay-buttons'
 import { PluginLimitsStore } from '../../src/main/plugins/plugin-limits'
 
 const A = 'aaaaaaaaaaaaaaaa'
@@ -1162,7 +1164,17 @@ describe('overlay.open', () => {
     await waitOpen(WIN_A, 1)
     const info = overlays.infos(WIN_A)[0]!
     // Loaded like a panel (the plugin's origin and CSP, the panel SDK), not copied into memory.
-    expect(info).toEqual({ id: info.id, kind: 'html', title: 'Pick', src: 'cc-plugin://a.one/page.html', size: 'default', loading: true })
+    // The opener's id and name for a guest's note (docs/design-overlay-views.md §7).
+    expect(info).toEqual({
+      id: info.id,
+      kind: 'html',
+      title: 'Pick',
+      src: 'cc-plugin://a.one/page.html',
+      size: 'default',
+      loading: true,
+      pluginId: 'a.one',
+      pluginTitle: 'a.one'
+    })
     expect(info.kind === 'html' && overlays.pageHtml(info.src)).toBeUndefined()
     // What the renderer relays when the page posts `{ result: { picked: 2 } }` (HtmlOverlay).
     expect(overlays.result(WIN_A, info.id, { picked: 2 })).toBe(true)
@@ -1248,7 +1260,8 @@ describe('overlay messages (ctx.overlay.start)', () => {
 
     // The page posts without `result`: the overlay stays, the opener's host hears it with the handle.
     expect(overlays.pageMessage(WIN_A, id(), '{"draft":"hi"}')).toBe(true)
-    expect(events).toContainEqual({ event: 'overlay.message', params: { pluginId: 'a.one', handle: H, message: { draft: 'hi' } } })
+    // `from`: the desktop page's, the owner (docs/design-overlay-views.md §3).
+    expect(events).toContainEqual({ event: 'overlay.message', params: { pluginId: 'a.one', handle: H, message: { draft: 'hi' }, from: { access: 'owner' } } })
     expect(overlays.infos(WIN_A)).toHaveLength(1)
     // From another window's renderer the id is unknown; junk and oversize text are dropped.
     expect(overlays.pageMessage(WIN_B, id(), '{"x":1}')).toBe(false)
@@ -1808,7 +1821,7 @@ describe('overlay toolbar (design-next §3.3, §3.6)', () => {
     await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
     expect(overlays.buttonClick(WIN_A, overlays.infos(WIN_A)[0]!.id, { source: 'opener', buttonId: 'star' })).toBe(true)
     expect(hostCalls).toEqual([
-      { method: 'overlay.buttonClick', params: { source: 'opener', pluginId: 'a.one', handle: H, buttonId: 'star' }, timeoutMs: 30_000 }
+      { method: 'overlay.buttonClick', params: { source: 'opener', pluginId: 'a.one', handle: H, buttonId: 'star', from: { access: 'owner' } }, timeoutMs: 30_000 }
     ])
   })
 
@@ -1863,7 +1876,7 @@ describe('overlay toolbar (design-next §3.3, §3.6)', () => {
     await expect(buttons.click('key-1', 'a.two', 'edit', query)).resolves.toEqual({ close: true })
     expect(hostCalls[1]).toEqual({
       method: 'overlay.buttonClick',
-      params: { source: 'type', key: 'key-1', pluginId: 'a.two', buttonId: 'edit', info: query },
+      params: { source: 'type', key: 'key-1', pluginId: 'a.two', buttonId: 'edit', info: query, from: { access: 'owner' } },
       timeoutMs: 30_000
     })
     await expect(buttons.click('key-1', 'b.one', 'steal', query)).rejects.toThrow('unknown plugin')
@@ -1939,7 +1952,227 @@ describe('overlay toolbar (design-next §3.3, §3.6)', () => {
     void call('overlay.open', { pluginId: 'a.one', spec: { kind: 'url', url: 'https://example.com/' }, handle: H })
     await vi.waitFor(() => expect(channel).toBeDefined())
     await expect(channel!.onDiscuss!()).resolves.toEqual({ text: 'ctx' })
-    expect(hostCalls).toEqual([{ method: 'overlay.discuss', params: { pluginId: 'a.one', handle: H }, timeoutMs: 5_000 }])
+    expect(hostCalls).toEqual([{ method: 'overlay.discuss', params: { pluginId: 'a.one', handle: H, from: { access: 'owner' } }, timeoutMs: 5_000 }])
+  })
+})
+
+// docs/design-overlay-views.md §3, §5: a perView plugin's copies, and `from` (who acted) on everything the opener hears.
+describe('overlay copies and who acted', () => {
+  const H = '2f6c2c4e-1111-4222-8333-944455556666'
+  const H2 = '3f6c2c4e-1111-4222-8333-944455556666'
+  const D = 'desktop:1'
+  /** The guest store as main reads it: web:3 and web:4 the owner's browsers, web:7 a write guest, web:8 a guest of another project. */
+  const revoked = new Set<string>()
+  const access = (viewId: string): GuestAccess => {
+    if (revoked.has(viewId)) return { kind: 'revoked' }
+    if (viewId === 'web:3' || viewId === 'web:4' || viewId === 'web:5') return { kind: 'owner' }
+    if (viewId === 'web:7') return { kind: 'guest', id: 'g7', name: 'Ann', role: 'write', projectId: A, scope: { kind: 'all' } as never }
+    if (viewId === 'web:8') return { kind: 'guest', id: 'g8', name: 'Bo', role: 'read', projectId: B, scope: { kind: 'all' } as never }
+    return { kind: 'revoked' }
+  }
+  const managers: OverlayManager[] = []
+  beforeEach(() => {
+    revoked.clear()
+    // a.two opens the same page, as a plugin without perView.
+    writeFileSync(join(pluginTwo, 'page.html'), '<p>from a.two</p>')
+  })
+  afterEach(() => {
+    for (const m of managers.splice(0)) m.disposeAll()
+  })
+
+  const scopePv = (): HostScope => ({
+    ...scopeA(),
+    plugins: [
+      { id: 'a.one', dir: pluginOne, panels: ['board'], overlaysPerView: true },
+      { id: 'a.two', dir: pluginTwo, panels: ['inbox'] }
+    ]
+  })
+
+  function pvHost(opts: { viewAccess?: boolean } = {}) {
+    const hostCalls: Array<{ method: string; params: Record<string, unknown> }> = []
+    const events: { event: string; params: unknown }[] = []
+    const toView: Array<{ viewId: string; channel: string; payload: unknown }> = []
+    const view: UrlView = { setBounds: () => {}, setVisible: () => {}, focus: () => {}, destroy: () => {} }
+    const m = new OverlayManager({
+      // The guests' views are not the owner's (their copies would need mayConnectCopy, Task 5).
+      ownerView: (viewId) => viewId !== 'web:7' && viewId !== 'web:8',
+      backend: overlayBackend,
+      views: { create: () => view, focusWindow: () => {} },
+      isWindowOpen: (id) => id === WIN_A,
+      env: () => ({ PATH: '/usr/bin' }),
+      emit: () => {},
+      emitToView: (viewId, channel, payload) => {
+        toView.push({ viewId, channel, payload })
+        return true
+      },
+      isViewLive: (viewId, windowId) => windowId === WIN_A && viewId.startsWith('web:'),
+      commandForChord: () => undefined,
+      log: () => {}
+    })
+    managers.push(m)
+    let channel: OverlayChannel | undefined
+    deps.openOverlay = (windowId, spec, opener, peerGone, ch, pluginId, origin, options) => {
+      if (pluginId === 'a.one') channel = ch
+      return m.open(windowId, spec, opener, peerGone, ch, pluginId, origin, undefined, options)
+    }
+    deps.postOverlay = (windowId, overlayId, text, options) => m.post(windowId, overlayId, text, options)
+    deps.hideOverlayCopy = (windowId, overlayId, copy) => m.hideCopy(windowId, overlayId, copy)
+    deps.closeOverlay = (windowId, overlayId) => m.close(windowId, overlayId)
+    deps.setOverlayButtons = (windowId, overlayId, buttons) => m.setButtons(windowId, overlayId, buttons)
+    if (opts.viewAccess !== false) deps.viewAccess = access
+    const api = new HostApi(
+      deps,
+      scopePv(),
+      (event, params) => events.push({ event, params }),
+      async (method, params) => {
+        hostCalls.push({ method, params: params as Record<string, unknown> })
+        return method === 'overlay.discuss' ? { text: 'ctx' } : null
+      }
+    )
+    apis.push(api)
+    const call = (method: string, params?: unknown): Promise<unknown> => Promise.resolve().then(() => api.handlers[method]!(params))
+    const open = async (pluginId = 'a.one', handle = H): Promise<string> => {
+      const before = m.infos(WIN_A).length
+      void call('overlay.open', { pluginId, spec: { kind: 'html', file: 'page.html', buttons: [{ id: 'star', label: 'Star' }] }, handle }).catch(() => {})
+      await vi.waitFor(() => expect(m.infos(WIN_A)).toHaveLength(before + 1))
+      return m.infos(WIN_A).at(-1)!.id
+    }
+    const connect = (id: string, viewId: string): string => {
+      const r = m.connectReady(WIN_A, id, viewId)
+      if (!('copy' in r)) throw new Error(`refused: ${r.refused}`)
+      return r.copy
+    }
+    const of = (event: string) => events.filter((e) => e.event === event).map((e) => e.params)
+    return { m, api, call, hostCalls, events, toView, open, connect, of, channel: () => channel! }
+  }
+
+  it("the opener manifest's perView reaches the manager; another plugin of the host keeps one holder", async () => {
+    const { m, open } = pvHost()
+    await open('a.one', H)
+    await open('a.two', H2)
+    expect(m.infos(WIN_A).map((i) => i.perView === true)).toEqual([true, false])
+  })
+
+  it("an owner browser's copy, message, button and Discuss carry its view and the owner's access, not the desktop's", async () => {
+    const { m, open, connect, of, hostCalls, channel } = pvHost()
+    const id = await open()
+    const desk = connect(id, D)
+    const web = connect(id, 'web:3')
+    expect(of('overlay.connect')).toEqual([
+      { pluginId: 'a.one', handle: H, copy: desk, from: { access: 'owner' } },
+      { pluginId: 'a.one', handle: H, copy: web, view: 'web:3', from: { view: 'web:3', access: 'owner' } }
+    ])
+    expect(m.copyMessage(WIN_A, id, 'web:3', web, '{"n":1}')).toBe(true)
+    expect(of('overlay.message')).toEqual([
+      { pluginId: 'a.one', handle: H, message: { n: 1 }, view: 'web:3', copy: web, from: { view: 'web:3', access: 'owner' } }
+    ])
+    expect(m.buttonClick(WIN_A, id, { source: 'opener', buttonId: 'star' }, 'web:3')).toBe(true)
+    await vi.waitFor(() => expect(hostCalls).toHaveLength(1))
+    expect(hostCalls[0]).toEqual({
+      method: 'overlay.buttonClick',
+      params: { source: 'opener', pluginId: 'a.one', handle: H, buttonId: 'star', view: 'web:3', from: { view: 'web:3', access: 'owner' } }
+    })
+    await expect(channel().onDiscuss!('web:3')).resolves.toEqual({ text: 'ctx' })
+    expect(hostCalls[1]).toEqual({ method: 'overlay.discuss', params: { pluginId: 'a.one', handle: H, view: 'web:3', from: { view: 'web:3', access: 'owner' } } })
+  })
+
+  it("a guest's click, type button and Discuss carry its role and invite name; a revoked, foreign or unknown view is refused", async () => {
+    const { m, api, open, of, hostCalls, channel } = pvHost()
+    const id = await open()
+    expect(m.buttonClick(WIN_A, id, { source: 'opener', buttonId: 'star' }, 'web:7')).toBe(true)
+    await vi.waitFor(() => expect(hostCalls).toHaveLength(1))
+    const ann = { view: 'web:7', access: 'write', person: 'Ann' }
+    expect(hostCalls[0]!.params.from).toEqual(ann)
+    const query = { type: { name: 'file', data: { path: 'a.ts' } }, title: 'a.ts', opener: 'a.one' }
+    await expect(api.overlayButtons.click('k', 'a.two', 'edit', query, 'web:7')).resolves.toEqual({ close: false })
+    expect(hostCalls[1]!.params).toMatchObject({ source: 'type', view: 'web:7', from: ann })
+    await channel().onDiscuss!('web:7')
+    expect(hostCalls[2]!.params).toEqual({ pluginId: 'a.one', handle: H, view: 'web:7', from: ann })
+    // Revoked (a kicked guest, a view that left), a guest of another project, a view main never minted.
+    for (const view of ['web:9', 'web:8']) {
+      await expect(channel().onButton!('star', view)).rejects.toThrow(/view is gone/)
+      await expect(channel().onDiscuss!(view)).rejects.toThrow(/gone/)
+      await expect(api.overlayButtons.click('k', 'a.two', 'edit', query, view)).rejects.toThrow(/view is gone/)
+      channel().onMessage({ x: 1 }, view)
+    }
+    revoked.add('web:7')
+    await expect(channel().onButton!('star', 'web:7')).rejects.toThrow(/view is gone/)
+    expect(hostCalls).toHaveLength(3)
+    expect(of('overlay.message')).toEqual([])
+  })
+
+  it('without a guest lookup wired, a remote view is never read as the owner (fail closed); the desktop still is', async () => {
+    const { open, of, hostCalls, channel } = pvHost({ viewAccess: false })
+    await open()
+    await expect(channel().onButton!('star', 'web:3')).rejects.toThrow(/view is gone/)
+    channel().onMessage({ x: 1 }, 'web:3')
+    expect(of('overlay.message')).toEqual([])
+    await channel().onButton!('star')
+    expect(hostCalls).toEqual([{ method: 'overlay.buttonClick', params: { source: 'opener', pluginId: 'a.one', handle: H, buttonId: 'star', from: { access: 'owner' } } }])
+  })
+
+  it('post: to every joined copy or one copy; a gone copy is dropped; a copy is refused on a non-perView overlay', async () => {
+    const { open, connect, call, toView, of } = pvHost()
+    // Before the overlay exists no copy can: a post naming one is dropped, not queued.
+    void call('overlay.open', { pluginId: 'a.one', spec: { kind: 'html', file: 'page.html' }, handle: H }).catch(() => {})
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: 'early', copy: 'c'.repeat(32) })).resolves.toBe(false)
+    await vi.waitFor(() => expect(managers[0]!.infos(WIN_A)).toHaveLength(1))
+    const id = await open('a.one', H2)
+    const a = connect(id, 'web:3')
+    const b = connect(id, 'web:4')
+    const messages = () =>
+      toView.filter((e) => e.channel === 'overlays.message').map((e) => [e.viewId, (e.payload as { message: string }).message])
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H2, message: 'init a', copy: a })).resolves.toBe(true)
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H2, message: 'all' })).resolves.toBe(true)
+    expect(messages()).toEqual([
+      ['web:3', '"init a"'],
+      ['web:3', '"all"']
+    ])
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H2, message: 'init b', copy: b })).resolves.toBe(true)
+    // b's view leaves: its copy goes, and a post to it is dropped (false), nothing sent.
+    managers[0]!.viewGone('web:4')
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H2, message: 'lost', copy: b })).resolves.toBe(false)
+    expect(messages()).toEqual([
+      ['web:3', '"init a"'],
+      ['web:3', '"all"'],
+      ['web:4', '"init b"']
+    ])
+    expect(of('overlay.disconnect')).toEqual([{ pluginId: 'a.one', handle: H2, copy: b, view: 'web:4', from: { view: 'web:4', access: 'owner' } }])
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H2, message: 'x', copy: 5 })).rejects.toThrow(/copy must be a string/)
+    await open('a.two', H)
+    await expect(call('overlay.post', { pluginId: 'a.two', handle: H, message: 'x', copy: a })).rejects.toThrow(/only for an overlay shown in every view/)
+    await expect(call('overlay.post', { pluginId: 'a.two', handle: H, message: 'held' })).resolves.toBe(true)
+  })
+
+  it("hide reaches only that copy's view and releases it; the plugin hears the disconnect", async () => {
+    const { m, open, connect, call, toView, of } = pvHost()
+    const id = await open()
+    const a = connect(id, 'web:3')
+    const b = connect(id, 'web:4')
+    await expect(call('overlay.hide', { pluginId: 'a.one', handle: H, copy: a })).resolves.toBe(true)
+    expect(toView.filter((e) => e.channel === 'overlays.hide')).toEqual([{ viewId: 'web:3', channel: 'overlays.hide', payload: { overlayId: id, copy: a } }])
+    expect(of('overlay.disconnect')).toEqual([{ pluginId: 'a.one', handle: H, copy: a, view: 'web:3', from: { view: 'web:3', access: 'owner' } }])
+    expect(m.copies(WIN_A, id).map((c) => c.copy)).toEqual([b])
+    await expect(call('overlay.hide', { pluginId: 'a.one', handle: H, copy: a })).resolves.toBe(false)
+    await expect(call('overlay.hide', { pluginId: 'a.one', handle: H })).rejects.toThrow(/copy must be a string/)
+    await expect(call('overlay.hide', { pluginId: 'a.two', handle: H, copy: b })).resolves.toBe(false)
+    await open('a.two', H2)
+    await expect(call('overlay.hide', { pluginId: 'a.two', handle: H2, copy: b })).rejects.toThrow(/overlays.perView/)
+    expect(toView.filter((e) => e.channel === 'overlays.hide')).toHaveLength(1)
+  })
+
+  it("a disconnect carries its connect's from even once the view is revoked; a copy never announced is never disconnected", async () => {
+    const { m, open, connect, of } = pvHost()
+    const id = await open()
+    const a = connect(id, 'web:3')
+    revoked.add('web:3')
+    m.viewGone('web:3')
+    // web:5 is an owner's view to the manager, but the guest store no longer knows it: never announced.
+    revoked.add('web:5')
+    connect(id, 'web:5')
+    m.viewGone('web:5')
+    expect(of('overlay.connect').map((p) => (p as { copy: string }).copy)).toEqual([a])
+    expect(of('overlay.disconnect')).toEqual([{ pluginId: 'a.one', handle: H, copy: a, view: 'web:3', from: { view: 'web:3', access: 'owner' } }])
   })
 })
 
@@ -2233,11 +2466,124 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
     expect(calls).toEqual([['https://example.com/a', { windowId: WIN_A, viewId: 'web:1' }]])
     // A view of another window, one main never had, no view, and a forged field in the payload.
     for (const meta of [{ view: 'web:2' }, { view: 'web:99' }, {}]) await host('openExternal', { ...params, pluginId: 'a.two' }, meta)
-    await host('openExternal', { ...params, view: 'web:1', remote: true }, {})
+    await host('openExternal', { ...params, remote: true }, {})
     expect(calls.slice(1)).toEqual(Array.from({ length: 4 }, () => ['https://example.com/a', { windowId: WIN_A, viewId: undefined }]))
     // The URL is still checked before the adapter is asked.
     await expect(host('openExternal', { pluginId: 'a.one', url: 'file:///etc/passwd' }, { view: 'web:1' })).rejects.toThrow()
     expect(calls).toHaveLength(5)
+  })
+
+  // ctx.openExternal's `{ view }` (docs/design-overlay-views.md §3): the payload's `view` is an address the plugin
+  // names (a `from.view`), checked strictly: a refusal, never the hint's "no view" (the owner's system browser).
+  describe('openExternal { view }: that view only, or refused', () => {
+    const GUEST_VIEW = 'web:5'
+    const OTHER_GUEST_VIEW = 'web:6'
+    const REVOKED_VIEW = 'web:7'
+    const URL_A = 'https://example.com/a'
+    let calls: unknown[][]
+    let shown: boolean
+    let host: (method: string, params: unknown, meta: RpcMeta) => Promise<unknown>
+
+    beforeEach(() => {
+      calls = []
+      shown = true
+      deps.openExternal = async (url, target) => {
+        calls.push([url, target])
+      }
+      const windows: Record<string, number> = { ...viewWindows, [GUEST_VIEW]: WIN_A, [OTHER_GUEST_VIEW]: WIN_A, [REVOKED_VIEW]: WIN_A }
+      deps.viewWindow = (viewId) => windows[viewId]
+      const guest = (projectId: string): GuestAccess => ({ kind: 'guest', id: 'g1', name: 'Ann', role: 'read', projectId, scope: { kind: 'all' } as never })
+      deps.viewAccess = (viewId): GuestAccess =>
+        viewId === GUEST_VIEW ? guest(A) : viewId === OTHER_GUEST_VIEW ? guest(B) : viewId === REVOKED_VIEW ? { kind: 'revoked' } : { kind: 'owner' }
+      deps.guestPluginVisible = (projectId, pluginId) => shown && projectId === A && pluginId === 'a.one'
+      host = hostWithMeta()
+    })
+
+    it("an owner's browser view: that view, addressed (the adapter sends there alone), whatever the hint says", async () => {
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, {})
+      // A hint for another view (or none, as an expired one) does not change the address.
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, { view: GUEST_VIEW })
+      expect(calls).toEqual([
+        [URL_A, { windowId: WIN_A, viewId: 'web:1', addressed: true }],
+        [URL_A, { windowId: WIN_A, viewId: 'web:1', addressed: true }]
+      ])
+    })
+
+    it("a guest's view: only while the guest is live and the plugin is shown to guests (read live)", async () => {
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: GUEST_VIEW }, {})
+      expect(calls).toEqual([[URL_A, { windowId: WIN_A, viewId: GUEST_VIEW, addressed: true }]])
+      // A plugin hidden from guests (another plugin of the host, or the owner hid it since): refused in the same
+      // words as a gone view, so it cannot tell a live guest's view from a gone one (Task 6 review).
+      const goneText = await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:99' }, {}).catch((err: Error) => err.message)
+      expect(goneText).toMatch(/gone/)
+      await expect(host('openExternal', { pluginId: 'a.two', url: URL_A, view: GUEST_VIEW }, {})).rejects.toThrow(goneText)
+      shown = false
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: GUEST_VIEW }, {})).rejects.toThrow(goneText)
+      shown = true
+      // A revoked guest, and a guest of another project (never this window's business): gone.
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: REVOKED_VIEW }, {})).rejects.toThrow('gone')
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: OTHER_GUEST_VIEW }, {})).rejects.toThrow('gone')
+      // No visibility lookup wired: every guest view refused (fail closed).
+      delete deps.guestPluginVisible
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: GUEST_VIEW }, {})).rejects.toThrow(goneText)
+      // No access lookup wired: every remote view refused, the owner's too (never the owner by default).
+      delete deps.viewAccess
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, { view: 'web:1' })).rejects.toThrow('gone')
+      expect(calls).toHaveLength(1)
+    })
+
+    it("another window's view, an unknown or gone one, and anything not a view id: refused, never the system opener", async () => {
+      for (const view of ['web:2', 'web:99', 'desktop:1', 'Desktop', '', null, 5, {}]) {
+        await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view }, { view: 'web:1' }), String(view)).rejects.toThrow(/openExternal: /)
+      }
+      // No view lookup wired at all: the same.
+      delete deps.viewWindow
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, {})).rejects.toThrow('gone')
+      expect(calls).toEqual([])
+    })
+
+    it('the URL is checked first on every route, and a refused view spends no budget', async () => {
+      for (const view of ['web:1', GUEST_VIEW, 'web:99', undefined]) {
+        await expect(host('openExternal', { pluginId: 'a.one', url: 'file:///etc/passwd', view }, {}), String(view)).rejects.toThrow('only http and https')
+        await expect(host('openExternal', { pluginId: 'a.one', url: 'javascript:alert(1)', view }, {}), String(view)).rejects.toThrow('only http and https')
+      }
+      for (let i = 0; i < MAX_EXTERNAL_OPENS_PER_WINDOW; i++) {
+        await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:99' }, {})).rejects.toThrow('gone')
+      }
+      for (let i = 0; i < MAX_EXTERNAL_OPENS_PER_WINDOW; i++) await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, {})
+      expect(calls).toHaveLength(MAX_EXTERNAL_OPENS_PER_WINDOW)
+      // An addressed open is still budgeted: the next one is refused by the budget, not sent.
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, {})).rejects.toThrow(/more than \d+ links/)
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'desktop' }, {})).rejects.toThrow(/more than \d+ links/)
+      expect(calls).toHaveLength(MAX_EXTERNAL_OPENS_PER_WINDOW)
+    })
+
+    it("'desktop' (the desktop page's from.view) names THIS host's window's desktop page; refused in server mode", async () => {
+      // Whatever the hint says: the address is the host's own window, never a window from the plugin.
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'desktop' }, { view: 'web:1' })
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'desktop' }, {})
+      expect(calls).toEqual([
+        [URL_A, { windowId: WIN_A, viewId: `desktop:${WIN_A}`, addressed: true }],
+        [URL_A, { windowId: WIN_A, viewId: `desktop:${WIN_A}`, addressed: true }]
+      ])
+      // Server mode: the desktop page is the hidden one, with no screen: refused before the budget.
+      deps.server = true
+      for (let i = 0; i <= MAX_EXTERNAL_OPENS_PER_WINDOW; i++) {
+        await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'desktop' }, {})).rejects.toThrow(/no screen/)
+      }
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, {})
+      expect(calls).toHaveLength(3)
+      delete deps.server
+    })
+
+    it("an explicit undefined view is today's request (the hint decides)", async () => {
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: undefined }, { view: 'web:1' })
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: undefined }, {})
+      expect(calls).toEqual([
+        [URL_A, { windowId: WIN_A, viewId: 'web:1' }],
+        [URL_A, { windowId: WIN_A, viewId: undefined }]
+      ])
+    })
   })
 
   it('files.reveal and files.openWithSystem are refused for a remote view and run for the desktop', async () => {
@@ -3110,5 +3456,241 @@ describe('the person\'s per-plugin limits', () => {
     const open = hostA()
     for (let i = 0; i < DEFAULT_PLUGIN_LIMITS.opensPerMinute; i++) await open('sessions.open', { pluginId: 'a.one' })
     await expect(open('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(`more than ${DEFAULT_PLUGIN_LIMITS.opensPerMinute} tabs a minute`)
+  })
+})
+
+// Provenance (docs/design-overlay-views.md §4, D-4): the host sends the service caller chain as `via` on overlay calls
+// and `handle.addSources` for deferred fills; main keeps only this host's plugins, grows the overlay's set before the
+// call's content goes out, and hands `files.open`'s taker the calling plugin as `requestedBy`.
+describe('overlay provenance (via) and requestedBy', () => {
+  const H = '4f6c2c4e-1111-4222-8333-944455556666'
+  const GUEST = 'web:7'
+  /** a.one is the Reviewer (perView); the guest sees it and a.three, never a.two (Gmail). */
+  const shown = (p: string): boolean => p === 'a.one' || p === 'a.three'
+  const managers: OverlayManager[] = []
+  afterEach(() => {
+    for (const m of managers.splice(0)) m.disposeAll()
+  })
+
+  /** `extra`: that many more plugins (`p.0`...), for a host with more plugins than MAX_OVERLAY_SOURCES. */
+  const scope = (extra = 0): HostScope => ({
+    ...scopeA(),
+    plugins: [
+      { id: 'a.one', dir: pluginOne, panels: ['board'], overlaysPerView: true },
+      { id: 'a.two', dir: pluginTwo, panels: ['inbox'] },
+      { id: 'a.three', dir: pluginTwo, panels: [] },
+      ...Array.from({ length: extra }, (_, i) => ({ id: `p.${i}`, dir: pluginTwo, panels: [] }))
+    ]
+  })
+
+  function setup(opts: { sources?: boolean; extra?: number } = {}) {
+    const log: string[] = []
+    /** Whether the guest could see each overlay at the moment its list went out (what the guest filter decides then). */
+    const listed: boolean[][] = []
+    const view: UrlView = { setBounds: () => {}, setVisible: () => {}, focus: () => {}, destroy: () => {} }
+    const visible = (id: string): boolean => m.visibleTo(WIN_A, id, () => false, shown)
+    const m: OverlayManager = new OverlayManager({
+      ownerView: (v) => v !== GUEST,
+      backend: overlayBackend,
+      views: { create: () => view, focusWindow: () => {} },
+      isWindowOpen: (id) => id === WIN_A,
+      env: () => ({ PATH: '/usr/bin' }),
+      emit: (_w, channel, payload) => {
+        log.push(`emit ${channel}`)
+        if (channel === 'overlays.updated') listed.push((payload as Array<{ id: string }>).map((o) => visible(o.id)))
+      },
+      emitToView: (viewId, channel, payload) => {
+        const message = (payload as { message?: string }).message
+        log.push(`${viewId} ${channel}${message !== undefined ? ` ${message}` : ''}`)
+        return true
+      },
+      isViewLive: (viewId, windowId) => windowId === WIN_A && viewId.startsWith('web:'),
+      mayConnectCopy: (_w, overlayId) => visible(overlayId),
+      commandForChord: () => undefined,
+      log: () => {}
+    })
+    managers.push(m)
+    deps.openOverlay = (windowId, spec, opener, peerGone, ch, pluginId, origin, options) =>
+      m.open(windowId, spec, opener, peerGone, ch, pluginId, origin, undefined, options)
+    deps.postOverlay = (windowId, overlayId, text, options) => m.post(windowId, overlayId, text, options)
+    deps.setOverlayButtons = (windowId, overlayId, buttons) => m.setButtons(windowId, overlayId, buttons)
+    if (opts.sources !== false) deps.addOverlaySources = (windowId, overlayId, ids) => m.addSources(windowId, overlayId, ids)
+    else delete deps.addOverlaySources
+    deps.viewAccess = (viewId): GuestAccess =>
+      viewId === GUEST ? { kind: 'guest', id: 'g7', name: 'Ann', role: 'write', projectId: A, scope: { kind: 'all' } as never } : { kind: 'owner' }
+    const events: { event: string; params: unknown }[] = []
+    const api = new HostApi(deps, scope(opts.extra ?? 0), (event, params) => {
+      events.push({ event, params })
+      if (event === 'overlay.disconnect') log.push(`disconnect ${(params as { view?: string }).view ?? 'desktop'}`)
+    })
+    apis.push(api)
+    const call = (method: string, params?: unknown): Promise<unknown> => Promise.resolve().then(() => api.handlers[method]!(params))
+    const open = async (extra: Record<string, unknown> = {}, kind: 'html' | 'terminal' = 'html'): Promise<string> => {
+      const before = m.infos(WIN_A).length
+      const spec = kind === 'html' ? { kind: 'html', file: 'page.html', title: 'Re: salary' } : { kind: 'terminal', argv: ['true'], title: 'Re: salary' }
+      void call('overlay.open', { pluginId: 'a.one', spec, handle: H, ...extra }).catch(() => {})
+      await vi.waitFor(() => expect(m.infos(WIN_A)).toHaveLength(before + 1))
+      return m.infos(WIN_A).at(-1)!.id
+    }
+    return { m, call, open, log, listed, visible, events }
+  }
+
+  it("A -> B -> Reviewer: the open's chain attributes both; the guest never sees it, not even in its first listing", async () => {
+    const { open, listed, visible } = setup()
+    const id = await open({ via: ['a.three', 'a.two'] })
+    expect(listed).toEqual([[false]])
+    expect(visible(id)).toBe(false)
+  })
+
+  // Task 4 review: a source cut to a bound fails open. A host with more plugins than the floor sends a longer list
+  // (filtered to its plugins, deduped); main takes it whole, bounded by the host's plugin count.
+  it('a host with more plugins than MAX_OVERLAY_SOURCES: a list that long is taken whole, one longer refused', async () => {
+    const n = MAX_OVERLAY_SOURCES + 5
+    const { m, open, call } = setup({ extra: n })
+    const id = await open()
+    const ids = Array.from({ length: n }, (_, i) => `p.${i}`)
+    await expect(call('overlay.addSources', { pluginId: 'a.one', handle: H, ids })).resolves.toBe(true)
+    expect(m.visibleTo(WIN_A, id, () => false, (p) => p === 'a.one' || p !== `p.${n - 1}`)).toBe(false)
+    expect(m.visibleTo(WIN_A, id, () => false, () => true)).toBe(true)
+    const tooMany = Array.from({ length: n + 4 }, () => 'p.0')
+    await expect(call('overlay.addSources', { pluginId: 'a.one', handle: H, ids: tooMany })).rejects.toThrow(`more than ${n + 3} sources`)
+  })
+
+  it("a plugin's own overlay (no via) is unchanged: the guest who sees the opener sees it", async () => {
+    const { open, listed } = setup()
+    await open()
+    expect(listed).toEqual([[true]])
+  })
+
+  it("ids that are not this host's plugins are dropped (open, post, addSources); malformed lists are refused", async () => {
+    const { m, open, call, visible } = setup()
+    const id = await open({ via: ['x.mail', 5, 'b.one', 'a.three'] })
+    expect(visible(id)).toBe(true)
+    await expect(call('overlay.addSources', { pluginId: 'a.one', handle: H, ids: ['x.mail', null, {}] })).resolves.toBe(true)
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: 1, via: ['x.mail'] })).resolves.toBe(true)
+    expect(visible(id)).toBe(true)
+    await expect(call('overlay.addSources', { pluginId: 'a.one', handle: H, ids: 'a.two' })).rejects.toThrow('ids must be an array')
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: 1, via: 'a.two' })).rejects.toThrow('via must be an array')
+    const tooMany = Array.from({ length: MAX_OVERLAY_SOURCES + 1 }, () => 'a.two')
+    await expect(call('overlay.addSources', { pluginId: 'a.one', handle: H, ids: tooMany })).rejects.toThrow(`more than ${MAX_OVERLAY_SOURCES}`)
+    await expect(call('overlay.open', { pluginId: 'a.one', spec: { kind: 'html', file: 'page.html' }, via: 7 })).rejects.toThrow('via must be an array')
+    expect(visible(id)).toBe(true)
+    // A handle another plugin opened, or none at all: false, nothing grows.
+    await expect(call('overlay.addSources', { pluginId: 'a.two', handle: H, ids: ['a.two'] })).resolves.toBe(false)
+    expect(visible(id)).toBe(true)
+    expect(m.infos(WIN_A)).toHaveLength(1)
+  })
+
+  it('deferred addSources: grows the live overlay, so a guest no longer gets it', async () => {
+    const { open, call, visible, listed } = setup()
+    const id = await open()
+    expect(visible(id)).toBe(true)
+    await expect(call('overlay.addSources', { pluginId: 'a.one', handle: H, ids: ['a.two'] })).resolves.toBe(true)
+    expect(visible(id)).toBe(false)
+    expect(listed.at(-1)).toEqual([false])
+  })
+
+  it('addSources and a chained post made while the open still waits count from the first listing', async () => {
+    const { m, call, listed, visible } = setup()
+    void call('overlay.open', { pluginId: 'a.one', spec: { kind: 'terminal', argv: ['true'], title: 'Re: salary' }, handle: H }).catch(() => {})
+    await expect(call('overlay.addSources', { pluginId: 'a.one', handle: H, ids: ['a.two'] })).resolves.toBe(true)
+    await vi.waitFor(() => expect(m.infos(WIN_A)).toHaveLength(1))
+    expect(listed[0]).toEqual([false])
+    expect(visible(m.infos(WIN_A)[0]!.id)).toBe(false)
+    // A post carrying the chain before its overlay exists lands in the same set.
+    const H3 = '5f6c2c4e-1111-4222-8333-944455556666'
+    void call('overlay.open', { pluginId: 'a.one', spec: { kind: 'html', file: 'page.html', title: 'Re: rent' }, handle: H3 }).catch(() => {})
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H3, message: 'the mail', via: ['a.two'] })).resolves.toBe(true)
+    await vi.waitFor(() => expect(m.infos(WIN_A)).toHaveLength(2))
+    expect(listed.at(-1)).toEqual([false, false])
+  })
+
+  it("a post carrying a hidden source releases the guest's copy before the post is delivered to anyone", async () => {
+    const { m, open, call, log, events } = setup()
+    const id = await open()
+    const own = m.connectReady(WIN_A, id, 'web:3')
+    const guest = m.connectCopy(WIN_A, id, GUEST)
+    if (!('copy' in own) || !guest.ok) throw new Error('refused')
+    // Both join broadcasts; the guest's page is not up, so its starting state waits in its queue.
+    await call('overlay.post', { pluginId: 'a.one', handle: H, message: 'start', copy: own.copy })
+    await call('overlay.post', { pluginId: 'a.one', handle: H, message: 'start', copy: guest.copy })
+    log.length = 0
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: 'the mail', via: ['a.two'] })).resolves.toBe(true)
+    expect(log).toEqual([`disconnect ${GUEST}`, `${GUEST} overlays.hide`, 'emit overlays.updated', 'web:3 overlays.message "the mail"'])
+    expect(m.copyReady(WIN_A, id, GUEST, guest.copy)).toBe(false)
+    expect(events.filter((e) => e.event === 'overlay.disconnect')).toHaveLength(1)
+    // The same chain again grows nothing: no second list, no release.
+    log.length = 0
+    await call('overlay.post', { pluginId: 'a.one', handle: H, message: 'more', via: ['a.two'] })
+    expect(log).toEqual(['web:3 overlays.message "more"'])
+  })
+
+  it('setButtons carrying a hidden source grows the set before the buttons are applied', async () => {
+    const { open, call, listed } = setup()
+    await open({}, 'terminal')
+    await call('overlay.setButtons', { pluginId: 'a.one', handle: H, buttons: [{ id: 'archive', label: 'Archive' }], via: ['a.two'] })
+    // One list for the growth (already hidden), one for the buttons: never a visible one in between.
+    expect(listed.slice(1)).toEqual([[false], [false]])
+  })
+
+  it('without the manager call wired, a call that names a new source is refused, never delivered unattributed', async () => {
+    const { open, call, log } = setup({ sources: false })
+    await open()
+    log.length = 0
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: 'the mail', via: ['a.two'] })).rejects.toThrow('not available')
+    await expect(call('overlay.addSources', { pluginId: 'a.one', handle: H, ids: ['a.two'] })).rejects.toThrow('not available')
+    expect(log).toEqual([])
+    // Nothing named: as before.
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: 'own' })).resolves.toBe(true)
+  })
+
+  it("files.open hands the route the calling plugin main bound as requestedBy, never one from the payload", async () => {
+    const asked: Array<readonly string[] | undefined> = []
+    deps.openFile = async (_caller, _path, _tabId, _view, requestedBy) => {
+      asked.push(requestedBy)
+      return 'plugin'
+    }
+    const call = hostA()
+    await call('files.open', { pluginId: 'a.two', path: 'src/a.ts', requestedBy: 'a.one' })
+    await call('files.open', { pluginId: 'a.one', path: 'src/a.ts' })
+    expect(asked).toEqual([['a.two'], ['a.one']])
+  })
+
+  it('files.open: a chain through a service is attributed in full, outermost first and the caller last; checked like via', async () => {
+    const asked: Array<readonly string[] | undefined> = []
+    deps.openFile = async (_caller, _path, _tabId, _view, requestedBy) => {
+      asked.push(requestedBy)
+      return 'plugin'
+    }
+    const { call } = setup()
+    // Hidden a.two called shown a.three's service, which opened the file: both, a.three last.
+    await call('files.open', { pluginId: 'a.three', path: 'src/a.ts', via: ['a.two'] })
+    // Not this host's plugins: dropped, never trusted; duplicates once; the caller itself named earlier moves last.
+    await call('files.open', { pluginId: 'a.three', path: 'src/a.ts', via: ['b.other', 'a.three', 'a.two', 'a.two', 'a.one'] })
+    expect(asked).toEqual([
+      ['a.two', 'a.three'],
+      ['a.two', 'a.one', 'a.three']
+    ])
+    // Malformed or past the bound: refused whole before anything is routed or spent, never cut (fail closed).
+    await expect(call('files.open', { pluginId: 'a.three', path: 'src/a.ts', via: 'a.two' })).rejects.toThrow('via must be an array')
+    const tooMany = Array.from({ length: MAX_OVERLAY_SOURCES + 1 }, () => 'a.two')
+    await expect(call('files.open', { pluginId: 'a.three', path: 'src/a.ts', via: tooMany })).rejects.toThrow('more than')
+    expect(asked).toHaveLength(2)
+  })
+
+  it("sessions.openFile carries its requester and the chain to the taker; a refused chain spends nothing", async () => {
+    const asked: Array<readonly string[] | undefined> = []
+    deps.openSessionFile = async (_caller, _tabId, _file, _view, requestedBy) => {
+      asked.push(requestedBy)
+      return true
+    }
+    const mine = tabs.create(A, { kind: 'claude' })
+    const { call } = setup()
+    await expect(call('sessions.openFile', { pluginId: 'a.two', tabId: mine.id, path: 'a.ts' })).resolves.toBeNull()
+    await expect(call('sessions.openFile', { pluginId: 'a.three', tabId: mine.id, path: 'a.ts', via: ['a.two', 'b.other'] })).resolves.toBeNull()
+    await expect(call('sessions.openFile', { pluginId: 'a.three', tabId: mine.id, path: 'a.ts', via: { a: 1 } })).rejects.toThrow(
+      'via must be an array'
+    )
+    expect(asked).toEqual([['a.two'], ['a.two', 'a.three']])
   })
 })

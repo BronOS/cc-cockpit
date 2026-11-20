@@ -224,6 +224,8 @@ export interface HostPlugin {
   access?: PluginManifest['access']
   /** The ids of the manifest's `contributes.themes`: the only themes ctx.themes.set may replace. */
   themes?: string[]
+  /** The manifest says `overlays.perView`: its html overlays get one copy per view (HostApiPlugin.overlaysPerView). */
+  overlaysPerView?: boolean
 }
 
 /**
@@ -826,7 +828,7 @@ export class HostManager {
    * caller passed one of this project's tabs; the params then carry no `tabId` at all. `view`: the
    * remote view the open started in; the plugin's listeners run in it.
    */
-  async openFile(projectId: string, pluginId: string, req: { path: string; tabId?: string; view?: ViewId }): Promise<boolean> {
+  async openFile(projectId: string, pluginId: string, req: { path: string; tabId?: string; view?: ViewId; requestedBy?: readonly string[] }): Promise<boolean> {
     const rec = this.hosts.get(projectId)
     const rpc = rec?.rpc
     if (!rec || !rpc || !rec.proc || rec.stopping || !rec.ran.has(pluginId) || rec.reloading.has(pluginId)) return false
@@ -838,7 +840,8 @@ export class HostManager {
           pluginId,
           path: req.path,
           ...(req.tabId !== undefined ? { tabId: req.tabId } : {}),
-          ...(req.view !== undefined ? { view: req.view } : {})
+          ...(req.view !== undefined ? { view: req.view } : {}),
+          ...(req.requestedBy !== undefined ? { requestedBy: [...req.requestedBy] } : {})
         },
         { timeoutMs: OPEN_FILE_ACK_MS }
       )
@@ -1176,7 +1179,8 @@ export class HostManager {
               panelSlots: panelSlotsOf(runnable.find((p) => p.id === s.id)),
               themes: [...(runnable.find((p) => p.id === s.id)?.themes ?? [])],
               pageTabs: [...(s.pageTabTypes ?? [])],
-              ...(s.sessionsAll === true ? { sessionsAll: true } : {})
+              ...(s.sessionsAll === true ? { sessionsAll: true } : {}),
+              ...(runnable.find((p) => p.id === s.id)?.overlaysPerView === true ? { overlaysPerView: true } : {})
             })),
             // The record's own count (runCli), read at the navigate: in server mode a webview
             // navigate made while one of the plugin's `ccc` commands runs loads at once.
@@ -1296,6 +1300,8 @@ export class HostManager {
       ...(p.openFile !== undefined ? { openFile: true } : {}),
       ...(p.settingsPage !== undefined ? { settingsPage: [...p.settingsPage.scopes] } : {}),
       ...(seesAllSessions(p) ? { sessionsAll: true } : {}),
+      // The host's handle needs it for `post { copy }` and `hide` (HostApiPlugin.overlaysPerView is main's copy).
+      ...(p.overlaysPerView === true ? { overlaysPerView: true } : {}),
       settings: {
         project: settings.project as HostPluginSpec['settings']['project'],
         app: settings.app as HostPluginSpec['settings']['app']
@@ -1401,7 +1407,9 @@ export class HostManager {
       panelSlots: panelSlotsOf(next),
       themes: [...(next.themes ?? [])],
       pageTabs: [...(spec.pageTabTypes ?? [])],
-      ...(spec.sessionsAll === true ? { sessionsAll: true } : {})
+      ...(spec.sessionsAll === true ? { sessionsAll: true } : {}),
+      // A dev reload may turn it on or off: the next open reads the reloaded manifest's word.
+      ...(next.overlaysPerView === true ? { overlaysPerView: true } : {})
     })
     let state: unknown
     try {

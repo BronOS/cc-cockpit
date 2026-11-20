@@ -1,8 +1,7 @@
 # Overlays in every view (guests included)
 
-Status: decided (Oleg, 2026-11-20, §8); revised after three independent reviews (codex sol/high: 12 findings, then 5
-still open and 6 new, then 1 blocker on main-routed file opens; all taken, D-4 settled the provenance scope). Next: a
-plan. Builds on design-web.md §5.4 (an html overlay's
+Status: implemented (plan `docs/plans/20261120-overlay-views.md`); decided (Oleg, 2026-11-20, §8); revised after three independent reviews (codex sol/high: 12 findings, then 5
+still open and 6 new, then 1 blocker on main-routed file opens; all taken, D-4 settled the provenance scope). Builds on design-web.md §5.4 (an html overlay's
 page in one view, Take over) and design-guests.md §9 and §16.3 (the `overlays.*` row: "a guest never holds an html
 overlay"), which this reverses for `perView` overlays; design-guests.md gets a pointer here.
 
@@ -46,6 +45,8 @@ holder, Take over among the owner's views, and a guest sees the note, reworded (
 On `OverlayHandle` (`src/sdk/types.ts`), for a `perView` plugin; every `from` is filled by main from the connection it
 bound, never from a page or a payload:
 
+- `ViewFrom.view` is `'desktop'` for the desktop page and `web:<n>` for a browser view, as panels have it (main sends
+  `view` absent for the desktop; the host fills `'desktop'`).
 - `ViewFrom` gains `person?: string`: a guest's name as the owner typed it in the invite, set by main; absent for the
   owner. The one trustworthy author for anything a plugin records (§6 notes).
 - `onConnect(listener: (from: ViewFrom & { copy: string }) => void)` and `onDisconnect(listener(from))`: a copy is up or
@@ -58,8 +59,10 @@ bound, never from a page or a payload:
   Discuss and buttons lose their view and act as the desktop (`overlay-manager.ts:1235`, `:1276`); the caller's view now
   travels router → manager → host for every overlay call.
 - `ctx.openExternal(url, { view })`: open on that view's device. Main routes it to that view only (a browser view gets
-  it as its own link open; the desktop page opens it with the system opener only when `view` is the desktop); a gone
-  view or a guest's view never falls back to the system opener: refused. A plugin answering a page message passes
+  it as its own link open; `'desktop'`, the desktop page's `from.view` as for panels, is resolved by main to the
+  asking host's own window's desktop page and opened with the system opener there, refused in server mode where that
+  page is the hidden one); a gone view or a guest's view never falls back to the system opener: refused, in one text
+  for every reason (a plugin hidden from guests cannot probe `web:n` ids for live guests). A plugin answering a page message passes
   `from.view`; it never relies on where its listener runs (the origin-view hint has a 10 s cap and expires to the owner's
   machine, `origin-view.ts:78`, `open-external.ts:93`).
 - `handle.close()` stays "close for everyone"; a `perView` plugin calls it only for an owner's or a write guest's request
@@ -85,13 +88,17 @@ never taken from a plugin's arguments alone:
   a provider that shows a request's content later records the chain while the call is live and attributes it before
   that content leaves: `handle.addSources(ctx.services.callers())`. The Reviewer does this in `prepare` and `annotate`
   (keyed fills) and keeps the chain with the stored content, so the page's later `content` request is already covered.
-- **Requests main routes.** `ctx.files.open(path)` from another plugin reaches the project's open-file pick through main
-  (`host-api.ts:2067` → the taker's `ctx.files.onOpen`, `host.js:945`), outside any service chain, and main drops the
-  requester today. Main passes it on: the open event gains `requestedBy` (the plugin id main bound to the calling host
-  call, never the payload; absent for core's own clicks and a tab's `ccc`), and a `perView` taker attributes it with
-  `handle.addSources([requestedBy])` before the content leaves. Any later main-routed "show this" path does the same.
-- **A plugin's own content** (the Reviewer's diff of a file from its own command, a core click on a changed file, a
-  tab's `ccc`) has no `via`: it is the opener's, shown when the opener is. No quarantine.
+- **Requests main routes.** `ctx.files.open(path)` and `ctx.sessions.openFile(tabId, path)` from another plugin reach the
+  project's open-file pick through main (`host-api.ts` → the taker's `ctx.files.onOpen`), outside any service chain, and
+  main dropped the requester. Main passes it on: the open event gains `requestedBy: string[]`, the whole chain, outermost
+  first and the immediate requester last. The host sends the call site's `ctx.services.callers()` as `via` (hidden A →
+  shown B's service → B's open: `[A]`), main checks it as an overlay call's `via` (this host's plugins only, unknown
+  ids dropped, refused whole past the bound, never cut) and appends the plugin it bound to the call: `[A, B]`. Absent
+  when no plugin asked (a tab's `ccc`); a Sessions panel click names its plugin (`cockpit.sessions`), as any plugin's
+  call does. A `perView` taker attributes it with `handle.addSources(requestedBy)` before the content leaves. Any later
+  main-routed "show this" path does the same (codex review of the branch, findings 1 and 2).
+- **A plugin's own content** (the Reviewer's diff of a file from its own command, a tab's `ccc`) has no `via`: it is
+  the opener's, shown when the opener is. No quarantine.
 - **Growth on a live overlay.** When `via` grows to include a plugin hidden from a guest that has copies, main releases
   that guest's copies and drops their queued messages in the same synchronous step, before the post that carried the
   new content is delivered to anyone; the overlay leaves that guest's stack.
@@ -124,16 +131,20 @@ never taken from a plugin's arguments alone:
   today, by string length). Today an overflow throws to the plugin (`overlay-manager.ts:331`); for a fan-out that would
   let one slow copy fail every post, so a copy whose queue overflows is dropped and reloaded as a new copy (the plugin
   gets its disconnect and a new connect), and the post succeeds for the others. Connects per (overlay, view) are capped
-  per minute as panel ports are (`panel-ports.ts:258`); past it the copy waits for the next window.
+  as panel ports are (`panel-ports.ts:258`: 10 per 10 s); past it the copy waits for the next window.
 - **Guest rows** (`shared/guest-class.ts`, `main/web/guest-events.ts`): `overlays.ready`, `.loaded`, `.message` become
   `read` with the overlay target, and their handlers refuse a non-`perView` overlay to a guest, so the class widens
   nothing for old plugins; `overlays.message` events reach a guest for its own copies only; `overlays.take` stays `no`.
   Read guests follow the panel rule (D-17): a plugin that is not `guests.aware` gives a read guest a one-way copy.
 - **✕ and results** (D-2). `overlays.close` stays guest `write`: a write guest's ✕ closes the overlay for everyone. A read
-  guest's ✕ hides that guest's copies, in the shell: the copy unloads (main gets the release), the overlay leaves that
-  view's stack, and it does not come back for that overlay. A page's `{ result }` is accepted from owner views only; in
-  a read guest's shell it is turned into that hide before any channel (`overlays.result` stays `write`, so a forged one
-  is refused by class); from a write guest it closes for everyone with no result.
+  guest's ✕ hides that guest's copies: the shell sends `overlays.release { overlayId, hide: true }` (the copy optional),
+  main records the hide for that guest (the view it bound, never the payload's), with or without a live copy in that
+  view, releases the guest's copies on all its views (`overlays.hide` to each), and the overlay does not come back for
+  that guest. Release and hide are separate: a plain `overlays.release { copy }` (unmount, reload) only lets go, for
+  every caller, a read guest's included; `hide` from the owner or a write guest is refused (they close). A page's
+  `{ result }` is accepted from owner views only; in a read guest's shell it is turned into that hide before any
+  channel (`overlays.result` stays `write`, so a forged one is refused by class); from a write guest it closes for
+  everyone with no result.
 
 ## 6. The Reviewer
 
@@ -160,7 +171,8 @@ What the host does with each page message, by `from.access` (the host decides, n
 
 | Page message | Owner | Write guest | Read guest |
 |---|---|---|---|
-| note edits, `global`, `draft-unsaved` | applied, saved, sent to all copies | same, author = guest | dropped |
+| note edits, `global` | applied, saved, sent to all copies | same, author = guest | dropped |
+| `draft-unsaved` (Discuss's sync answer: text over the copy's size cap held back) | Discuss refused | that copy's unsent text left out; Discuss goes on (a guest must not be able to block the owner's Discuss with an oversized draft) | dropped |
 | `layout`, `split` (the owner's app-wide prefs in `ctx.appStorage`) | saved | that copy only, not saved | that copy only, not saved |
 | `content` (load the page's content) | yes | yes, projected | yes, projected |
 | `retry` (asks the consumer again: a service `action` with no `from`) | yes | dropped, button not drawn | dropped, not drawn |

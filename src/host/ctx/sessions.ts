@@ -24,6 +24,7 @@ import { errorText } from '../../shared/error-text'
 import { checkSessionName } from '../../shared/session-name'
 import { checkSessionEnv, checkSessionOptions } from '../../shared/session-options'
 import { checkCommandArgv } from '../../shared/tab-commands'
+import { callerChainNow } from './ui'
 
 type Listener = (sessions: SessionInfo[]) => void
 type AllListener = (sessions: SessionSummary[]) => void
@@ -40,6 +41,14 @@ export interface SessionsApiDeps {
   hub: SessionsHub
   /** The manifest declares `access.sessions: 'all-windows'` (scope `all`). */
   sessionsAll?: boolean
+  /**
+   * The service caller chain at the call site (ServiceRegistry.callers, outermost first): `openFile` sends it as
+   * `via`, and main hands the file's taker the chain plus this plugin as `requestedBy` (docs/design-overlay-views.md
+   * §4). Absent: none.
+   */
+  callers?(): string[]
+  /** Whether an id is one of this host's plugins (as for overlay sources, ui.ts cleanSources). */
+  isHostPlugin?(pluginId: string): boolean
 }
 
 /** The `sessions` listeners of every plugin of one host. */
@@ -235,7 +244,9 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
       guardAsync(async () => {
         checkTabId('sessions.openFile', tabId)
         if (typeof path !== 'string' || path === '') throw new TypeError('sessions.openFile needs a path')
-        await call('sessions.openFile', { pluginId, tabId, path })
+        // Read before the first await, while the service call this runs in is live (as ctx.files.open).
+        const chain = callerChainNow(deps.callers, deps.isHostPlugin)
+        await call('sessions.openFile', { pluginId, tabId, path, ...(chain.length > 0 ? { via: chain } : {}) })
       }),
     rename: (tabId: string, name: string | null) =>
       guardAsync(async () => {

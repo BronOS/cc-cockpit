@@ -161,6 +161,13 @@ export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Obje
   'overlays.list': { cls: 'read' },
   // a terminal overlay's flow control
   'overlays.ack': { cls: 'read', target: byOverlay },
+  // a perView overlay's own copy only (docs/design-overlay-views.md §5): the handlers refuse a guest on any other
+  // overlay (never the single holder's page), and the manager takes a copy only from its own view while live;
+  // a read guest's release is its hide
+  'overlays.ready': { cls: 'read', target: byOverlay },
+  'overlays.loaded': { cls: 'read', target: byOverlay },
+  'overlays.message': { cls: 'read', target: byOverlay },
+  'overlays.release': { cls: 'read', target: byOverlay },
   'webviews.current': { cls: 'read', target: byPanel },
   // a read guest is a viewer, never the size owner (spec-review 14)
   'webviews.place': { cls: 'read', target: byPanel },
@@ -322,9 +329,6 @@ export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Obje
   'claude.offer': NO,
   'claude.install': NO,
   'overlays.bounds': NO,
-  'overlays.message': NO,
-  'overlays.ready': NO,
-  'overlays.loaded': NO,
   'overlays.take': NO,
   'webviews.placement': NO,
   'tabs.commands': NO,

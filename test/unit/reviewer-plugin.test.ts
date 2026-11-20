@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadManifest } from '../../src/main/plugins/validate'
+import { isGuestAware } from '../../src/shared/manifest'
 
 const REPO = resolve(__dirname, '../..')
 const REVIEWER = join(REPO, 'plugins/reviewer')
@@ -68,6 +69,15 @@ describe('moved plugin manifests', () => {
     const result = await loadManifest(dir)
     if (!result.ok) throw new Error(result.errors.join('; '))
     expect(result.manifest.id).toBe(id)
+  })
+
+  it('the reviewer gives every view its own copy of its overlays and checks a viewer\'s access itself', async () => {
+    // design-overlay-views §6: without `aware` a read guest's copy is one-way, and the page starts the
+    // `content` handshake itself, so it would stay blank.
+    const result = await loadManifest(REVIEWER)
+    if (!result.ok) throw new Error(result.errors.join('; '))
+    expect(result.manifest.overlays).toEqual({ perView: true })
+    expect(isGuestAware(result.manifest)).toBe(true)
   })
 
   it('the built hosts the manifests point at exist', async () => {

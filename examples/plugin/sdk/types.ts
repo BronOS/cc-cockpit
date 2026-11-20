@@ -28,6 +28,11 @@ export type ViewAccess = 'owner' | 'read' | 'write'
 export interface ViewFrom {
   view: string
   access: ViewAccess
+  /**
+   * A guest's invite name, set by main from the connection it bound (never from the page or a payload);
+   * absent for the owner. For per-person state such as a note's author. See docs/design-overlay-views.md.
+   */
+  person?: string
 }
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
@@ -290,9 +295,9 @@ export interface OverlayInfo {
   readonly opener: string
 }
 
-/** A button another plugin adds to every overlay of a type; `run` gets the overlay's info on a click. */
+/** A button another plugin adds to every overlay of a type; `run` gets the overlay's info and, as `from`, who clicked (view, access, a guest's `person`; set by main from the connection it bound, never the page; docs/design-overlay-views.md). An older app never sends `from`. */
 export interface OverlayTypeButton extends OverlayButton {
-  run: (overlay: OverlayInfo) => unknown | Promise<{ close?: true } | void>
+  run: (overlay: OverlayInfo, from: ViewFrom) => unknown | Promise<{ close?: true } | void>
 }
 
 export type OverlaySpec =
@@ -352,13 +357,48 @@ export interface OverlayHandle {
    * html only (throws for another kind): send JSON to the page, where `ccPanel.onMessage` hears
    * it. Queued until the page has loaded. At most 1,040,384 chars of JSON (1 MiB less 8 KiB for
    * the transport); a larger one throws a RangeError. A no-op once the overlay ended.
+   *
+   * `perView` plugins (manifest `"overlays": { "perView": true }`): without `copy` (or with `copy: undefined`), to
+   * every copy that joined broadcasts (a copy joins with your first post addressed to it, the starting state your
+   * `onConnect` sends); with `{ copy }` (a `from.copy` you were given), to that one copy, dropped once it is gone.
+   * A `copy` on any other overlay throws: it has one page. See docs/design-overlay-views.md.
    */
-  post(message: JsonValue): void
+  post(message: JsonValue, options?: { copy?: string }): void
   /**
    * html only (throws for another kind): hear what the page posts without a `result` key (the
-   * overlay stays open). Listeners are dropped when the overlay ends.
+   * overlay stays open). Listeners are dropped when the overlay ends. `from` is who posted (view,
+   * access, a guest's `person`), filled by the app from the connection it bound, never by the page;
+   * `copy` names the posting copy of a `perView` overlay (absent otherwise: one page, its holder).
+   * The listener runs in the posting view (a link or focus it opens without naming a view shows
+   * there), but answer by `from`: `post(reply, { copy: from.copy })`, `ctx.openExternal(url, { view: from.view })`.
+   * An older app never sends `from` (the listener gets the message alone): read it as `from?.view`.
    */
-  onMessage(listener: (message: JsonValue) => void): Disposer
+  onMessage(listener: (message: JsonValue, from: ViewFrom & { copy?: string }) => void): Disposer
+  /**
+   * `perView` plugins: a view's copy of this overlay connected (its page is ready). `from` is filled by the app
+   * from the connection it bound (view, access, `person`) plus the copy id it minted; never from the page. Send
+   * the copy its starting state with `post(msg, { copy: from.copy })`. A reload, a reconnect or a view coming
+   * back is a new copy (the old one's `onDisconnect` first). While connected, the copy's view is in `ctx.views`.
+   * Accepted on any html overlay; only a `perView` one ever connects. A listener added later first hears every
+   * copy already connected (each in its copy's view, before `onConnect` returns), as `ctx.views.onChange`
+   * replays, so registering after an await misses none. An older app has none of `onConnect`, `onDisconnect`,
+   * `hide` and `addSources`: check `typeof handle.onConnect === 'function'`. See docs/design-overlay-views.md.
+   */
+  onConnect(listener: (from: ViewFrom & { copy: string }) => void): Disposer
+  /** A copy went away (its view left, reloaded, was hidden or lost access). Same `from` as its `onConnect`. */
+  onDisconnect(listener: (from: ViewFrom & { copy: string }) => void): Disposer
+  /**
+   * `perView` plugins: hide one copy in its own view (a read guest's close); the overlay stays for the others.
+   * A guest's hide holds for every view of that guest, for the overlay's life. Throws on any other overlay
+   * (use `close()`). See docs/design-overlay-views.md.
+   */
+  hide(options: { copy: string }): void
+  /**
+   * Record that this overlay's content now also comes from these plugins (a deferred fill: call it with
+   * `ctx.services.callers()` while the request is live, or a file open's `requestedBy`), so a guest sees it
+   * only when all of them are shown to guests (provenance, D-4). Any kind. See docs/design-overlay-views.md.
+   */
+  addSources(pluginIds: readonly string[]): void
   /** Dismiss the overlay (`result` resolves `{ kind: 'dismissed' }`). A no-op once it ended. */
   close(): void
   /**
@@ -367,15 +407,20 @@ export interface OverlayHandle {
    * once it ended.
    */
   focus(): void
-  /** A click on one of the buttons the spec (or `setButtons`) gave, by its `id`. Dropped when the overlay ends. */
-  onButton(id: string, handler: () => unknown): Disposer
+  /**
+   * A click on one of the buttons the spec (or `setButtons`) gave, by its `id`, with `from`: who clicked (any
+   * view, a write guest's included; the app's word). Dropped when the overlay ends. An older app never sends
+   * `from`.
+   */
+  onButton(id: string, handler: (from: ViewFrom) => unknown): Disposer
   /** Replace the opener's buttons (a "Mark read" that became "Mark unread"). Same rules as `buttons` in the spec. A no-op once the overlay ended. */
   setButtons(buttons: OverlayButton[]): void
   /**
    * Answer Discuss with Claude with the context text to send (within 5 s), or `null` for none. A
-   * throw or a timeout shows its error to the person and sends nothing.
+   * throw or a timeout shows its error to the person and sends nothing. `from`: whose Send it was (an older app
+   * never sends it).
    */
-  onDiscuss(handler: () => Promise<{ text: string } | null> | { text: string } | null): Disposer
+  onDiscuss(handler: (from: ViewFrom) => Promise<{ text: string } | null> | { text: string } | null): Disposer
   /**
    * Draw Discuss with Claude as the toolbar's primary (accent) button, or plain again with `false`
    * (the default): e.g. once the page holds something worth sending. Held until the overlay exists;
@@ -688,6 +733,14 @@ export interface OpenFileRequest {
    * passed (an id `ctx.sessions` knows). Absent when the open did not come from a tab.
    */
   readonly tabId?: string
+  /**
+   * The plugins whose request this open is, set by main (never a payload): the plugin that called
+   * `ctx.files.open` or `ctx.sessions.openFile` last, and before it the service caller chain it called
+   * in, outermost first (hidden A calls B's service, B opens the file: `['a', 'b']`). Absent when no
+   * plugin asked. Provenance for overlays opened for it: pass it whole to `handle.addSources`. See
+   * docs/design-overlay-views.md.
+   */
+  readonly requestedBy?: readonly string[]
 }
 
 /** Where `ctx.files.open` sent the file: the project's open-file plugin, or the app's built-in viewer. */
@@ -1406,8 +1459,21 @@ export interface PluginContext {
    * normalized (`new URL(url).href`) before it is opened. Resolves once the app handed it to the
    * system; whether a browser then showed it is not reported. Use it on a person's click, not
    * unasked: a page opening by itself takes them out of what they were doing.
+   *
+   * Which screen: without `options.view`, where the call came from as the app knows it (a listener
+   * handling a browser view's page message opens there while it runs, at most 10 s; past that, or
+   * from a timer, the desktop's browser, or in server mode the owner's browser views of the window:
+   * a guest never gets a link it did not ask for). With `options.view`, that view alone: pass the
+   * `from.view` of the message, click or connect you are answering. `'desktop'` (the desktop page's
+   * `from.view`) opens the desktop's browser, on this window's computer only, and rejects in server
+   * mode (the server's own page has no screen). A browser view (the owner's or a guest's) gets the
+   * link as its own clickable link; a guest's view only while the guest is still in and the plugin is
+   * shown to guests. A view that is gone, unknown, of another window, or a guest's the plugin may not
+   * reach rejects, in the same words for each, and the link then opens nowhere, never in the
+   * desktop's browser instead. `undefined` is the same as no `view`; any other non-string, `null` or
+   * `''` rejects.
    */
-  openExternal(url: string): Promise<void>
+  openExternal(url: string, options?: { view?: string }): Promise<void>
 }
 
 /**
@@ -1451,6 +1517,12 @@ export interface ServicesApi {
    * boundary: all plugins of a project share one JS realm.
    */
   caller(): string | undefined
+  /**
+   * The consumers of every live call frame of the current chain, outermost first (for A -> B -> C, C
+   * sees `[A, B]`). Same rules as `caller`: `[]` outside a call, once it settled and for a late timer.
+   * Read from the registry's frames, never from arguments. See docs/design-overlay-views.md.
+   */
+  callers(): string[]
   /**
    * Whether a call on service `name` would reach a provider now: `name` is in this plugin's
    * `services.uses`, an enabled plugin provides it at the same major, and with several providers

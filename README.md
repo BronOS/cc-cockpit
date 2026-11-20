@@ -25,7 +25,8 @@ tested).
   Claude tab or a new session, add a note, and the item goes to Claude as a prompt.
 - **Make it yours.** Themes, editable keybindings, a command palette, terminal fonts and transparent windows.
 - **Web access.** Open a project in a browser on your phone or another computer, live on both screens: the same tabs,
-  terminals and panels. Off by default; sign in by link, password or a desktop confirm (Settings > General). Files >
+  terminals and panels. On by default, listening on this computer only (127.0.0.1); sign in by link, password or a
+  desktop confirm (Settings > General). Files >
   Download and `ccc download` send a file, or a folder as a streamed .zip, to the device you are on
   ([docs/features.md](docs/features.md#web-access)).
 - **Server mode (Linux, and macOS).** Run it on a machine with no display (`cc-cockpit --server`, or just start it with no
@@ -38,7 +39,9 @@ tested).
   the badge, the room and its log, and decide what reaches a tab you type in; see [docs/features.md](docs/features.md#rooms).
 - **Guests.** Invite someone into one project, read-only or able to type, from a browser or their own cc-cockpit: they
   see only the tabs you share and the plugins you show to guests, and you can switch their role or kick them at any time
-  ("Web access" › "Guests" in [docs/features.md](docs/features.md#web-access)).
+  ("Web access" › "Guests" in [docs/features.md](docs/features.md#web-access)). A plugin window such as a Reviewer
+  diff shows live on every screen, yours and your guests': write guests add notes (with their name on them), read guests
+  only look.
 - **A built-in browser panel.** `ccc browser open <url|file>` shows a page, a local file or a dev server next to the
   terminal.
 - **A file tree.** The Files panel shows the whole project; open any file to read it, note it and discuss it with

@@ -229,6 +229,17 @@ describe('routeOpenFile', () => {
     expect(delivered).toEqual([{ projectId: P, pluginId: 'a.rev', req: { path: 'src/a.ts', tabId: 't1', view: 'web:2' } }])
   })
 
+  it("hands the requesting plugins (ctx.sessions.openFile's chain) to the taker as requestedBy; none when not given", async () => {
+    const { deps, delivered } = setup()
+    await routeOpenFile(deps, caller, 't1', '/work/p/src/a.ts', undefined, ['a.mail', 'cockpit.sessions'])
+    await routeOpenFile(deps, caller, 't1', '/work/p/src/a.ts')
+    expect(delivered.map((d) => d.req)).toEqual([
+      { path: 'src/a.ts', tabId: 't1', requestedBy: ['a.mail', 'cockpit.sessions'] },
+      { path: 'src/a.ts', tabId: 't1' }
+    ])
+    expect('requestedBy' in delivered[1]!.req).toBe(false)
+  })
+
   it('falls back to the built-in viewer when the host does not take it or the delivery throws', async () => {
     const declined = setup({ deliver: async () => false })
     await expect(routeOpenFile(declined.deps, caller, 't1', '/work/p/src/a.ts')).resolves.toBe(true)
@@ -402,6 +413,19 @@ describe('resolveProjectFile / routeProjectFile (ctx.files.open)', () => {
     const { deps, delivered } = setup()
     await expect(routeProjectFile(deps, caller, 'src/a.ts', undefined, 'web:2')).resolves.toBe('plugin')
     expect(delivered).toEqual([{ projectId: P, pluginId: 'a.tree', req: { path: 'src/a.ts', view: 'web:2' } }])
+  })
+
+  it("hands the calling plugin to the taker as requestedBy (docs/design-overlay-views.md §4); none when not given", async () => {
+    const { deps, delivered } = setup()
+    await routeProjectFile(deps, caller, 'src/a.ts', undefined, undefined, ['a.mail'])
+    await routeProjectFile(deps, caller, 'src/a.ts', 't1', 'web:2', ['a.mail', 'a.tree'])
+    await routeProjectFile(deps, caller, 'src/a.ts', 'nope')
+    expect(delivered.map((d) => d.req)).toEqual([
+      { path: 'src/a.ts', requestedBy: ['a.mail'] },
+      { path: 'src/a.ts', tabId: 't1', view: 'web:2', requestedBy: ['a.mail', 'a.tree'] },
+      { path: 'src/a.ts' }
+    ])
+    expect('requestedBy' in delivered[2]!.req).toBe(false)
   })
 
   it('passes a tab of this project on, and drops a foreign or unknown one without an error', async () => {
@@ -647,6 +671,22 @@ describe('ctx.files.onOpen (host)', () => {
       [{ path: 'src/a.ts' }, 'web:2'],
       [{ path: 'src/a.ts' }, undefined]
     ])
+  })
+
+  it("passes main's requestedBy chain on (provenance for what the taker shows); an open no plugin asked for carries none", async () => {
+    const { contexts, ctx } = setup()
+    const seen: Array<{ requestedBy?: readonly string[] }> = []
+    ctx.files.onOpen((req) => void seen.push(req))
+    await expect(contexts.openFile({ pluginId: 'a.rev', path: 'src/a.ts', requestedBy: ['a.mail', 'a.tree'] })).resolves.toBe(true)
+    await expect(contexts.openFile({ pluginId: 'a.rev', path: 'src/a.ts', tabId: 't1' })).resolves.toBe(true)
+    expect(seen).toEqual([{ path: 'src/a.ts', requestedBy: ['a.mail', 'a.tree'] }, { path: 'src/a.ts', tabId: 't1' }])
+    expect('requestedBy' in (seen[1] as object)).toBe(false)
+    expect(Object.isFrozen(seen[0])).toBe(true)
+    expect(Object.isFrozen(seen[0]!.requestedBy)).toBe(true)
+    // A string (the old shape), an empty list, a list with a non-id: refused whole, never cut or read as none.
+    for (const bad of [5, '', null, 'a.mail', [], ['a.mail', ''], ['a.mail', 7]]) {
+      await expect(contexts.openFile({ pluginId: 'a.rev', path: 'a', requestedBy: bad })).rejects.toThrow('requestedBy must be a non-empty list')
+    }
   })
 
   it('acks false with no listener, after the disposer, for another plugin, and after deactivate', async () => {

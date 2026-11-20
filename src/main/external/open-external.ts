@@ -20,18 +20,25 @@
 // a notice whose `to` is its own view and that has no sign-in. A broadcast (no browser asked) has no `to`, so
 // no guest ever gets a link it did not ask for.
 //
+// An addressed open (ctx.openExternal's `{ view }`, docs/design-overlay-views.md §3): the caller named the view, so
+// the link goes to that view alone or nowhere. A browser view gets its notice (stamped `to`, so a guest's sink
+// passes it), the desktop page the OS browser on the desktop only; a gone view, or the hidden page in server mode,
+// is refused, never sent to the OS browser or another view. Who may be named (this window's views, a guest's only
+// while live and shown the plugin) is HostApi's check before this; here only where the link goes.
+//
 // No Electron import: the OS opener is passed in (electron-open-external.ts, looked up at each call
 // so the e2e recorder that replaces `shell.openExternal` is seen); unit tests pass recorders.
 
 import type { IpcEventMap } from '../../shared/ipc'
-import { isRemoteViewId, type ViewId } from '../../shared/views'
+import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
 import { warnLog } from '../warn-log'
 
 /**
  * Who a link is for: a window, and the view of it that asked when main knows one (a browser view, or
- * the desktop view), or `'app'` for a call tied to no window.
+ * the desktop view), or `'app'` for a call tied to no window. `addressed`: `viewId` is the view the
+ * caller named (ctx.openExternal's `{ view }`), not a hint: that view only, refused when it is gone.
  */
-export type OpenTarget = { windowId: number; viewId?: ViewId } | 'app'
+export type OpenTarget = { windowId: number; viewId?: ViewId; addressed?: true } | 'app'
 
 /**
  * What a link may carry besides its address. `signIn`: the id of a plugin's pending OAuth sign-in
@@ -74,6 +81,12 @@ export interface OpenExternalOptions {
 /** The refusal's text: the same for every reason, and never the URL (an OAuth URL carries its `state`). */
 export const NO_BROWSER_TEXT = 'no browser is connected to show the link in'
 
+/** An addressed open's refusal when its view is gone (or is no view of the window): never the URL either. */
+export const VIEW_GONE_TEXT = 'that view is gone; the link was not opened'
+
+/** An addressed open naming a desktop page that has no screen: the hidden page of server mode. */
+export const NO_SCREEN_TEXT = "the server's own page has no screen; name a browser view"
+
 /**
  * `url` for a log line: scheme, host and path only. The query and fragment go (an OAuth auth URL has
  * its `state` and challenge there, a link may carry a token), and so does any userinfo.
@@ -90,6 +103,7 @@ export function urlForLog(url: string): string {
 export function createOpenExternal(options: OpenExternalOptions): OpenExternal {
   const log = options.log ?? warnLog
   return async (url, target, extra) => {
+    if (target !== 'app' && target.addressed === true) return addressed(url, target, extra)
     const asking = target !== 'app' && target.viewId !== undefined && isRemoteViewId(target.viewId) ? target.viewId : undefined
     if (!options.server) {
       // v1 (design-web.md §6.1): the host's browser is not a browser view's screen. A view that is gone
@@ -115,5 +129,32 @@ export function createOpenExternal(options: OpenExternalOptions): OpenExternal {
     if (reached > 0) return
     log(`open external: ${NO_BROWSER_TEXT}; not opened: ${urlForLog(url)}`)
     throw new Error(NO_BROWSER_TEXT)
+  }
+
+  /** The named view alone, in either mode (see the top): no broadcast, no fallback. */
+  async function addressed(url: string, target: { windowId: number; viewId?: ViewId }, extra: OpenExtra | undefined): Promise<void> {
+    const viewId = target.viewId
+    if (viewId !== undefined && isRemoteViewId(viewId)) {
+      // A sign-in's paste box is server mode's (as above); an addressed open is a plugin's own link, so none today.
+      const payload: LinkNoticePayload = {
+        url,
+        ...(options.server && extra?.signIn !== undefined ? { signIn: extra.signIn } : {}),
+        ...(extra?.page === true ? { page: true as const } : {}),
+        to: viewId
+      }
+      if (options.views.toView(viewId, 'app.linkNotice', payload)) return
+      log(`open external: ${VIEW_GONE_TEXT}: ${urlForLog(url)}`)
+      throw new Error(VIEW_GONE_TEXT)
+    }
+    // The desktop page: only this window's own, and only where it has a screen.
+    if (viewId !== desktopViewId(target.windowId)) {
+      log(`open external: ${VIEW_GONE_TEXT}: ${urlForLog(url)}`)
+      throw new Error(VIEW_GONE_TEXT)
+    }
+    if (options.server) {
+      log(`open external: ${NO_SCREEN_TEXT}; not opened: ${urlForLog(url)}`)
+      throw new Error(NO_SCREEN_TEXT)
+    }
+    await options.system(url)
   }
 }

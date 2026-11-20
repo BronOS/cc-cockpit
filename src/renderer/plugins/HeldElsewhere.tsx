@@ -14,3 +14,15 @@ export function HeldElsewhere(props: { device: string; onTakeOver: () => void; c
     </div>
   )
 }
+
+/**
+ * A guest's view of an overlay whose page is not shown to it (docs/design-overlay-views.md §7): where it is and why
+ * (overlay-copies.ts guestNoteText), with no Take over (`overlays.take` is guest `no`). Plain text in React.
+ */
+export function GuestOverlayNote(props: { text: string }): React.JSX.Element {
+  return (
+    <div className="held-elsewhere overlay-held-elsewhere" role="status" data-testid="held-elsewhere">
+      <span className="held-elsewhere-text">{props.text}</span>
+    </div>
+  )
+}

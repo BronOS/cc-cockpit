@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { WindowInfo } from '../shared/ipc'
 import { ProjectPicker } from './picker/ProjectPicker'
-import { currentShellChrome } from './shell-kind'
+import { currentShellChrome, markHiddenPage } from './shell-kind'
 import { startSeeThrough } from './theme/apply-see-through'
 import { TabsPane } from './tabs/TabsPane'
 import { ShellNotices } from './notices/ShellNotices'
@@ -26,6 +26,8 @@ export function App(): React.JSX.Element {
         // Before the shell renders: its tab terminals pick their palette when they are made.
         // Never in the web shell: the glass is the desktop window's (shell-kind.ts).
         if (next.kind === 'project' && next.transparent === true && currentShellChrome().seeThrough) startSeeThrough()
+        // Before the shell renders too: the overlay stack reads it (no perView copy in the hidden page).
+        if (next.kind === 'project') markHiddenPage(next.hiddenPage === true)
         setInfo(next)
       })
       .catch((err: unknown) => setError(String(err)))

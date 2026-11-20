@@ -52,11 +52,7 @@ function setup({ editorAvailable }) {
     files: { onOpen: () => () => {} },
     cli: { register() {} },
     overlay: {
-      start: () => {
-        const h = { posts: [], focused: 0, post: (m) => h.posts.push(m), focus: () => h.focused++, onMessage() {}, onDiscuss() {}, close() {}, result: new Promise(() => {}) }
-        handles.push(h)
-        return h
-      },
+      start: () => fakeHandle({ handles }, { result: new Promise(() => {}) }),
     },
     log: { info() {}, warn() {}, error() {} },
     notify() {},
@@ -127,9 +123,7 @@ test('a refused overlay fails the open, so a click falls back and the service an
   f.ctx.files.onOpen = (fn) => ((onOpen = fn), () => {})
   f.ctx.cli.register = (n, fn) => (review = fn)
   f.ctx.overlay.start = () => {
-    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, onDiscuss() {}, close() {}, result: Promise.reject(new Error('overlay: at most 3 open')) }
-    f.handles.push(h)
-    return h
+    return fakeHandle(f, { result: Promise.reject(new Error('overlay: at most 3 open')), owner: false })
   }
   host.activate(f.ctx)
   await assert.rejects(onOpen({ path: 'a.js' }), /review overlay did not open: overlay: at most 3 open/)
@@ -145,9 +139,7 @@ test('a refused overlay fails the open, so a click falls back and the service an
 test('concurrent opens share a refusal: the second does not report success for a refused overlay', async () => {
   const f = setup({ editorAvailable: false })
   f.ctx.overlay.start = () => {
-    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, onDiscuss() {}, close() {}, result: Promise.reject(new Error('overlay: at most 3 open')) }
-    f.handles.push(h)
-    return h
+    return fakeHandle(f, { result: Promise.reject(new Error('overlay: at most 3 open')), owner: false })
   }
   host.activate(f.ctx)
   const results = await Promise.allSettled([f.provided.reviewer.open('a.js'), f.provided.reviewer.open('a.js')])
@@ -197,21 +189,13 @@ test('a page message sent right after init is handled, not lost to the open wait
   const saved = []
   f.ctx.storage.set = async (k, v) => saved.push([k, v])
   f.ctx.overlay.start = () => {
-    const h = {
-      listeners: [],
-      posts: [],
-      onMessage: (l) => (h.listeners.push(l), () => {}),
-      post: (m) => {
-        h.posts.push(m)
-        // The page answers init at once with a draft.
-        if (m.type === 'init') for (const l of h.listeners) l({ type: 'draft', draft: { global: 'early note', notes: [] } })
-      },
-      focus() {},
-      onDiscuss() {},
-      close() {},
-      result: new Promise(() => {}),
+    const h = fakeHandle(f, { result: new Promise(() => {}) })
+    const post = h.post
+    h.post = (m, o) => {
+      post(m, o)
+      // The page answers init at once with a draft.
+      if (m.type === 'init') h.sayAs(OWNER, { type: 'global', text: 'early note' })
     }
-    f.handles.push(h)
     return h
   }
   host.activate(f.ctx)
@@ -231,36 +215,143 @@ test('a long path is cut from the left to fit the overlay title limit', async ()
   assert.ok(t.startsWith('Review: …') && t.endsWith('/file.js'))
 })
 
-// A handle whose page we drive: `say` posts as the page, `end` settles result. The page answers a
-// draft request (Discuss) with the draft it last said, or `draft-unsaved` once `pageDraft` is null;
-// with `answers` false it stays silent. `discussFn` is the host's onDiscuss handler.
-function pageHandle(f) {
+// The owner's desktop copy, as main announces it once the page is up (`from` of onConnect and onMessage).
+const OWNER = Object.freeze({ view: 'desktop', access: 'owner', copy: 'c-owner' })
+
+/**
+ * An overlay handle of a perView plugin as the app's host gives it. Copies connect (`connect(from)` runs the
+ * onConnect listeners) and go (`disconnect(copy)`), each with its own inbox (`inboxOf(copy)`); main's join
+ * rule is kept: a post with `{ copy }` reaches that live copy only and joins it to broadcasts, a post without
+ * reaches only the joined copies, so a host that broadcast to a copy it never addressed would be caught.
+ * `owner: true` (the default) connects the owner's desktop copy right after the host listens (a microtask,
+ * as main's connect is an event after start), and `posts` is that copy's inbox. `sayAs(from, m)` posts as
+ * a copy's page; `sources` records addSources calls, `hides` the copies hidden.
+ */
+function fakeHandle(f, { result, owner = true } = {}) {
   let end
   const h = {
+    inbox: new Map(),
+    joined: new Set(),
+    live: new Map(),
     listeners: [],
-    posts: [],
+    connectListeners: [],
+    disconnectListeners: [],
+    sources: [],
+    hides: [],
     closed: 0,
-    answers: true,
-    pageDraft: { global: '', notes: [] },
+    focused: 0,
     discussFn: null,
-    onMessage: (l) => (h.listeners.push(l), () => {}),
-    onDiscuss: (fn) => ((h.discussFn = fn), () => {}),
-    post: (m) => {
-      h.posts.push(m)
-      if (m.type === 'draft-request' && h.answers) {
-        setTimeout(() => h.say(h.pageDraft ? { type: 'draft', draft: h.pageDraft } : { type: 'draft-unsaved' }), 0)
-      }
-    },
-    say: (m) => {
-      if (m.type === 'draft') h.pageDraft = m.draft
-      h.listeners.forEach((l) => l(m))
-    },
-    focus() {},
-    close: () => h.closed++,
-    result: new Promise((r) => (end = r)),
+    result: result || new Promise((r) => (end = r)),
     end: (r) => end(r),
+    inboxOf: (copy) => {
+      if (!h.inbox.has(copy)) h.inbox.set(copy, [])
+      return h.inbox.get(copy)
+    },
+    events: [],
+    post: (m, o) => {
+      h.events.push(['post', o && o.copy, m.type])
+      if (o && o.copy !== undefined) {
+        if (!h.live.has(o.copy)) return // a gone copy: dropped
+        h.joined.add(o.copy)
+        h.inboxOf(o.copy).push(structuredClone(m))
+        return
+      }
+      for (const c of h.joined) h.inboxOf(c).push(structuredClone(m))
+    },
+    onMessage: (l) => (h.listeners.push(l), () => {}),
+    onConnect: (l) => (h.connectListeners.push(l), () => {}),
+    onDisconnect: (l) => (h.disconnectListeners.push(l), () => {}),
+    onDiscuss: (fn) => ((h.discussFn = fn), () => {}),
+    addSources: (ids) => (h.sources.push([...ids]), h.events.push(['sources', [...ids]])),
+    hide: (o) => h.hides.push(o.copy),
+    focus: () => h.focused++,
+    close: () => h.closed++,
+    connect: (from) => {
+      h.live.set(from.copy, from)
+      const inbox = h.inboxOf(from.copy)
+      h.connectListeners.forEach((l) => l({ ...from }))
+      return inbox
+    },
+    disconnect: (copy) => {
+      const from = h.live.get(copy)
+      h.live.delete(copy)
+      h.joined.delete(copy)
+      h.disconnectListeners.forEach((l) => l({ ...from }))
+    },
+    sayAs: (from, m) => h.listeners.forEach((l) => l(m, { ...from })),
   }
+  h.posts = h.inboxOf(OWNER.copy)
+  if (owner) queueMicrotask(() => h.connect(OWNER))
   f.handles.push(h)
+  return h
+}
+
+// A handle whose page we drive: `say` posts as the owner's page, `end` settles result. `say({ type: 'draft',
+// draft })` is a page bringing the shared draft to `draft` the way the page does, by note ops (sayDraft:
+// an add for a note it has not added, with the test's id as its tag, a change for a new text, a delete for
+// a note gone, `global` for a new comment); the host's ids are in `idOf(copy, testId)`. The page answers a
+// draft request (Discuss) with `draft-sync`, or `draft-unsaved` once `pageDraft` is null; with `answers`
+// false it stays silent. `discussFn` is the host's onDiscuss handler.
+function pageHandle(f, options) {
+  const h = fakeHandle(f, options)
+  h.answers = true
+  h.pageDraft = { global: '', notes: [] }
+  const post = h.post
+  h.post = (m, o) => {
+    post(m, o)
+    if (m.type === 'draft-request' && h.answers && (!o || o.copy === OWNER.copy)) {
+      setTimeout(() => h.sayAs(OWNER, { type: h.pageDraft ? 'draft-sync' : 'draft-unsaved' }), 0)
+    }
+  }
+  const pages = new Map() // copy -> { ids: Map(test id -> host id), texts: Map(test id -> text), global }
+  // A page starts from the draft its init brought, as the real one does.
+  const pageOf = (copy) => {
+    if (!pages.has(copy)) {
+      const init = h.inboxOf(copy).findLast((m) => m.type === 'init')
+      const d = (init && init.draft) || { global: '', notes: [] }
+      pages.set(copy, { ids: new Map(d.notes.map((n) => [n.id, n.id])), texts: new Map(d.notes.map((n) => [n.id, n.text])), global: d.global })
+    }
+    return pages.get(copy)
+  }
+  h.idOf = (copy, id) => pageOf(copy).ids.get(id)
+  h.sayDraft = (from, draft) => {
+    const p = pageOf(from.copy)
+    const d = draft && typeof draft === 'object' ? draft : {}
+    const notes = Array.isArray(d.notes) ? d.notes : []
+    const global = typeof d.global === 'string' ? d.global : ''
+    if (global !== p.global) {
+      p.global = global
+      h.sayAs(from, { type: 'global', text: global })
+    }
+    const want = new Set(notes.map((n) => n.id))
+    for (const [id, hostId] of [...p.ids]) {
+      if (want.has(id)) continue
+      p.ids.delete(id)
+      p.texts.delete(id)
+      h.sayAs(from, { type: 'note-delete', id: hostId })
+    }
+    for (const n of notes) {
+      if (!p.ids.has(n.id)) {
+        const inbox = h.inboxOf(from.copy)
+        const at = inbox.length
+        const { id, ...fields } = n
+        h.sayAs(from, { type: 'note-add', tag: `~${id}`, note: fields })
+        const added = inbox.slice(at).find((m) => m.type === 'note-added' && m.tag === `~${id}`)
+        if (added) {
+          p.ids.set(id, added.note.id)
+          p.texts.set(id, n.text)
+        }
+      } else if (p.texts.get(n.id) !== n.text) {
+        p.texts.set(n.id, n.text)
+        h.sayAs(from, { type: 'note-change', id: p.ids.get(n.id), text: n.text })
+      }
+    }
+  }
+  h.say = (m) => {
+    if (m.type !== 'draft') return h.sayAs(OWNER, m)
+    h.pageDraft = m.draft
+    h.sayDraft(OWNER, m.draft)
+  }
   return h
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -367,24 +458,34 @@ test('Discuss sends nothing while the page cannot post its draft (too large to s
   host.deactivate()
 })
 
-test('a draft cleanDraft would cut is neither stored nor sent; the last good draft stays', async () => {
+test('an op that would make the draft lose text is refused and only its sender told; the draft stays whole', async () => {
   const f = setup({ editorAvailable: false })
   const { store, notices } = storeFake(f)
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.open('a.js')
   const h = f.handles[0]
-  h.say({ type: 'draft', draft: { global: '', notes: [note('kept')] } })
+  h.connect(WRITER)
+  // 200 notes fit; the 201st add (cleanDraft keeps 200, so a send would delete the draft with it unsent) is
+  // refused with its tag, so the page drops that note and says why.
+  const notes = Array.from({ length: 201 }, (_, i) => note(`n${i}`, i))
+  h.say({ type: 'draft', draft: { global: '', notes } })
   await wait(SAVE_WAIT)
-  // 201 notes: cleanDraft keeps 200, and a send would then delete the draft with one note unsent.
-  const tooMany = { global: '', notes: Array.from({ length: 201 }, (_, i) => note(`n${i}`, i)) }
-  h.say({ type: 'draft', draft: tooMany })
+  assert.equal(store.get('draft:a.js').notes.length, 200)
+  const refused = h.posts.find((m) => m.type === 'draft-error')
+  assert.deepEqual([refused.tag, refused.message], ['~n200', 'Note not added: there are more than 200 notes.'])
+  // A text over the cap is refused too (never cut); the stored text is the last good one.
+  h.sayAs(OWNER, { type: 'note-change', id: h.idOf(OWNER.copy, 'n1'), text: 'x'.repeat(review.MAX_NOTE_TEXT + 1) })
+  assert.deepEqual(h.posts.slice(-2), [{ type: 'draft-error', message: 'Not saved: a note is over 4000 characters.' }, { type: 'ack', id: h.idOf(OWNER.copy, 'n1') }])
+  assert.ok(!h.inboxOf(WRITER.copy).some((m) => m.type === 'draft-error'), 'only the sender is told')
+  // The sender's next good op clears its message.
+  h.sayAs(OWNER, { type: 'note-change', id: h.idOf(OWNER.copy, 'n1'), text: 'short' })
+  assert.ok(h.posts.slice(-2).some((m) => m.type === 'draft-saved'))
   await wait(SAVE_WAIT)
-  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['kept'])
-  assert.ok(h.posts.some((m) => m.type === 'draft-error' && /more than 200 notes/.test(m.message)))
-  // Discuss refuses it (the popover shows why) and nothing is sent.
-  await assert.rejects(h.discussFn(), /not sent: there are more than 200 notes/)
-  assert.ok(store.has('draft:a.js'))
+  assert.equal(store.get('draft:a.js').notes[1].text, 'short')
+  // Discuss sends the 200 the draft has.
+  const { text } = await h.discussFn()
+  assert.match(text, /\n200\. Line 1 \(new\):\n   > two\n   n199$/)
   assert.equal(notices.length, 0)
   host.deactivate()
 })
@@ -1021,9 +1122,7 @@ test('prepare: a refused loading overlay rejects, so a source never counts it as
   // answered { opened: true } at once, and the source's act open then reported success.
   const f = setup({ editorAvailable: false })
   f.ctx.overlay.start = () => {
-    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, onDiscuss() {}, close() {}, result: Promise.reject(new Error('overlay: at most 3 open')) }
-    f.handles.push(h)
-    return h
+    return fakeHandle(f, { result: Promise.reject(new Error('overlay: at most 3 open')), owner: false })
   }
   host.activate(f.ctx)
   await assert.rejects(f.provided.reviewer.prepare({ key: 'gmail:9', title: 'Lunch' }), /^Error: reviewer: the loading overlay did not open: overlay: at most 3 open/)
@@ -1221,6 +1320,8 @@ test('update: more images, hidden parts and a status for an open annotation of t
   const own = [{ id: 'cid1', mime: 'image/png', dataUrl: PNG }]
   await f.provided.reviewer.annotate({ title: 'Mail', html: '<p><img data-asset="r1" alt="Hero"></p>', assets: own, key: 'gmail:t1', kind: 'mail' })
   const h = f.handles[0]
+  // Live updates go to a copy whose content went out (a copy that has not asked yet gets them after it).
+  h.say({ type: 'content' })
   const before = h.posts.length
   assert.deepEqual(await f.provided.reviewer.update({ key: 'gmail:t1', assets: [{ id: 'r1', name: 'hero.png', mime: 'image/png', dataUrl: PNG }], hide: ['images-bar'], status: 'Images\nloaded' }), { updated: true })
   assert.deepEqual(h.posts.slice(before), [
@@ -1364,6 +1465,10 @@ test('an image or a PDF opens as a preview: the init has no bytes; they come onc
   for (const m of rest) assert.ok(JSON.stringify(m).length <= PAGE_MESSAGE_MAX)
   h.say({ type: 'content' })
   assert.equal(h.posts.length, 1 + rest.length) // once
+  // Another copy gets the same bytes, chunked again from the kept Buffer (not kept as base64).
+  const other = h.connect(OWNER_WEB)
+  h.sayAs(OWNER_WEB, { type: 'content' })
+  assert.deepEqual(other.slice(1), rest)
   // No diff for a preview: git only says whether the path is in the last commit (the head line).
   for (const a of f.execs.filter((a) => a[0] === 'git')) assert.match(a.slice(1).join(' '), /^(rev-parse --is-inside-work-tree|rev-parse --verify --quiet HEAD|cat-file -e HEAD:\.\/.*)$/)
   host.deactivate()
@@ -1451,7 +1556,7 @@ test("notes(): only the working-tree line notes with text; the open overlay's ow
   assert.deepEqual((await svc.notes('a.js')).map((n) => [n.id, n.from, n.to]), [['6', 1, 1], ['5', 4, 5]])
   await svc.open('a.js')
   f.handles[0].say({ type: 'draft', draft: { global: '', notes: [{ id: 'n1', side: 'new', from: 3, to: 3, quote: '', text: 'live' }] } })
-  assert.deepEqual((await svc.notes('a.js')).map((n) => n.id), ['n1'])
+  assert.deepEqual((await svc.notes('a.js')).map((n) => n.id), [f.handles[0].idOf(OWNER.copy, 'n1')])
   host.deactivate()
 })
 
@@ -1561,9 +1666,9 @@ test("notesChange follows the overlay's draft writes and a sent review; a text a
   await h.discussFn()
   h.end({ kind: 'discussed', tabId: 't1', queued: false })
   await until(() => store.size === 0, 'the sent draft deleted')
-  // The draft written again for Discuss (its newest copy), then deleted once sent: one event each.
-  await until(() => events.length === 3, 'the write and delete events')
-  assert.deepEqual(events, [NOTES_A, NOTES_A, NOTES_A])
+  // Deleted once sent: one more event (the host's draft was already stored, so Discuss writes nothing first).
+  await until(() => events.length === 2, 'the delete event')
+  assert.deepEqual(events, [NOTES_A, NOTES_A])
   events.length = 0
   await svc.annotate({ title: 'Ticket', text: 'body' })
   f.handles[1].say({ type: 'draft', draft: { global: 'g', notes: [] } })
@@ -1640,5 +1745,930 @@ test('a queued Discuss deletes only the notes it sent: one added since stays', a
   changes[0]([{ ...tab, lastPrompt: sentText.replace(/\n/g, '\r\n').slice(0, 2048) }])
   await wait(30)
   assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.id), [added.id])
+  host.deactivate()
+})
+
+// ---- one copy per view (design-overlay-views §6): replayable state, guest-safe payloads, access by viewer ----
+
+const OWNER_WEB = Object.freeze({ view: 'web:1', access: 'owner', copy: 'c-owner-web' })
+const WRITER = Object.freeze({ view: 'web:2', access: 'write', person: 'Ann', copy: 'c-write' })
+const READER = Object.freeze({ view: 'web:3', access: 'read', person: 'Bob', copy: 'c-read' })
+const GUESTS = [WRITER, READER]
+
+/** Every string in `v`, but the base64 payloads (a preview's bytes, an image), which may start with a `/`. */
+function stringsOf(v, out = []) {
+  if (typeof v === 'string') out.push(v)
+  else if (Array.isArray(v)) for (const x of v) stringsOf(x, out)
+  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) if (k !== 'b64' && k !== 'dataUrl') stringsOf(x, out)
+  return out
+}
+
+/** No host path anywhere in what a guest's copy got (design-guests D-33): not the project folder, nothing absolute. */
+function assertNoHostPath(msgs, root) {
+  assert.ok(msgs.length > 0, 'the guest got something')
+  const json = JSON.stringify(msgs)
+  assert.ok(!json.includes(root) && !json.includes(path.dirname(root)), `a host path in ${json.slice(0, 300)}`)
+  for (const s of stringsOf(msgs)) assert.ok(!path.isAbsolute(s), `an absolute path: ${s}`)
+}
+
+const types = (msgs) => msgs.map((m) => m.type)
+// Past the host's "did the overlay open" wait (OPEN_SETTLE_MS) for an open that does not return it.
+const OPEN_WAIT = 700
+
+/** An html annotation with everything a page message can act on: a url, a link, a button, originals, a companion. */
+async function richAnnotation(f, extra = {}) {
+  const r = await f.provided.reviewer.annotate({
+    title: 'Mail',
+    html: '<p>Hi <a href="https://example.com/a">a</a> <span data-action="archive">Archive</span></p><div data-original="m1"></div>',
+    originals: [{ id: 'm1', html: '<p>o</p>' }],
+    assets: [{ id: 'cid1', mime: 'image/png', dataUrl: PNG }],
+    url: 'https://mail.example/t1',
+    key: 'gmail:t1',
+    companion: { title: 'PROJ-1', html: '<p>issue</p>', url: 'https://x/PROJ-1' },
+    ...extra,
+  })
+  await wait(0)
+  return r
+}
+
+test('the manifest declares one copy per view and checks access itself', () => {
+  const m = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'plugin.json'), 'utf8'))
+  assert.deepEqual(m.overlays, { perView: true })
+  assert.deepEqual(m.guests, { aware: true })
+})
+
+test('every copy gets its own init by a post addressed to it; a guest\'s has no host path and draws no buttons', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
+  // The owner's init is the init as it always was: root included, no canAct.
+  assert.equal(h.posts[0].type, 'init')
+  assert.equal(h.posts[0].sides.root, f.ctx.projectDir)
+  assert.equal('canAct' in h.posts[0], false)
+  for (const g of GUESTS) {
+    const inbox = h.connect(g)
+    assert.deepEqual(types(inbox), ['init'])
+    assert.equal('root' in inbox[0].sides, false)
+    assert.equal(inbox[0].sides.path, 'a.js')
+    assert.equal(inbox[0].sides.new, 'two\n')
+    assert.equal(inbox[0].canAct, false)
+    assertNoHostPath(inbox, f.ctx.projectDir)
+  }
+  // Every post was addressed: nothing relied on a broadcast.
+  assert.ok(h.events.filter((e) => e[0] === 'post').every((e) => typeof e[1] === 'string'))
+  host.deactivate()
+})
+
+test('a preview\'s guest copy has no host path either, and gets the bytes after it asks', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'pic.png'), Buffer.from(PNG.split(',')[1], 'base64'))
+  await f.provided.reviewer.open('pic.png')
+  const h = f.handles[0]
+  assert.equal(h.posts[0].sides.root, f.ctx.projectDir)
+  const inbox = h.connect(READER)
+  h.sayAs(READER, { type: 'content' })
+  assert.deepEqual(types(inbox), ['init', 'bytes-begin', 'bytes', 'bytes-end'])
+  assertNoHostPath(inbox, f.ctx.projectDir)
+  host.deactivate()
+})
+
+test('a late copy is rebuilt: the newest draft and layout in its init, then its content and every update after it asks', async () => {
+  const f = setup({ editorAvailable: false })
+  storeFake(f)
+  const caller = { id: 'example.mail' }
+  withServices(f, caller)
+  f.ctx.openExternal = async () => {}
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await richAnnotation(f)
+  const h = f.handles[0]
+  h.say({ type: 'content' })
+  const draft = { global: 'later', notes: [] }
+  h.say({ type: 'draft', draft })
+  h.say({ type: 'layout', layout: 'unified' })
+  h.say({ type: 'split', split: 0.3 })
+  await f.provided.reviewer.update({ key: 'gmail:t1', assets: [{ id: 'r1', mime: 'image/png', dataUrl: PNG }], hide: ['images-bar'], status: 'Loaded' })
+  const owned = h.posts.slice()
+  // The owner's other screen (D-1) and a guest connect late: the same page, in the same order.
+  for (const from of [OWNER_WEB, READER]) {
+    const inbox = h.connect(from)
+    assert.deepEqual(types(inbox), ['init'], 'nothing before the page asks for its content')
+    assert.deepEqual(inbox[0].draft, draft)
+    assert.equal(inbox[0].layout, 'unified')
+    assert.equal(inbox[0].split, 0.3)
+    h.sayAs(from, { type: 'content' })
+    h.sayAs(from, { type: 'content' }) // once per copy
+    const content = owned.slice(1).filter((m) => !['draft-error', 'draft-saved', 'note-added', 'ack'].includes(m.type))
+    assert.deepEqual(inbox.slice(1), content)
+    assert.deepEqual(types(inbox.slice(-3)), ['assets-done', 'update', 'asset'])
+    assert.equal(inbox.at(-2).status, 'Loaded')
+  }
+  assertNoHostPath(h.inboxOf(READER.copy), f.ctx.projectDir)
+  // A live update reaches every copy whose content went out, and a copy that has not asked yet only after it.
+  const late = h.connect(WRITER)
+  await f.provided.reviewer.update({ key: 'gmail:t1', status: 'Again' })
+  assert.equal(h.posts.at(-1).status, 'Again')
+  assert.equal(h.inboxOf(OWNER_WEB.copy).at(-1).status, 'Again')
+  assert.equal(h.inboxOf(READER.copy).at(-1).status, 'Again')
+  assert.deepEqual(types(late), ['init'])
+  h.sayAs(WRITER, { type: 'content' })
+  // Folded: one update with the sum so far (the last status), then its assets.
+  assert.deepEqual(late.slice(-3).map((m) => m.type + (m.status ? `:${m.status}` : '')), ['assets-done', 'update:Again', 'asset'])
+  // A copy that went is sent nothing more.
+  h.disconnect(READER.copy)
+  const ev = h.events.length
+  await f.provided.reviewer.update({ key: 'gmail:t1', status: 'Third' })
+  assert.ok(!h.events.slice(ev).some((e) => e[0] === 'post' && e[1] === READER.copy))
+  assert.equal(h.posts.at(-1).status, 'Third')
+  host.deactivate()
+})
+
+test('a prepared overlay is replayed: a copy up while loading gets the fill, a late one the error page, Try again only for the owner', async () => {
+  const f = setup({ editorAvailable: false })
+  const caller = { id: 'bronos.chat' }
+  const emits = withServices(f, caller)
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'chat:1', title: 'Ann' })
+  const h = f.handles[0]
+  // Loading: the page starts on its loader, so a copy up now is sent nothing yet.
+  const early = h.connect(READER)
+  assert.deepEqual(early, [])
+  assert.deepEqual(h.posts, [])
+  await f.provided.reviewer.fail({ key: 'chat:1', message: 'down', retry: true })
+  assert.deepEqual(h.posts, [{ type: 'failed', message: 'down', retry: true }])
+  // A guest's copy gets a fixed text, never the caller's words (they may name a host path, D-33).
+  assert.deepEqual(early, [{ type: 'failed', message: host.GUEST_ERRORS.failed, retry: false }])
+  // After the failure a late copy gets the error page too, as its viewer may see it.
+  assert.deepEqual(h.connect(OWNER_WEB), [{ type: 'failed', message: 'down', retry: true }])
+  assert.deepEqual(h.connect(WRITER), [{ type: 'failed', message: host.GUEST_ERRORS.failed, retry: false }])
+  // Try again: the owner's only (from any of the owner's screens).
+  h.sayAs(READER, { type: 'retry' })
+  h.sayAs(WRITER, { type: 'retry' })
+  assert.equal(emits.length, 0)
+  h.sayAs(OWNER_WEB, { type: 'retry' })
+  assert.deepEqual(emits.map((e) => e.data), [{ key: 'chat:1', id: 'retry', caller: 'bronos.chat' }])
+  // The caller's next prepare: every copy back to the loader, then the annotate fills every copy.
+  await f.provided.reviewer.prepare({ key: 'chat:1', title: 'Ann' })
+  for (const c of [OWNER.copy, OWNER_WEB.copy, WRITER.copy, READER.copy]) assert.deepEqual(h.inboxOf(c).at(-1), { type: 'loading' })
+  await f.provided.reviewer.annotate({ title: 'Ann', text: 'hello', key: 'chat:1' })
+  for (const c of [OWNER.copy, OWNER_WEB.copy, WRITER.copy, READER.copy]) {
+    const init = h.inboxOf(c).at(-1)
+    assert.equal(init.type, 'init')
+    assert.equal(init.sides.new, 'hello')
+  }
+  assert.equal(f.handles.length, 1)
+  for (const g of GUESTS) assertNoHostPath(h.inboxOf(g.copy), f.ctx.projectDir)
+  host.deactivate()
+})
+
+test('the error page\'s Close: the owner and a write guest close for everyone, a read guest hides only its copy', async () => {
+  const f = setup({ editorAvailable: false })
+  withServices(f, { id: 'bronos.chat' })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  for (const [i, from] of [OWNER, WRITER, READER].entries()) {
+    await f.provided.reviewer.prepare({ key: `chat:${i}`, title: 'Ann' })
+    await f.provided.reviewer.fail({ key: `chat:${i}`, message: 'down' })
+    const h = f.handles[i]
+    if (from !== OWNER) h.connect(from)
+    h.sayAs(from, { type: 'close' })
+    assert.equal(h.closed, from === READER ? 0 : 1, from.access)
+    assert.deepEqual(h.hides, from === READER ? [READER.copy] : [], from.access)
+  }
+  host.deactivate()
+})
+
+test('the access table: each page message by owner, write guest and read guest', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store } = storeFake(f)
+  const caller = { id: 'example.mail' }
+  const emits = withServices(f, caller)
+  const opened = []
+  let refuse = null
+  f.ctx.openExternal = async (url, options) => {
+    opened.push([url, options])
+    if (refuse) throw refuse
+  }
+  const prefs = []
+  f.ctx.appStorage = { get: async () => null, set: async (k, v) => prefs.push([k, v]) }
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await richAnnotation(f)
+  const h = f.handles[0]
+  for (const g of GUESTS) h.connect(g)
+  const say = (from, m) => (from === OWNER ? h.say(m) : h.sayAs(from, m))
+
+  // content: everyone, each copy its own, the same content (no host path in it).
+  for (const from of [OWNER, WRITER, READER]) say(from, { type: 'content' })
+  const content = h.posts.slice(1)
+  for (const g of GUESTS) {
+    assert.deepEqual(h.inboxOf(g.copy).slice(1), content)
+    assertNoHostPath(h.inboxOf(g.copy), f.ctx.projectDir)
+  }
+
+  // note edits (the whole draft, until Task 11): the owner's saved; a guest's dropped.
+  for (const from of GUESTS) say(from, { type: 'draft', draft: { global: `by ${from.person}`, notes: [] } })
+  await wait(SAVE_WAIT)
+  assert.equal(store.size, 0)
+  say(OWNER, { type: 'draft', draft: { global: 'mine', notes: [] } })
+  await wait(SAVE_WAIT)
+  assert.equal(store.get('annotate:gmail:t1').global, 'mine')
+
+  // layout, split: the owner's app-wide prefs; a guest's switch stays in its copy.
+  for (const from of GUESTS) {
+    say(from, { type: 'layout', layout: 'unified' })
+    say(from, { type: 'split', split: 0.3 })
+  }
+  assert.deepEqual(prefs, [])
+  say(OWNER, { type: 'layout', layout: 'unified' })
+  say(OWNER, { type: 'split', split: 0.3 })
+  assert.deepEqual(prefs, [['layout', 'unified'], ['companionSplit', 0.3]])
+
+  // action: the owner's only; a guest's copy was told to draw none.
+  for (const g of GUESTS) assert.equal(h.inboxOf(g.copy)[0].canAct, false)
+  for (const from of GUESTS) say(from, { type: 'action', id: 'archive' })
+  assert.equal(emits.length, 0)
+  say(OWNER, { type: 'action', id: 'archive' })
+  assert.deepEqual(emits.map((e) => [e.event, e.data.id]), [['action', 'archive']])
+
+  // view: re-emitted for the owner only.
+  for (const from of GUESTS) say(from, { type: 'view', view: 'original' })
+  assert.equal(emits.length, 1)
+  say(OWNER, { type: 'view', view: 'original' })
+  assert.deepEqual(emits.map((e) => e.event), ['action', 'view'])
+
+  // open-url, open-link: everyone, on the device of the view that asked; a refusal to that copy only.
+  for (const from of [OWNER, WRITER, READER]) {
+    say(from, { type: 'open-url' })
+    say(from, { type: 'open-url', doc: 'companion' })
+    say(from, { type: 'open-link', href: 'https://example.com/a' })
+  }
+  await wait(10)
+  assert.deepEqual(
+    opened,
+    [OWNER, WRITER, READER].flatMap((from) => [
+      ['https://mail.example/t1', { view: from.view }],
+      ['https://x/PROJ-1', { view: from.view }],
+      ['https://example.com/a', { view: from.view }],
+    ]),
+  )
+  assert.equal(opened[0][1].view, 'desktop')
+  refuse = new Error('openExternal: refused')
+  const counts = () => [OWNER, WRITER, READER].map((x) => h.inboxOf(x.copy).length)
+  const before = counts()
+  say(READER, { type: 'open-url' })
+  say(READER, { type: 'open-link', href: 'https://elsewhere.example/' })
+  await wait(10)
+  assert.deepEqual(counts(), [before[0], before[1], before[2] + 2])
+  assert.deepEqual(types(h.inboxOf(READER.copy).slice(-2)), ['error', 'error'])
+
+  // close of a filled review: the page has no Close of its own; a stale one from the error page means nothing.
+  for (const from of [OWNER, WRITER, READER]) say(from, { type: 'close' })
+  assert.equal(h.closed, 0)
+  assert.deepEqual(h.hides, [])
+
+  // A message from a copy the host never greeted, or with no from at all, is nobody's.
+  h.listeners.forEach((l) => l({ type: 'action', id: 'archive' }))
+  h.sayAs({ view: 'web:9', access: 'owner', copy: 'c-unknown' }, { type: 'action', id: 'archive' })
+  assert.equal(emits.length, 2)
+  host.deactivate()
+})
+
+test('Discuss waits for every copy that edits to sync, sends the shared draft; a read guest is not asked, a guest\'s unsaved text does not stop it', async () => {
+  const f = setup({ editorAvailable: false })
+  storeFake(f)
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'T', text: 'body', key: 'k1' })
+  const h = f.handles[0]
+  h.connect(WRITER)
+  h.connect(READER)
+  h.say({ type: 'draft', draft: { global: 'owner text', notes: [] } })
+  h.answers = false
+  let done = false
+  const asked = h.discussFn().then((r) => ((done = true), r))
+  await wait(0)
+  assert.equal(h.posts.at(-1).type, 'draft-request')
+  assert.equal(h.inboxOf(WRITER.copy).at(-1).type, 'draft-request')
+  assert.ok(!h.inboxOf(READER.copy).some((m) => m.type === 'draft-request'))
+  // The write guest's op in flight lands before its sync: the shared draft has it (last writer wins).
+  h.sayDraft(WRITER, { global: 'guest text', notes: [note('from Ann')] })
+  h.sayAs(WRITER, { type: 'draft-unsaved' }) // a guest's unsent text is its own: counts as answered
+  h.sayAs(READER, { type: 'draft-unsaved' })
+  await wait(10)
+  assert.equal(done, false, 'still waiting for the owner')
+  h.sayAs(OWNER, { type: 'draft-sync' })
+  const { text } = await asked
+  assert.match(text, /guest text/)
+  assert.match(text, /from Ann/)
+  // An owner's unsent text stops it.
+  const again = h.discussFn()
+  await wait(0)
+  h.sayAs(OWNER, { type: 'draft-unsaved' })
+  await assert.rejects(again, /too large to send/)
+  // Only a read guest's copy up: answered at once, nothing asked of it.
+  h.disconnect(OWNER.copy)
+  h.disconnect(WRITER.copy)
+  const t0 = Date.now()
+  assert.match((await h.discussFn()).text, /guest text/)
+  assert.ok(Date.now() - t0 < 500)
+  assert.ok(!h.inboxOf(READER.copy).some((m) => m.type === 'draft-request'))
+  host.deactivate()
+})
+
+test('draft errors go to the copies that edit, and an owner copy that connects later is told too', async () => {
+  const f = setup({ editorAvailable: false })
+  storeFake(f, { failSet: () => true })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
+  h.connect(READER)
+  h.say({ type: 'draft', draft: { global: 'x', notes: [] } })
+  await wait(SAVE_WAIT)
+  assert.equal(h.posts.at(-1).type, 'draft-error')
+  assert.ok(!h.inboxOf(READER.copy).some((m) => m.type.startsWith('draft')))
+  assert.deepEqual(types(h.connect(OWNER_WEB)), ['init', 'draft-error'])
+  host.deactivate()
+})
+
+test('a storage error reaches a guest\'s copy as a fixed text with no host path, the owner\'s with the detail', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store } = storeFake(f)
+  // As the host's createStorage words a read-only store: the plugin's storage.json, absolute.
+  const file = path.join(f.ctx.projectDir, '.data', 'plugins', 'cockpit.reviewer', 'storage.json')
+  f.ctx.storage.set = async () => {
+    throw new Error(`storage is read-only: ${file} cannot be written (see the plugin log)`)
+  }
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  await wait(0)
+  const h = f.handles[0]
+  const ann = h.connect(WRITER)
+  h.sayAs(WRITER, { type: 'note-add', tag: '~0', note: lineNote('guest') })
+  await wait(SAVE_WAIT)
+  assert.equal(store.size, 0)
+  const errorsOf = (inbox) => inbox.filter((m) => m.type === 'draft-error' || m.type === 'error').map((m) => m.message)
+  assert.deepEqual(errorsOf(ann), [host.GUEST_ERRORS.draft])
+  assert.match(errorsOf(h.posts).at(-1), /^Draft not saved: storage is read-only: .*storage\.json cannot be written/)
+  assert.ok(errorsOf(h.posts).at(-1).includes(file), 'the owner keeps the detail')
+  // A copy that connects while the error stands is told the same way.
+  h.connect(OWNER_WEB)
+  assert.ok(errorsOf(h.inboxOf(OWNER_WEB.copy)).at(-1).includes(file))
+  h.disconnect(WRITER.copy)
+  const again = h.connect(WRITER)
+  assert.deepEqual(errorsOf(again).slice(-1), [host.GUEST_ERRORS.draft])
+  assertNoHostPath(errorsOf(ann).concat(errorsOf(again)), f.ctx.projectDir)
+  for (const s of errorsOf(ann).concat(errorsOf(again))) assert.ok(!s.includes(file) && !/\//.test(s), `a path in ${s}`)
+  host.deactivate()
+})
+
+test('an openExternal refusal reaches a guest\'s copy as a fixed text, the owner\'s with the detail', async () => {
+  const f = setup({ editorAvailable: false })
+  const file = path.join(f.ctx.projectDir, 'secret', 'thing')
+  f.ctx.openExternal = async () => {
+    throw new Error(`openExternal: refused ${file}`)
+  }
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await richAnnotation(f)
+  const h = f.handles[0]
+  const ann = h.connect(WRITER)
+  h.sayAs(WRITER, { type: 'open-url' })
+  h.sayAs(OWNER, { type: 'open-url' })
+  await wait(10)
+  assert.deepEqual(ann.filter((m) => m.type === 'error'), [{ type: 'error', message: host.GUEST_ERRORS.open }])
+  assert.equal(h.posts.filter((m) => m.type === 'error').at(-1).message, `Not opened in the browser: refused ${file}`)
+  host.deactivate()
+})
+
+test('a note added and deleted by its tag before the answer, edited meanwhile on another screen, is deleted at the host', async () => {
+  const { store, h } = await sharedReview()
+  const ann = h.connect(WRITER)
+  h.sayAs(OWNER, { type: 'note-add', tag: '~0', note: lineNote('oops') })
+  const id = lastOf(h.posts, 'note-added').note.id
+  // Ann edits the host's note before the owner's delete (sent by the tag) arrives.
+  h.sayAs(WRITER, { type: 'note-change', id, text: 'edited by Ann' })
+  h.sayAs(OWNER, { type: 'note-delete', tag: '~0' })
+  assert.deepEqual(lastOf(ann, 'note-deleted'), { type: 'note-deleted', id })
+  await wait(SAVE_WAIT)
+  assert.equal(store.has('draft:a.js'), false)
+  host.deactivate()
+})
+
+test('a copy whose init no longer fits gets its own error page, whose Close follows the access rule; the others live', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'T', text: 'x', key: 'k1' })
+  const h = f.handles[0]
+  // main's post limit, as OverlayHandle.post throws it, hit only by these two copies' inits.
+  const post = h.post
+  h.post = (m, o) => {
+    if (m.type === 'init' && o && (o.copy === READER.copy || o.copy === WRITER.copy)) throw new RangeError('overlay post: message too large')
+    post(m, o)
+  }
+  for (const g of GUESTS) {
+    assert.deepEqual(h.connect(g), [{ type: 'failed', message: 'T is too large to show here (with its draft).', retry: false }])
+  }
+  h.sayAs(READER, { type: 'close' })
+  assert.deepEqual(h.hides, [READER.copy])
+  assert.equal(h.closed, 0)
+  h.sayAs(WRITER, { type: 'close' })
+  assert.equal(h.closed, 1)
+  // The owner's copy, whose init went out, has no Close of its own to send.
+  h.say({ type: 'close' })
+  assert.equal(h.closed, 1)
+  host.deactivate()
+})
+
+test('provenance: prepare and annotate attribute their caller chains before the content leaves, and a late copy re-asserts them', async () => {
+  const f = setup({ editorAvailable: false })
+  const caller = { id: 'example.mail' }
+  withServices(f, caller)
+  let chain = ['example.inbox', 'example.mail']
+  f.ctx.services.callers = () => chain
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'gmail:t1', title: 'Mail' })
+  const h = f.handles[0]
+  assert.deepEqual(h.sources, [['example.inbox', 'example.mail']])
+  // The fill comes through another chain (the call is over by the time a copy asks): both are kept.
+  chain = ['example.other', 'example.mail']
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<p>x</p>', key: 'gmail:t1' })
+  const all = ['example.inbox', 'example.mail', 'example.other']
+  assert.deepEqual(h.sources.at(-1), all)
+  const firstInit = h.events.findIndex((e) => e[0] === 'post' && e[2] === 'init')
+  const filled = h.events.findIndex((e) => e[0] === 'sources' && e[1].includes('example.other'))
+  assert.ok(filled >= 0 && filled < firstInit, 'attributed before the init went out')
+  // Outside any call: a late copy's starting state and its content re-assert the whole set first.
+  chain = []
+  h.events.length = 0
+  h.connect(WRITER)
+  h.sayAs(WRITER, { type: 'content' })
+  assert.deepEqual(h.events[0], ['sources', all])
+  assert.equal(h.events[1][2], 'init')
+  const contentAt = h.events.findIndex((e) => e[0] === 'post' && e[2] === 'html')
+  assert.deepEqual(h.events[contentAt - 1], ['sources', all])
+  // update() and fail() bring content too.
+  chain = ['example.late', 'example.mail']
+  await f.provided.reviewer.update({ key: 'gmail:t1', status: 'x' })
+  assert.deepEqual(h.sources.at(-1), [...all, 'example.late'])
+  host.deactivate()
+})
+
+test('provenance: a reused overlay (a second prepare, a second annotate of an open key) adds the new caller chain; the deferred fill re-asserts the union', async () => {
+  const f = setup({ editorAvailable: false })
+  const caller = { id: 'example.mail' }
+  withServices(f, caller)
+  // Shown B prepares K; then hidden A -> B prepares K again (the loader is reused, only focused).
+  let chain = ['example.mail']
+  f.ctx.services.callers = () => chain
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'gmail:t1', title: 'Mail' })
+  const h = f.handles[0]
+  chain = ['example.hidden', 'example.mail']
+  await f.provided.reviewer.prepare({ key: 'gmail:t1', title: 'Mail' })
+  assert.equal(f.handles.length, 1, 'the loader is reused')
+  assert.equal(h.focused, 1)
+  const both = ['example.mail', 'example.hidden']
+  const reused = h.events.findIndex((e) => e[0] === 'sources' && e[1].includes('example.hidden'))
+  assert.ok(reused >= 0, 'the reuse added the new chain')
+  assert.deepEqual(h.events[reused][1], both)
+  // B's deferred annotate (only B live) records the union before the init goes out.
+  chain = ['example.mail']
+  h.events.length = 0
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<p>x</p>', key: 'gmail:t1' })
+  const filled = h.events.findIndex((e) => e[0] === 'sources')
+  const init = h.events.findIndex((e) => e[0] === 'post' && e[2] === 'init')
+  assert.ok(filled >= 0 && filled < init, 'attributed before the init went out')
+  assert.deepEqual(h.events[filled][1], both)
+  // A filled (open) key reused by yet another chain: added too, and a late copy carries the whole set.
+  chain = ['example.third', 'example.mail']
+  h.events.length = 0
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<p>y</p>', key: 'gmail:t1' })
+  assert.equal(f.handles.length, 1)
+  assert.deepEqual(h.sources.at(-1), [...both, 'example.third'])
+  chain = ['example.fourth']
+  await f.provided.reviewer.prepare({ key: 'gmail:t1', title: 'Mail' })
+  const all = [...both, 'example.third', 'example.fourth']
+  assert.deepEqual(h.sources.at(-1), all)
+  chain = []
+  h.events.length = 0
+  h.connect(WRITER)
+  assert.deepEqual(h.events[0], ['sources', all])
+  host.deactivate()
+})
+
+test('provenance: fail() attributes its caller chain before the error page goes out, a late copy re-asserts it', async () => {
+  const f = setup({ editorAvailable: false })
+  const caller = { id: 'example.mail' }
+  withServices(f, caller)
+  let chain = ['example.inbox', 'example.mail']
+  f.ctx.services.callers = () => chain
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'gmail:t1', title: 'Mail' })
+  await wait(0) // the owner's copy is up, on the loader
+  const h = f.handles[0]
+  h.events.length = 0
+  chain = ['example.failer', 'example.mail']
+  assert.deepEqual(await f.provided.reviewer.fail({ key: 'gmail:t1', message: 'offline' }), { failed: true })
+  const all = ['example.inbox', 'example.mail', 'example.failer']
+  const attributed = h.events.findIndex((e) => e[0] === 'sources' && e[1].includes('example.failer'))
+  const failed = h.events.findIndex((e) => e[0] === 'post' && e[2] === 'failed')
+  assert.ok(attributed >= 0 && attributed < failed, 'attributed before the error page went out')
+  chain = []
+  h.events.length = 0
+  h.connect(WRITER)
+  assert.deepEqual(h.events[0], ['sources', all])
+  assert.equal(h.events[1][2], 'failed')
+  host.deactivate()
+})
+
+test('provenance: the open service attributes its caller chain before the file\'s content leaves', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.services.callers = () => ['example.tree']
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
+  assert.deepEqual(h.sources[0], ['example.tree'])
+  const attributed = h.events.findIndex((e) => e[0] === 'sources')
+  assert.ok(attributed >= 0 && attributed < h.events.findIndex((e) => e[2] === 'init'))
+  host.deactivate()
+})
+
+test('update replay is folded: a late copy gets one update (every hidden part, the last status) and the assets, however many calls came', async () => {
+  const f = setup({ editorAvailable: false })
+  withServices(f, { id: 'example.mail' })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<p><img data-asset="r1" alt="Hero"></p>', key: 'gmail:t1', kind: 'mail' })
+  const h = f.handles[0]
+  h.say({ type: 'content' })
+  await f.provided.reviewer.update({ key: 'gmail:t1', assets: [{ id: 'r1', name: 'hero.png', mime: 'image/png', dataUrl: PNG }], hide: ['images-bar'] })
+  for (let i = 0; i < 50; i++) await f.provided.reviewer.update({ key: 'gmail:t1', status: `Synced ${i}` })
+  await f.provided.reviewer.update({ key: 'gmail:t1', hide: ['quoted'] })
+  // The live copy got every one as it came.
+  assert.equal(h.posts.filter((m) => m.type === 'update').length, 52)
+  const late = h.connect(OWNER_WEB)
+  h.sayAs(OWNER_WEB, { type: 'content' })
+  const after = late.slice(late.findIndex((m) => m.type === 'assets-done') + 1)
+  assert.deepEqual(after, [
+    { type: 'update', assets: [{ id: 'r1', name: 'hero.png', mime: 'image/png' }], hide: ['images-bar', 'quoted'], status: 'Synced 49' },
+    { type: 'asset', id: 'r1', dataUrl: PNG },
+  ])
+  // A status cleared ('') is kept as cleared.
+  await f.provided.reviewer.update({ key: 'gmail:t1', status: '' })
+  const late2 = h.connect(WRITER)
+  h.sayAs(WRITER, { type: 'content' })
+  assert.equal(late2.find((m) => m.type === 'update').status, '')
+  host.deactivate()
+})
+
+test('the owner\'s Original | Reader choice is kept: a reload or another copy starts on it; a guest\'s switch is its copy\'s only', async () => {
+  const f = setup({ editorAvailable: false })
+  withServices(f, { id: 'example.mail' })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<div data-original="m1"></div>', originals: [{ id: 'm1', html: '<p>o</p>' }], view: 'original', key: 'gmail:t1' })
+  const h = f.handles[0]
+  assert.equal(h.posts[0].sides.view, 'original')
+  h.connect(READER)
+  h.sayAs(READER, { type: 'view', view: 'reader' })
+  assert.equal(h.connect(OWNER_WEB)[0].sides.view, 'original', 'a guest\'s switch is not the overlay\'s')
+  h.say({ type: 'view', view: 'reader' })
+  for (const from of [WRITER, READER]) {
+    if (from === READER) h.disconnect(READER.copy)
+    const init = h.connect(from).at(-1) // a reconnected copy's inbox keeps what it had before
+    assert.equal(init.type, 'init')
+    assert.equal(init.sides.view, 'reader')
+    assertNoHostPath([init], f.ctx.projectDir)
+  }
+  host.deactivate()
+})
+
+test('provenance: a file opened for other plugins (the requestedBy chain) is attributed to all of them; an open no plugin asked for is not', async () => {
+  const f = setup({ editorAvailable: false })
+  let onOpen
+  f.ctx.files.onOpen = (fn) => ((onOpen = fn), () => {})
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  // Hidden A called B's service, B opened the file: main hands the whole chain, the caller last.
+  const opened = onOpen({ path: 'a.js', requestedBy: ['example.mail', 'example.tree'] })
+  await wait(OPEN_WAIT)
+  const h = f.handles[0]
+  const chain = ['example.mail', 'example.tree']
+  assert.deepEqual(h.sources, [chain, chain], 'at the fill and again for the owner copy')
+  assert.ok(h.events.findIndex((e) => e[0] === 'sources') < h.events.findIndex((e) => e[2] === 'init'))
+  h.end({ kind: 'dismissed' })
+  await opened
+  onOpen({ path: 'a.js', tabId: 't1' })
+  await wait(OPEN_WAIT)
+  assert.deepEqual(f.handles[1].sources, [])
+  host.deactivate()
+})
+
+// ---- shared notes (design-overlay-views §6, D-3) ----
+
+/** A file review of a.js with the owner's desktop copy up, a storage fake and the handle. */
+async function sharedReview(extra = {}) {
+  const f = setup({ editorAvailable: false })
+  const { store, notices } = storeFake(f)
+  f.ctx.overlay.start = () => pageHandle(f)
+  Object.assign(f.ctx, extra)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  await wait(0)
+  return { f, store, notices, h: f.handles[0] }
+}
+const lineNote = (text) => ({ side: 'new', from: 1, to: 1, quote: 'two', text })
+const lastOf = (inbox, type) => inbox.filter((m) => m.type === type).at(-1)
+
+test('shared notes: two copies adding at once get distinct host ids, each answered by its tag, and both show everywhere', async () => {
+  const realNow = Date.now
+  Date.now = () => 1700000000000 // the same millisecond for both: the page's old clock ids would collide
+  try {
+    const { store, h } = await sharedReview()
+    const web = h.connect(OWNER_WEB)
+    const ann = h.connect(WRITER)
+    // A file review's copies never ask for content: they still take the notes' live changes.
+    h.sayAs(OWNER, { type: 'note-add', tag: '~0', note: lineNote('mine') })
+    h.sayAs(WRITER, { type: 'note-add', tag: '~0', note: lineNote('Ann\'s') })
+    const a = lastOf(h.posts, 'note-added')
+    const b = lastOf(ann, 'note-added')
+    assert.equal(a.tag, '~0')
+    assert.equal(b.tag, '~0')
+    assert.notEqual(a.note.id, b.note.id)
+    // Each sender gets its answer, never its own note as another copy's; the others get both.
+    assert.deepEqual(h.posts.filter((m) => m.type === 'note').map((m) => m.note.id), [b.note.id])
+    assert.deepEqual(ann.filter((m) => m.type === 'note').map((m) => m.note.id), [a.note.id])
+    assert.deepEqual(web.filter((m) => m.type === 'note').map((m) => m.note.text), ['mine', 'Ann\'s'])
+    await wait(SAVE_WAIT)
+    assert.deepEqual(store.get('draft:a.js').notes.map((n) => [n.id, n.text]), [[a.note.id, 'mine'], [b.note.id, 'Ann\'s']])
+    // A copy that connects (or reconnects) later starts from the current draft.
+    h.disconnect(OWNER_WEB.copy)
+    const init = h.connect(OWNER_WEB).at(-1)
+    assert.equal(init.type, 'init')
+    assert.deepEqual(init.draft.notes.map((n) => n.id), [a.note.id, b.note.id])
+  } finally {
+    Date.now = realNow
+  }
+  host.deactivate()
+})
+
+test('shared notes: the author is the guest main named, a forged one is ignored, and it is kept through save and load', async () => {
+  const { f, store, h } = await sharedReview()
+  const ann = h.connect(WRITER)
+  h.sayAs(WRITER, { type: 'note-add', tag: '~1', note: { ...lineNote('guest'), author: 'The owner', id: 'mine' } })
+  h.sayAs(OWNER, { type: 'note-add', tag: '~1', note: { ...lineNote('owner'), author: 'Bob' } })
+  const fromAnn = lastOf(h.posts, 'note').note
+  assert.equal(fromAnn.author, 'Ann')
+  assert.notEqual(fromAnn.id, 'mine')
+  assert.equal('author' in lastOf(h.posts, 'note-added').note, false, 'the owner\'s notes carry no author')
+  assert.equal('author' in lastOf(ann, 'note').note, false)
+  // A write guest editing the owner's note: the text changes, the author stays the note's maker.
+  h.sayAs(WRITER, { type: 'note-change', id: lastOf(h.posts, 'note-added').note.id, text: 'owner, edited by Ann' })
+  assert.deepEqual([lastOf(h.posts, 'note').note.text, 'author' in lastOf(h.posts, 'note').note], ['owner, edited by Ann', false])
+  await wait(SAVE_WAIT)
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.author || null), ['Ann', null])
+  // Closed and opened again: the stored author comes back in every copy's init.
+  h.end({ kind: 'dismissed' })
+  await wait(20)
+  await f.provided.reviewer.open('a.js')
+  await wait(0)
+  assert.deepEqual(f.handles[1].posts[0].draft.notes.map((n) => n.author || null), ['Ann', null])
+  host.deactivate()
+})
+
+test('shared notes: a read guest\'s copy draws no editing and its ops are dropped; the owner and a write guest edit', async () => {
+  const { store, h } = await sharedReview()
+  const bob = h.connect(READER)
+  const ann = h.connect(WRITER)
+  assert.equal(bob[0].canNote, false)
+  assert.equal('canNote' in ann[0], false)
+  assert.equal('canNote' in h.posts[0], false, 'the owner\'s init is as it was')
+  h.say({ type: 'draft', draft: { global: 'g', notes: [{ id: 'x', ...lineNote('owner') }] } })
+  const id = h.idOf(OWNER.copy, 'x')
+  const before = [h.posts.length, ann.length, bob.length]
+  for (const m of [
+    { type: 'note-add', tag: '~0', note: lineNote('bob') },
+    { type: 'note-change', id, text: 'bob was here' },
+    { type: 'note-delete', id },
+    { type: 'global', text: 'bob' },
+  ]) h.sayAs(READER, m)
+  assert.deepEqual([h.posts.length, ann.length, bob.length], before, 'nothing applied, answered or told')
+  await wait(SAVE_WAIT)
+  assert.deepEqual(store.get('draft:a.js'), { global: 'g', notes: [{ id, ...lineNote('owner') }] })
+  // The read guest sees the notes live.
+  assert.deepEqual(bob.filter((m) => m.type === 'note').map((m) => m.note.text), ['owner'])
+  assert.equal(lastOf(bob, 'global').text, 'g')
+  host.deactivate()
+})
+
+test('shared notes: a write guest\'s edits reach the owner\'s copy with the guest\'s name, never echoed back to the guest', async () => {
+  const { store, h } = await sharedReview()
+  const ann = h.connect(WRITER)
+  h.sayAs(WRITER, { type: 'note-add', tag: '~0', note: lineNote('') })
+  // Typed before its id came back: the change names the tag, resolved within Ann's copy only.
+  h.sayAs(WRITER, { type: 'note-change', tag: '~0', text: 'Ann typed fast' })
+  h.sayAs(OWNER, { type: 'note-change', tag: '~0', text: 'not the owner\'s tag' })
+  h.sayAs(WRITER, { type: 'global', text: 'Ann\'s comment' })
+  const notes = h.posts.filter((m) => m.type === 'note').map((m) => [m.note.text, m.note.author])
+  assert.deepEqual(notes, [['', 'Ann'], ['Ann typed fast', 'Ann']])
+  assert.equal(lastOf(h.posts, 'global').text, 'Ann\'s comment')
+  const id = lastOf(ann, 'note-added').note.id
+  // Each text op is acked to its sender, by the id even when it named the tag; nothing of its own comes back.
+  assert.deepEqual(ann.filter((m) => m.type === 'ack'), [{ type: 'ack', id }, { type: 'ack', global: true }])
+  assert.ok(!ann.some((m) => m.type === 'note' || m.type === 'global'))
+  // A change or delete of an id that is not there (deleted on another screen) is ignored.
+  h.sayAs(OWNER, { type: 'note-delete', id })
+  assert.deepEqual(lastOf(ann, 'note-deleted'), { type: 'note-deleted', id })
+  const n = [h.posts.length, ann.length]
+  h.sayAs(WRITER, { type: 'note-delete', id })
+  h.sayAs(OWNER, { type: 'note-delete', id: 'nope' })
+  assert.deepEqual([h.posts.length, ann.length], n)
+  h.sayAs(WRITER, { type: 'note-change', id, text: 'too late' })
+  assert.deepEqual(ann.at(-1), { type: 'ack', id })
+  await wait(SAVE_WAIT)
+  assert.deepEqual(store.get('draft:a.js'), { global: 'Ann\'s comment', notes: [] })
+  host.deactivate()
+})
+
+test('Discuss clears only what it sent: a note added or edited meanwhile on another screen stays, the comment only if unchanged', async () => {
+  for (const changeGlobal of [false, true]) {
+    const { store, h } = await sharedReview()
+    h.connect(WRITER)
+    h.say({ type: 'draft', draft: { global: 'please look', notes: [{ id: 'a', ...lineNote('first') }, { id: 'b', ...lineNote('second') }] } })
+    const { text } = await h.discussFn()
+    assert.match(text, /please look[\s\S]*first[\s\S]*second/)
+    // While the popover is up: Ann edits one sent note and adds another; the owner's other note is untouched.
+    h.sayAs(WRITER, { type: 'note-change', id: h.idOf(OWNER.copy, 'b'), text: 'second, edited' })
+    h.sayAs(WRITER, { type: 'note-add', tag: '~0', note: lineNote('new from Ann') })
+    if (changeGlobal) h.sayAs(WRITER, { type: 'global', text: 'please look again' })
+    h.end({ kind: 'discussed', tabId: 't1', queued: false })
+    await wait(50)
+    const left = store.get('draft:a.js')
+    assert.deepEqual(left.notes.map((n) => n.text), ['second, edited', 'new from Ann'])
+    assert.equal(left.global, changeGlobal ? 'please look again' : '')
+    host.deactivate()
+  }
+})
+
+test('the owner\'s single screen: open, add notes, Discuss sends them and the delivered review clears the draft', async () => {
+  const { f, store, notices, h } = await sharedReview()
+  h.sayAs(OWNER, { type: 'note-add', tag: '~0', note: lineNote('') })
+  h.sayAs(OWNER, { type: 'note-change', tag: '~0', text: 'why two?' })
+  h.sayAs(OWNER, { type: 'global', text: 'a quick look' })
+  const { text } = await h.discussFn()
+  assert.match(text, /^Review: changes since the last commit [0-9a-f]{12}\n\na quick look\n\n1\. Line 1 \(new\):\n   > two\n   why two\?$/)
+  h.end({ kind: 'discussed', tabId: 't1', queued: false })
+  await wait(50)
+  assert.equal(store.size, 0)
+  assert.deepEqual(notices, [])
+  assert.deepEqual(await f.provided.reviewer.notes('a.js'), [])
+  host.deactivate()
+})
+
+test('two screens asked Discuss: a delivery clears what the delivered ask sent, never narrowed by an abandoned ask', async () => {
+  for (const queued of [false, true]) {
+    const tab = { tabId: 't1', status: 'working', lastPrompt: 'earlier work' }
+    const changes = []
+    const { store, h } = await sharedReview({ sessions: { list: async () => [tab], onChange: (l) => (changes.push(l), () => {}) } })
+    h.connect(WRITER)
+    h.say({ type: 'draft', draft: { global: 'g', notes: [{ id: 'a', ...lineNote('one') }] } })
+    // The desktop's Discuss took the context, then its send failed (main asks one Discuss at a time).
+    await h.discussFn(OWNER)
+    // Ann adds a note and her Discuss sends both.
+    h.sayAs(WRITER, { type: 'note-add', tag: '~0', note: lineNote('two') })
+    const { text } = await h.discussFn(WRITER)
+    assert.match(text, /one[\s\S]*two/)
+    h.end({ kind: 'discussed', tabId: 't1', queued })
+    await wait(50)
+    if (queued) {
+      assert.equal(store.get('draft:a.js').notes.length, 2, 'kept until the tab takes it')
+      changes[0]([{ ...tab, lastPrompt: `About: Review: a.js\nFile: a.js\n\n${text}` }])
+      await wait(30)
+    }
+    assert.equal(store.size, 0, 'both notes and the comment reached Claude: nothing stays')
+    host.deactivate()
+  }
+})
+
+test('a queued or cut review keeps the draft as it is now, never the older snapshot; the queued delivery clears only what was sent', async () => {
+  const tab = { tabId: 't1', status: 'working', lastPrompt: 'earlier work' }
+  const changes = []
+  const { store, h } = await sharedReview({ sessions: { list: async () => [tab], onChange: (l) => (changes.push(l), () => {}) } })
+  h.connect(WRITER)
+  h.say({ type: 'draft', draft: { global: '', notes: [{ id: 'a', ...lineNote('sent') }] } })
+  const { text } = await h.discussFn()
+  h.sayAs(WRITER, { type: 'note-add', tag: '~0', note: lineNote('meanwhile') })
+  h.end({ kind: 'discussed', tabId: 't1', queued: true })
+  await wait(50)
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['sent', 'meanwhile'], 'kept whole while queued')
+  changes[0]([{ ...tab, lastPrompt: `About: Review: a.js\nFile: a.js\n\n${text}` }])
+  await wait(30)
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['meanwhile'])
+  host.deactivate()
+})
+
+test('a screen that asks Discuss again replaces its earlier ask: a send that never happened does not narrow what the next one clears', async () => {
+  const { store, notices, h } = await sharedReview()
+  // The first ask is cut (too long), and its send never happens (refused after the context came).
+  h.say({ type: 'draft', draft: { global: '', notes: Array.from({ length: 10 }, (_, i) => ({ id: `l${i}`, ...lineNote('x'.repeat(4000)) })) } })
+  await h.discussFn(OWNER)
+  h.say({ type: 'draft', draft: { global: 'short now', notes: [{ id: 'a', ...lineNote('one') }] } })
+  await h.discussFn(OWNER)
+  h.end({ kind: 'discussed', tabId: 't1', queued: false })
+  await wait(50)
+  assert.equal(store.size, 0, 'everything the second ask sent is cleared')
+  assert.deepEqual(notices, [], 'no "was cut" from the abandoned ask')
+  host.deactivate()
+})
+
+test('another screen\'s cut ask that was never sent does not mark the delivered, uncut review as cut', async () => {
+  const { store, notices, h } = await sharedReview()
+  h.connect(OWNER_WEB)
+  // The web screen asks while the draft is too long (cut); its send is refused.
+  h.say({ type: 'draft', draft: { global: '', notes: Array.from({ length: 10 }, (_, i) => ({ id: `l${i}`, ...lineNote('x'.repeat(4000)) })) } })
+  await h.discussFn(OWNER_WEB)
+  // The desktop shortens the draft and asks: this one is delivered, whole.
+  h.say({ type: 'draft', draft: { global: 'short now', notes: [{ id: 'a', ...lineNote('one') }] } })
+  await h.discussFn(OWNER)
+  h.end({ kind: 'discussed', tabId: 't1', queued: false })
+  await wait(50)
+  assert.deepEqual(notices, [], 'no "was cut" from the other screen\'s ask')
+  host.deactivate()
+})
+
+test('a queued delivery is told from the prompt before the delivered ask, not from an older ask recorded later', async () => {
+  const tab = { tabId: 't1', status: 'working', lastPrompt: 'older' }
+  const changes = []
+  let calls = 0
+  // The second ask's sessions lookup is slow and sees 'older': that ask (main timed it out) records after
+  // the newer, delivered one.
+  const list = async () => {
+    if (calls++ !== 1) return [{ ...tab }]
+    await wait(100)
+    return [{ ...tab, lastPrompt: 'older' }]
+  }
+  const { store, h } = await sharedReview({ sessions: { list, onChange: (l) => (changes.push(l), () => {}) } })
+  h.connect(OWNER_WEB)
+  h.say({ type: 'draft', draft: { global: '', notes: [{ id: 'a', ...lineNote('sent') }] } })
+  const { text } = await h.discussFn(OWNER)
+  // The same review was sent before: the tab's last prompt is already this text.
+  tab.lastPrompt = `About: Review: a.js\nFile: a.js\n\n${text}`
+  const slow = h.discussFn(OWNER_WEB)
+  await wait(10)
+  await h.discussFn(OWNER) // the delivered ask: it saw this text as the prompt before it
+  await slow
+  h.end({ kind: 'discussed', tabId: 't1', queued: true })
+  await wait(50)
+  // The tab still shows the prompt from before the delivered ask: not this review's delivery yet.
+  changes[0]([{ ...tab }])
+  await wait(30)
+  assert.equal(store.get('draft:a.js').notes.length, 1, 'kept until a newer prompt carries it')
+  host.deactivate()
+})
+
+test('a queued Discuss delivered while the file\'s review is open again clears the sent notes from its draft and copies too', async () => {
+  const tab = { tabId: 't1', status: 'working', lastPrompt: 'earlier work' }
+  const changes = []
+  const { f, store, h } = await sharedReview({ sessions: { list: async () => [tab], onChange: (l) => (changes.push(l), () => {}) } })
+  h.say({ type: 'draft', draft: { global: 'g', notes: [{ id: 'a', ...lineNote('sent') }, { id: 'b', ...lineNote('edit me') }] } })
+  const { text } = await h.discussFn()
+  h.end({ kind: 'discussed', tabId: 't1', queued: true })
+  await wait(50)
+  // Reopened while queued: its draft is the host's, with a copy of a write guest's beside the owner's.
+  await f.provided.reviewer.open('a.js')
+  await wait(0)
+  const h2 = f.handles[1]
+  const ann = h2.connect(WRITER)
+  const idA = h.idOf(OWNER.copy, 'a')
+  h2.sayAs(OWNER, { type: 'note-change', id: h.idOf(OWNER.copy, 'b'), text: 'edited' })
+  h2.sayAs(WRITER, { type: 'note-add', tag: '~0', note: lineNote('new') })
+  changes.at(-1)([{ ...tab, lastPrompt: `About: Review: a.js\nFile: a.js\n\n${text}` }])
+  await wait(30)
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['edited', 'new'])
+  assert.equal(store.get('draft:a.js').global, '')
+  assert.deepEqual(lastOf(ann, 'note-deleted'), { type: 'note-deleted', id: idA })
+  assert.deepEqual(lastOf(ann, 'global'), { type: 'global', text: '' })
+  assert.ok(h2.posts.some((m) => m.type === 'note-deleted' && m.id === idA), 'the owner\'s copy is told too')
+  // The open draft's next save does not bring the sent notes back.
+  h2.sayAs(WRITER, { type: 'note-add', tag: '~1', note: lineNote('later') })
+  await wait(SAVE_WAIT)
+  assert.equal(store.get('draft:a.js').global, '')
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['edited', 'new', 'later'])
+  h2.end({ kind: 'dismissed' })
+  await wait(30)
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['edited', 'new', 'later'])
   host.deactivate()
 })

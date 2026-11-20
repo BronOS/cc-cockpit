@@ -58,6 +58,23 @@ export function holdsPage(heldBy: { viewId: string } | undefined): boolean {
   return heldBy === undefined ? !webShell : isOwnView(heldBy.viewId)
 }
 
+let hiddenPage = false
+
+/**
+ * main's `window.info` said this desktop page is server mode's hidden page (WindowInfo.hiddenPage; App.tsx sets it
+ * before the shell mounts). It loads no copy of a perView overlay's page (docs/design-overlay-views.md §5): with no
+ * `heldBy` it would otherwise pass holdsPage and run the page's code for nobody. main refuses its copy as well
+ * (`hidden-page`); this keeps the page from loading at all. Ignored in the web shell.
+ */
+export function markHiddenPage(on: boolean): void {
+  hiddenPage = !webShell && on
+}
+
+/** Whether this page is server mode's hidden page (markHiddenPage); never in the web shell. */
+export function isHiddenPage(): boolean {
+  return hiddenPage
+}
+
 let serverHint = false
 
 /**
@@ -166,6 +183,7 @@ export function resetShellKindForTest(): void {
   ownView = undefined
   serverHint = false
   guestHint = undefined
+  hiddenPage = false
 }
 
 export interface ShellChrome {

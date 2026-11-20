@@ -17,7 +17,8 @@
 //   (FEATURES), so a caller can tell;
 //   prepare({ key, title, type?, tabId? }) opens that overlay at once with a loader, for a caller that still fetches
 //   what it shows (the annotate with the same key fills it), and cancel({ key }) closes one never filled;
-//   fail({ key, message, retry? }) turns one never filled into an error page (Close, Try again);
+//   fail({ key, message, retry? }) turns one never filled into an error page (Close, Try again; a guest's
+//   copy shows a fixed text, never the message);
 //   for a mail (app 0.13.0): annotate's `kind: 'mail'` (the reading layout), `data-action` buttons in
 //   the document whose clicks are the service event `action` { key, id, caller }, and update({ key,
 //   assets?, hide?, status? }), which adds images to an open document without rendering it again;
@@ -28,6 +29,10 @@
 //   annotate's `originals` [{ id, html }] and `view` (feature 'original'): the mail's own HTML and CSS
 //   in sandboxed frames (the Original view), with an Original | Reader switch told as the event `view`;
 // - `ccc review <path>`.
+//
+// Every view that shows an overlay loads its own copy of the page (manifest `overlays.perView`), a guest's
+// included: the host keeps each overlay's state and sends each copy its own (makePage), a guest's without
+// host paths, and acts on a page message by who sent it (docs/design-overlay-views.md §6).
 //
 // Plain JavaScript host; only the overlay page (overlay/) is bundled, by `npm run build`.
 
@@ -58,7 +63,7 @@ const splitOk = (v) => typeof v === 'number' && Number.isFinite(v) && v >= SPLIT
 // 'original' (annotate's `originals` and `view`: the main document's parts as their sender made them,
 // each in a sandboxed frame, with an Original | Reader switch on the page told as the event `view`).
 // 'fail' (fail({ key, message, retry? }): a prepared loader whose fetch failed shows the error, with a
-// Try again told as the event `action`, instead of closing; app 0.13.2).
+// Try again told as the event `action`, instead of closing; app 0.13.2; a guest's copy gets a fixed text).
 // 'notes' (notes(path), addNote(path, note) and the event `notesChange`: the line notes of a file's review,
 // read and added from outside the overlay; the editor shows them in its gutter).
 // 'removeNotes' (removeNotes(path, [{ id, text }]): the notes a caller sent to Claude itself go, as a sent
@@ -80,15 +85,20 @@ const MAX_TITLE_CHARS = 200
 // How long openReview waits for the overlay to be refused before it counts it as shown. A refusal
 // comes back in one host-to-main round trip, far under this (the editor waits the same).
 const OPEN_SETTLE_MS = 500
-// The page posts its draft on every change, so Esc (which closes without asking the page) loses
+// The pages send their note ops on every change, so Esc (which closes without asking a page) loses
 // no keystroke; storage writes are coalesced to one per this many ms, and flushed when it closes.
 const DRAFT_SAVE_MS = 300
 // How much of a queued review's start must be in the tab's next prompt to count as delivered.
 const MATCH_CHARS = 120
-// Discuss asks the page for its newest draft (it posts one on every change, so the host's copy is
-// at most a keystroke behind); past this wait the host's copy goes. Far under the app's 5 s bound
-// on the onDiscuss answer.
+// Discuss first asks every copy that edits to say it has sent all its ops (a page sends each change at
+// once, but on its own port, which a toolbar click does not wait for, so the host's draft can be a
+// keystroke behind); past this wait the host's draft goes as it is. Far under the app's 5 s bound on
+// the onDiscuss answer.
 const DRAFT_REQUEST_MS = 1500
+// The page-local tags a copy's adds named, remembered per copy so a change or delete it sends before the
+// id came back still finds its note; past this many the oldest are forgotten (a page's tag is answered
+// within a round trip, so only a page that adds and deletes without end gets there).
+const MAX_COPY_TAGS = 1000
 // main refuses a Discuss tab id over this many chars (src/shared/overlay-buttons.ts): a longer
 // caller's wish is dropped, not a refused overlay.
 const MAX_TAB_ID = 100
@@ -135,6 +145,45 @@ function overlayExtras(type, tabId) {
   return out
 }
 exports.overlayExtras = overlayExtras
+
+// Who a page message or a copy came from, as the app fills it (ViewFrom: view, access, person, and the
+// copy id main minted). Anything else is nobody: its message is dropped, its connect ignored.
+const ACCESS = ['owner', 'write', 'read']
+const viewerOf = (from) =>
+  from && typeof from === 'object' && ACCESS.includes(from.access) && typeof from.copy === 'string' && from.copy !== '' && typeof from.view === 'string' ? from : null
+const isOwner = (from) => from.access === 'owner'
+// Who may change the notes (D-3): the owner and write guests; a read guest's copy shows them only.
+const canNote = (from) => from.access === 'owner' || from.access === 'write'
+
+/**
+ * `sides` as a guest's copy gets them: no host path (design-guests D-33). A file review's and a preview's
+ * `root` is the project folder; everything else in sides is project-relative (`path`), the caller's own
+ * (an annotation's title and url) or the file's content. The page never reads `root`. Exported for tests.
+ */
+function guestSides(sides) {
+  const { root, ...rest } = sides
+  return rest
+}
+exports.guestSides = guestSides
+
+// The fixed texts a guest's copy gets for an error (errorFor).
+const GUEST_ERRORS = Object.freeze({
+  draft: 'Draft not saved: it could not be stored. The last saved draft is kept.',
+  open: 'Not opened in the browser.',
+  failed: 'This could not be loaded.',
+})
+
+/**
+ * An error's text as the copy of `from` gets it: the owner the `detail`, a guest the fixed `plain` (one of
+ * GUEST_ERRORS). An Error's message is not the guest's to read: a read-only storage's names the absolute
+ * path of the plugin's `storage.json`, an openExternal refusal or a caller's fail message may carry any
+ * text (design-guests D-33: guest-visible text never carries a host path). Every error text that reaches a
+ * copy goes through here; the fixed texts that name nothing of the host (a note over its size cap, a link
+ * that is not the document's) need not. Exported for tests.
+ */
+const errorFor = (from, detail, plain) => (isOwner(from) ? detail : plain)
+exports.errorFor = errorFor
+exports.GUEST_ERRORS = GUEST_ERRORS
 exports.SPLIT_MIN = SPLIT_MIN
 exports.SPLIT_MAX = SPLIT_MAX
 exports.FEATURES = FEATURES
@@ -155,7 +204,133 @@ exports.activate = (ctx) => {
       return null
     }
   }
+  /**
+   * The service caller chain of this call, outermost first ([] outside a call, once it settled, or on an app
+   * without ctx.services.callers). Read at the top of a service method, while the call is live: the content
+   * it brings is attributed to these plugins (handle.addSources) before it leaves, also when it leaves later
+   * (a copy that connects after the call returned), so a guest who may not see one of them never gets it (D-4).
+   */
+  const callersOf = () => {
+    try {
+      const chain = typeof ctx.services.callers === 'function' ? ctx.services.callers() : []
+      return Array.isArray(chain) ? chain.filter((id) => typeof id === 'string' && id !== '') : []
+    } catch {
+      return []
+    }
+  }
   const exec = (argv) => ctx.exec(argv, { timeoutMs: 15000 })
+
+  /**
+   * One overlay's page in every view that shows it (manifest `overlays.perView`): each view loads its own
+   * copy, which the app announces (onConnect, `from` filled by main: view, access, person, copy) and takes
+   * back (onDisconnect). The overlay's state lives here, never only in a page: its phase (prepare's loader,
+   * fail's error page, a filled review) and, once filled, the review's hooks (`review`), which keep the
+   * content, the updates, the layout and the draft. So a copy that connects late, reloads or reconnects is
+   * rebuilt from its connect, a prepared overlay's included (design-overlay-views §6).
+   *
+   * Every post goes to one copy (`post(m, { copy })`), never a broadcast: what a guest's copy gets is
+   * projected (no host path) and its flags differ, and a copy that connected while the loader showed has had
+   * no addressed post, which is what joins a copy to broadcasts. Messages are heard only from a copy this
+   * page greeted and are acted on by the access main filled in `from` (the access table, §6), never by
+   * anything the page says about itself.
+   */
+  function makePage(handle) {
+    const page = {
+      handle,
+      copies: new Map(), // copy id -> { id, from, content (its content handshake answered), errorPage }
+      phase: 'loading', // 'loading' | 'failed' | 'ready'
+      failure: null, // { message, retry } while 'failed'
+      onRetry: null, // the error page's Try again (prepare's caller is told)
+      review: null, // { greet(copy), message(m, from, copy) } once filled
+      sources: new Set(), // the plugins this overlay's content was opened or filled for (D-4)
+    }
+    page.postTo = (c, msg) => {
+      try {
+        page.handle.post(msg, { copy: c.id })
+        return true
+      } catch (e) {
+        ctx.log.warn(`post to a review page: ${e.message}`) // never break the save chain
+        return false
+      }
+    }
+    /** `msg` (or `msg(copy)`) to every copy `which` takes. */
+    page.each = (msg, which = () => true) => {
+      for (const c of [...page.copies.values()]) if (which(c)) page.postTo(c, typeof msg === 'function' ? msg(c) : msg)
+    }
+    /**
+     * Records the plugins `ids` and tells main the whole set again, before any post of what they brought. It
+     * runs again before each late copy is sent anything: those posts are made outside the service call, so
+     * the host adds no caller chain to them (main's set only grows, so repeating it costs nothing).
+     */
+    page.attribute = (ids = []) => {
+      for (const id of ids) if (typeof id === 'string' && id !== '') page.sources.add(id)
+      if (page.sources.size) page.handle.addSources([...page.sources])
+    }
+    // The error page's Try again is the owner's alone (§6: `retry` re-asks the consumer, a service event).
+    // Its message is the caller's words, which may name anything of its host: a guest gets a fixed text.
+    const failedFor = (c) => ({ type: 'failed', message: errorFor(c.from, page.failure.message, GUEST_ERRORS.failed), retry: page.failure.retry && isOwner(c.from) })
+    /** A copy's starting state: nothing while loading (the page starts on its loader), else the phase's. */
+    page.greet = (c) => {
+      if (page.phase === 'loading') return
+      try {
+        page.attribute()
+      } catch (e) {
+        ctx.log.warn(`overlay sources: ${e.message}; nothing sent to a new copy`) // fail closed
+        return
+      }
+      if (page.phase === 'failed') page.postTo(c, failedFor(c))
+      else page.review.greet(c)
+    }
+    page.loading = () => {
+      page.phase = 'loading'
+      page.failure = null
+      page.each({ type: 'loading' })
+    }
+    page.fail = (message, retry) => {
+      page.phase = 'failed'
+      page.failure = { message, retry }
+      page.each(failedFor)
+    }
+    /** Filled: every copy already up gets the review now, later ones on their connect. */
+    page.fill = (review) => {
+      page.review = review
+      page.phase = 'ready'
+      for (const c of [...page.copies.values()]) page.greet(c)
+    }
+    handle.onConnect((from) => {
+      const v = viewerOf(from)
+      if (!v || page.copies.has(v.copy)) return
+      // `inited`: its init went out, so it holds the draft and takes the notes' live changes (a file
+      // review's page never asks for content, so `content` cannot say that).
+      const c = { id: v.copy, from: v, content: false, errorPage: false, inited: false, tags: new Map(), refused: false }
+      page.copies.set(c.id, c)
+      page.greet(c)
+    })
+    handle.onDisconnect((from) => {
+      if (from && typeof from.copy === 'string') page.copies.delete(from.copy)
+    })
+    handle.onMessage((m, from) => {
+      if (!m || typeof m !== 'object') return
+      const v = viewerOf(from)
+      const c = v && page.copies.get(v.copy)
+      if (!c) return
+      // The error page's buttons: the overlay's (fail), or one copy's whose init could not be sent
+      // (`errorPage`). Once filled, a stale Close or Try again from fail's page means nothing.
+      if (page.phase === 'failed' || c.errorPage) {
+        if (m.type === 'close') {
+          // D-2: the owner's and a write guest's Close end the overlay for everyone; a read guest's hides
+          // only its own copy (and main keeps it hidden from that guest).
+          if (v.access === 'read') page.handle.hide({ copy: c.id })
+          else page.handle.close()
+        } else if (m.type === 'retry' && page.phase === 'failed' && isOwner(v) && page.failure.retry && page.onRetry) {
+          page.onRetry()
+        }
+      } else if (page.phase === 'ready') {
+        page.review.message(m, v, c)
+      }
+    })
+    return page
+  }
 
   /**
    * The event `notesChange` { path } (feature 'notes'): a file's draft was written, deleted or added to.
@@ -173,7 +348,8 @@ exports.activate = (ctx) => {
 
   /**
    * One file's draft, read-modify-write at a time: addNote's own calls and a queued Discuss's delete of
-   * the sent notes never interleave on the stored value. The page's own drafts are kept apart another way:
+   * the sent notes never interleave on the stored value. An open review's draft (the host's, written from
+   * its copies' note ops) is kept apart another way:
    * addNote is refused while a review is open or being opened (`isReviewing`), and showReview waits for
    * the notes in flight before it reads the draft.
    */
@@ -233,42 +409,53 @@ exports.activate = (ctx) => {
    * brought to the front; the same caller's error page of the key (fail) goes back to the loader,
    * so a Try again opens no second overlay. `caller` is the plugin of the call (null: none known).
    */
-  async function prepareAnnotation(options, caller) {
+  async function prepareAnnotation(options, caller, chain = []) {
     const { key, title, type, tabId } = review.prepareInput(options)
     const openKey = `text:${key}`
     dismissed.delete(openKey)
-    if (open.has(openKey)) return focusExisting(open.get(openKey))
+    if (open.has(openKey)) return focusExisting(open.get(openKey), chain)
     const had = prepared.get(openKey)
-    if (had) return had.handle.focus()
+    if (had) {
+      // A reuse is a request for this key's content too: this caller's chain joins the loader's before
+      // anything else goes out, so the annotate that fills it later (made in its own, maybe shorter,
+      // chain) re-asserts the union. Shown B prepares K, then hidden A -> B prepares K again: the fill
+      // B annotates is A's content as well (second codex review, finding 1).
+      had.view.page.attribute(chain)
+      return had.handle.focus()
+    }
     const failed = failedViews.get(openKey)
     if (failed && caller && failed.caller === caller) {
       // Its title, type and Discuss tab stay the first prepare's (set when an overlay starts): the
       // same key is the same item.
       failedViews.delete(openKey)
-      failed.state = 'loading'
-      failed.handle.post({ type: 'loading' })
+      failed.page.attribute(chain)
+      failed.page.loading()
       failed.handle.focus()
       holdPrepared(openKey, key, failed)
       return
     }
     const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: overlayTitle('Notes: ', title), size: 'large', ...overlayExtras(type, tabId) })
-    // The overlay's life across loader, error page (fail) and loader again; `state` says which.
-    const view = { handle, key, caller, state: 'loading' }
-    // The error page's buttons. Heard only while it is one: once an annotate filled the overlay its
-    // messages are the review's (showReview's own listener).
-    handle.onMessage((m) => {
-      if (view.state !== 'failed' || !m || typeof m !== 'object') return
-      if (m.type === 'close') handle.close()
-      else if (m.type === 'retry' && view.retry) {
-        // The same event as a document's buttons (`action`), with an id no caller's string can
-        // collide with in meaning: only the plugin that failed the key acts on it.
-        try {
-          ctx.services.emit('reviewer', 'action', { key, id: 'retry', caller: view.caller })
-        } catch (e) {
-          ctx.log.warn(`action retry: ${e.message}`)
-        }
+    // The overlay's life across loader, error page (fail) and loader again; `page.phase` says which.
+    const page = makePage(handle)
+    const view = { handle, page, key, caller }
+    try {
+      // Kept with the page: the annotate that fills it later, and every copy that connects after this
+      // call returned, re-assert it before its content leaves.
+      page.attribute(chain)
+    } catch (e) {
+      handle.close()
+      throw e
+    }
+    // The error page's Try again (the owner's: makePage drops a guest's). The same event as a document's
+    // buttons (`action`), with an id no caller's string can collide with in meaning: only the plugin that
+    // failed the key acts on it.
+    page.onRetry = () => {
+      try {
+        ctx.services.emit('reviewer', 'action', { key, id: 'retry', caller: view.caller })
+      } catch (e) {
+        ctx.log.warn(`action retry: ${e.message}`)
       }
-    })
+    }
     handle.result.then(
       () => {
         if (failedViews.get(openKey) === view) failedViews.delete(openKey)
@@ -325,7 +512,7 @@ exports.activate = (ctx) => {
    * The key is released (failedViews). False, as cancel answers, for a key with no such loader:
    * filled, never prepared, or prepared by another plugin (a caller learns nothing of the others').
    */
-  function failPrepared(options, caller) {
+  function failPrepared(options, caller, chain = []) {
     const { key, message, retry } = review.failInput(options)
     const openKey = `text:${key}`
     const e = prepared.get(openKey)
@@ -335,10 +522,10 @@ exports.activate = (ctx) => {
     prepared.delete(openKey)
     dismissed.delete(openKey)
     const view = e.view
-    view.state = 'failed'
-    view.retry = retry
     failedViews.set(openKey, view)
-    view.handle.post({ type: 'failed', message, retry })
+    // The message is the caller's words: attributed like any content it brings.
+    view.page.attribute(chain)
+    view.page.fail(message, retry)
     return true
   }
 
@@ -356,14 +543,14 @@ exports.activate = (ctx) => {
     return true
   }
 
-  /** The loading overlay of `openKey` for its annotate to fill, DISMISSED when the person closed it, else null. */
+  /** The page of `openKey`'s loading overlay for its annotate to fill, DISMISSED when the person closed it, else null. */
   function takePrepared(openKey) {
     const e = prepared.get(openKey)
     if (e) {
       e.settled = true
       clearTimeout(e.timer)
       prepared.delete(openKey)
-      return e.handle
+      return e.view.page
     }
     const at = dismissed.get(openKey)
     if (at === undefined) return null
@@ -371,8 +558,13 @@ exports.activate = (ctx) => {
     return Date.now() - at < DISMISSED_MS ? DISMISSED : null
   }
 
-  /** Brings an open (or opening) review to the front once it is up; throws the first open's refusal. */
-  async function focusExisting(entry) {
+  /**
+   * Brings an open (or opening) review to the front once it is up; throws the first open's refusal.
+   * `sources` is the reusing call's chain: added to the overlay's (the page's stored set only grows)
+   * before the focus or anything else goes out, as a fresh open would (D-4).
+   */
+  async function focusExisting(entry, sources = []) {
+    entry.page.attribute(sources)
     await entry.opening
     entry.handle.focus()
     return { done: Promise.resolve() }
@@ -388,6 +580,7 @@ exports.activate = (ctx) => {
    * plugin API reports a queued item's fate, hence the prompt match.
    */
   function watchQueued({ what, draftKey, path, tabId, text, sentDraft, prevPrompt, kept }) {
+    // The delivered Discuss ask's text (the one that started last: sentToClaude).
     const want = promptStart(text)
     let over = false
     const end = () => {
@@ -403,10 +596,13 @@ exports.activate = (ctx) => {
         // Only what was sent goes (by note id and text, the global note when unchanged): a note added since
         // (the editor's addNote works while the overlay is closed) or an edit from a reopened review stays.
         const gone = await serialNotes(draftKey, async () => {
-          const sent = review.cleanDraft(sentDraft)
+          // An open review of the file holds its own draft (the host's, written on each change): it drops
+          // the sent notes too, or its next save would bring them back.
+          for (const entry of open.values()) {
+            if (entry.draftKey === draftKey && typeof entry.dropSent === 'function') await entry.dropSent(sentDraft)
+          }
           const now = review.cleanDraft(await ctx.storage.get(draftKey))
-          const was = new Set(sent.notes.map((n) => `${n.id}\0${n.text}`))
-          const left = { global: now.global === sent.global ? '' : now.global, notes: now.notes.filter((n) => !was.has(`${n.id}\0${n.text}`)) }
+          const left = review.subtractSent(now, sentDraft)
           if (left.notes.length === now.notes.length && left.global === now.global) return false
           if (review.isEmpty(left)) await ctx.storage.delete(draftKey)
           else await ctx.storage.set(draftKey, left)
@@ -429,10 +625,10 @@ exports.activate = (ctx) => {
    * The review of a project-relative path (a diff against the last commit). Throws before anything
    * is shown when the file cannot be reviewed; for a click, that sends it to the built-in viewer.
    */
-  async function openReview(rel, { tabId } = {}) {
+  async function openReview(rel, { tabId, sources } = {}) {
     const r = await root()
     const kind = files.viewKindOf(typeof rel === 'string' ? rel : '')
-    if (kind === 'image' || kind === 'pdf') return openPreview(r, rel, { tabId })
+    if (kind === 'image' || kind === 'pdf') return openPreview(r, rel, { tabId, sources })
     const sides = await files.readSides(exec, r, rel)
     // A markdown or HTML file: the page opens it rendered (no diff) or on the diff with a Rendered
     // switch. An HTML file's Rendered view is the page's sanitizer over its markup, as for a mail.
@@ -454,7 +650,7 @@ exports.activate = (ctx) => {
         build: (d) => review.buildReview(d, sides, review.MAX_CONTEXT, { named: false }),
         tooLarge: `${sides.path} is too large to review (with escaping and its saved draft)`,
       },
-      { tabId },
+      { tabId, sources },
     )
   }
 
@@ -465,7 +661,7 @@ exports.activate = (ctx) => {
    * it has loaded main queues at most 100 messages or 8 MiB for it, and a 25 MiB PDF is 33 MiB of
    * base64. Same open key as a review of the path, so a second click focuses the overlay.
    */
-  async function openPreview(r, rel, { tabId } = {}) {
+  async function openPreview(r, rel, { tabId, sources } = {}) {
     const p = files.readPreview(r, rel)
     // Only for the head line: an untracked PDF reads like an untracked text file ("a new file").
     const g = await files.previewGit(exec, p.path).catch(() => ({ head: null, added: false }))
@@ -477,12 +673,14 @@ exports.activate = (ctx) => {
         what: p.path,
         overlayTitle: overlayTitle(p.kind === 'pdf' ? 'PDF: ' : 'Image: ', p.path),
         sides,
-        after: review.previewChunks(p.kind, p.mime, p.bytes),
+        // Chunked again on each copy's content request: the raw bytes (at most 25 MiB) are what the overlay
+        // keeps, not their base64 messages (about 33 MiB), so three open PDFs do not hold 100 MB of strings.
+        after: () => review.previewChunks(p.kind, p.mime, p.bytes),
         type: { name: 'file', data: { path: p.path } },
         build: (d) => review.buildReview(d, sides, review.MAX_CONTEXT, { named: false }),
         tooLarge: `${p.path} is too large to show (with its saved draft)`,
       },
-      { tabId },
+      { tabId, sources },
     )
   }
 
@@ -502,7 +700,7 @@ exports.activate = (ctx) => {
    * messages or 8 MiB for it and drops (logs) the rest, which 10 MiB of content would overflow;
    * once the page asks, it has loaded and each post goes straight out, in order.
    */
-  async function openAnnotation(options, caller = null) {
+  async function openAnnotation(options, caller = null, chain = []) {
     const a = review.annotateInput(options)
     const base = { path: a.title, url: a.url, old: '', oldMissing: true, newMissing: false, note: null }
     const c = a.companion
@@ -580,7 +778,7 @@ exports.activate = (ctx) => {
         build: (d) => review.buildAnnotation(d, a, review.MAX_CONTEXT),
         tooLarge: 'the text is too large to show (with escaping and its saved draft)',
       },
-      { tabId: a.tabId },
+      { tabId: a.tabId, sources: chain },
     )
   }
 
@@ -590,7 +788,8 @@ exports.activate = (ctx) => {
    * running (a listener still running after 1 s counts as handled) while a service caller does
    * not wait for the person. `subject`: openKey (one overlay per key), draftKey, what (named in
    * notices), overlayTitle, sides, after (messages posted when the page asks for them with
-   * { type: 'content' }, each within the page message limit; may be absent), type (the overlay's
+   * { type: 'content' }, each within the page message limit, or a function that makes them for each
+   * request; may be absent), type (the overlay's
    * type, or null for none), openUrl (the caller's url for the header's "Open in browser" button;
    * absent or null: none), companionUrl (the same for the companion's icon), companion (true: the
    * page shows a companion and gets the person's divider position), links (review.linkSet of the
@@ -598,16 +797,16 @@ exports.activate = (ctx) => {
    * review), build(draft) -> { text, cut } (the text Discuss hands the app), and tooLarge (the
    * refusal when the init message would not fit). `tabId` is Discuss's preselected tab.
    */
-  async function showReview(subject, { tabId } = {}) {
+  async function showReview(subject, { tabId, sources } = {}) {
     const { openKey, draftKey } = subject
-    if (open.has(openKey)) return focusExisting(open.get(openKey))
+    if (open.has(openKey)) return focusExisting(open.get(openKey), sources)
     // From here until the overlay is in `open` the review is on its way: addNote refuses meanwhile (a note
     // written after the draft is read below would be written over by the page), and the notes already in
     // flight finish first, so the read sees them.
     openingCount.set(openKey, (openingCount.get(openKey) || 0) + 1)
     try {
       await (noteQueue.get(draftKey) || Promise.resolve())
-      return await showReviewNow(subject, { tabId })
+      return await showReviewNow(subject, { tabId, sources })
     } finally {
       const left = openingCount.get(openKey) - 1
       if (left > 0) openingCount.set(openKey, left)
@@ -615,12 +814,13 @@ exports.activate = (ctx) => {
     }
   }
 
-  async function showReviewNow(subject, { tabId } = {}) {
+  async function showReviewNow(subject, { tabId, sources = [] } = {}) {
     const { openKey, draftKey, what, sides } = subject
-    if (open.has(openKey)) return focusExisting(open.get(openKey))
+    if (open.has(openKey)) return focusExisting(open.get(openKey), sources)
     let draft = review.cleanDraft(await ctx.storage.get(draftKey))
     const savedLayout = await ctx.appStorage.get(LAYOUT_KEY).catch(() => null)
-    const layout = LAYOUTS.includes(savedLayout) ? savedLayout : 'split'
+    // The owner's layout and divider (app-wide prefs): what a copy that connects later starts with.
+    let layout = LAYOUTS.includes(savedLayout) ? savedLayout : 'split'
     let split = SPLIT_DEFAULT
     if (subject.companion) {
       const saved = await ctx.appStorage.get(SPLIT_KEY).catch(() => null)
@@ -630,7 +830,7 @@ exports.activate = (ctx) => {
     // Checked again after the awaits above: two quick clicks (or `ccc review` calls) on the same
     // file both pass the first check, and the second must focus the first overlay, not open
     // another. Nothing between here and open.set awaits, so the pair is atomic.
-    if (open.has(openKey)) return focusExisting(open.get(openKey))
+    if (open.has(openKey)) return focusExisting(open.get(openKey), sources)
     // Measured before the overlay starts: MAX_SIDE_BYTES bounds the raw bytes, but JSON escaping (a
     // newline or a quote is two chars) and a saved draft can push the message past what post takes.
     // Throwing here hands a click to the built-in viewer; a post that threw after start would leave
@@ -655,32 +855,86 @@ exports.activate = (ctx) => {
     if (JSON.stringify(init).length > MAX_INIT_CHARS) {
       throw new files.ReviewError(subject.tooLarge, { fallback: true })
     }
+    /**
+     * The init one copy starts with: the newest draft, layout and divider, and for a guest's copy no host
+     * path (guestSides) and `canAct: false`, so its page draws no `data-action` button (the host drops a
+     * guest's action anyway, §6). The owner's is the init as it always was.
+     */
+    const initFor = (c) => {
+      const out = { ...init, draft, layout }
+      if (subject.companion) out.split = split
+      if (subject.originals) out.sides = { ...sides, view: docView }
+      if (!isOwner(c.from)) {
+        out.sides = guestSides(out.sides)
+        out.canAct = false
+      }
+      // A read guest's copy draws no note editing (no Add note, read-only texts, no delete); the host drops
+      // its ops anyway. Absent for the owner and a write guest, so the owner's init is as it was.
+      if (!canNote(c.from)) out.canNote = false
+      return out
+    }
     // A prepared overlay (its loader showing) is filled instead of a new one started; its title, type
     // and Discuss tab stay the ones prepare gave (they are set when an overlay starts).
     const pre = takePrepared(openKey)
     if (pre === DISMISSED) return { done: Promise.resolve(), dismissed: true }
-    const handle =
-      pre || ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: subject.overlayTitle, size: 'large', ...overlayExtras(subject.type || null, tabId) })
-    let after = subject.after && subject.after.length ? subject.after : null
+    const page = pre || makePage(ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: subject.overlayTitle, size: 'large', ...overlayExtras(subject.type || null, tabId) }))
+    const { handle } = page
+    try {
+      // Before anything of this content leaves (a copy may already be up, prepare's loader): the plugins
+      // it was opened or filled for. Kept with the page, so a later copy re-asserts it.
+      page.attribute(sources)
+    } catch (e) {
+      handle.close()
+      throw new files.ReviewError(`the review overlay did not open: ${e.message}`)
+    }
+    // The content each copy asks for once it has its init ({ type: 'content' }), kept for the overlay's
+    // life: a copy that connects later, reloads or reconnects asks again. An annotation's is its parts
+    // and assets (2 MiB of html, 8 MiB of images, the originals and the details); a preview's is a
+    // function that chunks its kept bytes again for each request (openPreview). Then update()'s state
+    // so far, folded into one `update` and its assets (`replay`): a late copy has the same images,
+    // hidden parts and status, and a caller that sets a status every few seconds does not grow the list.
+    const afterOf = () => (typeof subject.after === 'function' ? subject.after() : subject.after && subject.after.length ? subject.after : [])
+    const hasAfter = typeof subject.after === 'function' || (subject.after && subject.after.length > 0)
+    const replay = { declared: [], assets: [], hide: new Set(), status: null }
+    const replayed = () => {
+      if (!replay.declared.length && !replay.hide.size && replay.status === null) return []
+      return [{ type: 'update', assets: replay.declared, hide: [...replay.hide], ...(replay.status !== null ? { status: replay.status } : {}) }, ...replay.assets]
+    }
+    // The owner's Original | Reader choice (feature 'original'), kept like layout and split, so a reload or
+    // the owner's other screen starts on it (a guest's copy starts on it too); a guest's switch stays in its
+    // own copy. The caller's `view` until the owner switches.
+    let docView = subject.originals ? sides.view : null
     let settle
     const opening = new Promise((resolve, reject) => (settle = { resolve, reject }))
     opening.catch(() => {}) // observed by focusExisting only when a second open comes in the wait
-    const entry = { handle, opening, caller: subject.caller || null, html: !!subject.assets, draft: () => draft }
+    const entry = { handle, page, opening, caller: subject.caller || null, html: !!subject.assets, draft: () => draft }
     // update(): more images for the open document (they join its asset budget), parts of it hidden,
     // a status line. Posted to the page as is: the page adds the images to the ones it has and leaves
-    // the rendered document alone, so a note's anchor does not move.
+    // the rendered document alone, so a note's anchor does not move. Live only to the copies whose
+    // content went out; the others get it after their content.
     let budget = subject.assets ? review.assetBudget([subject.assets]) : null
-    entry.update = (u) => {
+    entry.update = (u, chain = []) => {
       // Checked on a copy: a refused update spends nothing of the budget.
       const next = { count: budget.count, total: budget.total, seen: new Set(budget.seen) }
       const assets = review.checkAssets(u.assets, 'update.assets', next)
+      page.attribute(chain)
       budget = next
-      post({ type: 'update', assets: assets.map(({ id, name, mime }) => ({ id, name, mime })), hide: u.hide, ...(u.status !== null ? { status: u.status } : {}) })
-      for (const { id, dataUrl } of assets) post({ type: 'asset', id, dataUrl })
+      const msgs = [
+        { type: 'update', assets: assets.map(({ id, name, mime }) => ({ id, name, mime })), hide: u.hide, ...(u.status !== null ? { status: u.status } : {}) },
+        ...assets.map(({ id, dataUrl }) => ({ type: 'asset', id, dataUrl })),
+      ]
+      // Live copies get each update as it comes; the replay keeps their sum (assets are bounded by the budget,
+      // hide is a set, the status the last one; '' clears it, so it is kept too).
+      replay.declared.push(...msgs[0].assets)
+      replay.assets.push(...msgs.slice(1))
+      for (const name of u.hide) replay.hide.add(name)
+      if (u.status !== null) replay.status = u.status
+      for (const msg of msgs) page.each(msg, (c) => c.content)
     }
     open.set(openKey, entry)
-    // Drafts arrive on every change: Esc closes the overlay without asking the page, so the last
-    // posted draft is what Close keeps. Writes are coalesced: `pending` is the newest draft not
+    // The draft is the host's (design-overlay-views §6, D-3): every copy that may edit sends note ops on
+    // each change (applyOp), and Esc closes the overlay without asking a page, so the draft as the last op
+    // left it is what Close keeps. Writes are coalesced: `pending` is the newest draft not
     // written yet, and flush() queues it behind the writes before it. A failed write is shown in
     // the page while it is open (draft-error, cleared by draft-saved once a later write works) and
     // in a notice when the overlay closes with it unresolved: the failure used to be only logged,
@@ -699,22 +953,32 @@ exports.activate = (ctx) => {
     }
     markDiscuss(draft)
     let saveError = null // why the newest text is not stored; null while it is
-    let failed = null // the draft whose write failed (retried once at close); null for a draftProblem
-    // Discuss's asks for the page's newest draft, answered by its next `draft` (or `draft-unsaved`).
+    let failed = null // the draft whose write failed (retried once at close)
+    // Discuss's waits for the editing copies to say all their ops are out (`draft-sync`).
     const draftWaiters = new Set()
-    // What the last Discuss ask handed the app: { draft, text, cut, prompts } (prompts: each tab's
-    // lastPrompt then, so a queued review's delivery is told from the prompt before it).
-    let discussed = null
-    const post = (msg) => {
-      try {
-        handle.post(msg)
-      } catch (e) {
-        ctx.log.warn(`post to the review page: ${e.message}`) // never break the save chain
-      }
-    }
+    // What the Discuss ask that started last handed the app: { draft, text, cut, prompts, seq } (prompts:
+    // each tab's lastPrompt then, so a queued review's delivery is told from the prompt before it). Main
+    // asks one Discuss at a time per overlay (`discussing`) and sends right after the answer, so the
+    // delivered text is the ask that started last, on whichever screen (`seq`, taken at the call: an ask
+    // that timed out may still record after a newer one, and is dropped). Everything a delivery does (what
+    // it clears, whether it was cut, the prompt before it) comes from that ask alone: an ask whose send never
+    // happened (refused after it took the context) must neither narrow what is cleared (a note added after
+    // it and sent by the newer ask stayed stored though Claude had it) nor mark the delivered review as cut.
+    let lastAsk = null
+    let askSeq = 0
+    // The copies that hold the draft (their init went out) and may change it: they get its save errors
+    // and Discuss's sync asks. A read guest's copy sees the notes and nothing about saving them.
+    const editors = (c) => c.inited && canNote(c.from)
+    const toEditors = (msg) => page.each(msg, editors)
+    // A note change to every other copy that holds the draft (never back to its sender: a late echo of an
+    // older keystroke would overwrite what the person typed since).
+    const toOthers = (msg, origin) => page.each(msg, (c) => c.inited && c !== origin)
+    // `saveError` is the storage's own words (a read-only store's name the absolute path of storage.json):
+    // the owner's copies get them, a write guest's the fixed text (errorFor).
+    const draftErrorFor = (c) => ({ type: 'draft-error', message: errorFor(c.from, `Draft not saved: ${saveError}. The last saved draft is kept.`, GUEST_ERRORS.draft) })
     const showSaveError = (why) => {
       saveError = why
-      post({ type: 'draft-error', message: `Draft not saved: ${why}. The last saved draft is kept.` })
+      toEditors(draftErrorFor)
     }
     const write = (value) => (review.isEmpty(value) ? ctx.storage.delete(draftKey) : ctx.storage.set(draftKey, value))
     function flush() {
@@ -727,7 +991,7 @@ exports.activate = (ctx) => {
           write(value).then(
             () => {
               failed = null
-              if (saveError) post({ type: 'draft-saved' })
+              if (saveError) toEditors({ type: 'draft-saved' })
               saveError = null
               notesChanged(subject.path)
             },
@@ -742,97 +1006,207 @@ exports.activate = (ctx) => {
       return saving
     }
     flushers.add(flush)
+    /**
+     * A queued Discuss of this file was delivered (watchQueued): what it sent leaves this open draft too, by
+     * the same rule as storage's (review.subtractSent), and every copy is told (`note-deleted`, `global`).
+     * Else the draft, the host's, still held the sent notes and wrote them back on its next save. Resolves
+     * once the draft is written, so storage and the open draft agree.
+     */
+    entry.draftKey = draftKey
+    entry.dropSent = (sent) => {
+      const left = review.subtractSent(draft, sent)
+      if (left.notes.length === draft.notes.length && left.global === draft.global) return Promise.resolve()
+      const kept = new Set(left.notes.map((n) => n.id))
+      const all = (c) => c.inited
+      for (const n of draft.notes) if (!kept.has(n.id)) page.each({ type: 'note-deleted', id: n.id }, all)
+      if (left.global !== draft.global) page.each({ type: 'global', text: left.global }, all)
+      draft = left
+      markDiscuss(draft)
+      pending = draft
+      return flush()
+    }
 
-    /** The page's newest draft (raw, as posted), or the host's copy when the page does not answer in time. */
-    function requestDraft() {
+    /**
+     * Resolves once every editing copy up now said its ops are all out (`draft-sync`: it answers after the
+     * ops it sent before, on the same port), or after DRAFT_REQUEST_MS; at once with none up. Rejects when
+     * an owner's copy holds text it could not send (`draft-unsaved`: over its size cap), as Discuss did
+     * before notes were shared; a guest's unsent text is its own and does not stop the owner's Discuss.
+     */
+    function syncCopies() {
       return new Promise((resolve, reject) => {
+        const waiting = new Set([...page.copies.values()].filter(editors).map((c) => c.id))
         const w = {
-          resolve: (d) => (clearTimeout(w.timer), draftWaiters.delete(w), resolve(d)),
+          waiting,
+          resolve: () => (clearTimeout(w.timer), draftWaiters.delete(w), resolve()),
           reject: (e) => (clearTimeout(w.timer), draftWaiters.delete(w), reject(e)),
-          timer: setTimeout(() => w.resolve(draft), DRAFT_REQUEST_MS),
+          timer: setTimeout(() => w.resolve(), DRAFT_REQUEST_MS),
         }
+        if (!waiting.size) return w.resolve()
         draftWaiters.add(w)
-        post({ type: 'draft-request' })
+        page.each({ type: 'draft-request' }, (c) => waiting.has(c.id))
       })
     }
 
-    // Registered before init is posted: the page posts drafts as soon as it has loaded.
-    handle.onMessage((m) => {
-      if (!m || typeof m !== 'object') return
-      if (m.type === 'draft') {
-        for (const w of [...draftWaiters]) w.resolve(m.draft)
-        // A draft cleanDraft would cut is not stored (storing it, or sending it and deleting the
-        // draft, dropped the rest): the last good one stays, and the page says why.
-        const problem = review.draftProblem(m.draft)
-        if (problem) {
-          flush()
-          saving = saving.then(() => {
-            failed = null
-            showSaveError(problem)
-          })
-          return
+    const mintId = () => {
+      const ids = new Set(draft.notes.map((n) => n.id))
+      let id
+      do id = `n${Date.now().toString(36)}${noteSeq++}`
+      while (ids.has(id))
+      return id
+    }
+    /**
+     * A note op of copy `c` (design-overlay-views §6): applied to the one draft by review.applyNoteOp,
+     * saved, and told to every other copy that holds the draft; the adding copy gets its tag's id. Read
+     * guests' ops are dropped (their copy draws no editing either). The author is main's `from.person` for a
+     * guest and none for the owner, never anything the page says. An op whose result would lose text is
+     * refused and only its sender told (an add, with its tag, so that page drops the note).
+     */
+    function applyOp(m, from, c) {
+      if (!canNote(from) || !c.inited) return
+      try {
+        applyOpNow(m, from, c)
+      } finally {
+        // Each text op of a copy is acked to it, applied or not, in order with what the host sends it: while
+        // the copy has one unacked, another copy's text for the same note (or the comment) is older than its
+        // own and is not shown there, so the copy shows what the host ends up with (last writer wins).
+        // By the id, also for a change the page named by its tag: the page has the id by then (note-added
+        // went out before this ack).
+        if (m.type === 'note-change') page.postTo(c, { type: 'ack', id: typeof m.id === 'string' ? m.id : typeof m.tag === 'string' ? c.tags.get(m.tag) || null : null })
+        else if (m.type === 'global') page.postTo(c, { type: 'ack', global: true })
+      }
+    }
+    function applyOpNow(m, from, c) {
+      let op = m
+      if ((m.type === 'note-change' || m.type === 'note-delete') && typeof m.id !== 'string') {
+        // A note this copy added before its id came back: named by its own tag, only within this copy.
+        op = { ...m, id: typeof m.tag === 'string' ? c.tags.get(m.tag) : undefined }
+      }
+      const r = review.applyNoteOp(draft, op, { author: isOwner(from) ? null : review.authorName(from.person) || 'Guest', mintId })
+      if (r.ignored) return
+      if (r.problem) {
+        c.refused = true
+        const what = m.type === 'note-add' ? 'Note not added' : 'Not saved'
+        page.postTo(c, { type: 'draft-error', message: `${what}: ${r.problem}.`, ...(m.type === 'note-add' ? { tag: m.tag } : {}) })
+        return
+      }
+      draft = r.draft
+      if (m.type === 'note-add') {
+        c.tags.set(m.tag, r.note.id)
+        if (c.tags.size > MAX_COPY_TAGS) c.tags.delete(c.tags.keys().next().value)
+        page.postTo(c, { type: 'note-added', tag: m.tag, note: r.note })
+        toOthers({ type: 'note', note: r.note }, c)
+      } else if (m.type === 'note-change') {
+        toOthers({ type: 'note', note: r.note }, c)
+      } else if (m.type === 'note-delete') {
+        toOthers({ type: 'note-deleted', id: op.id }, c)
+      } else {
+        toOthers({ type: 'global', text: draft.global }, c)
+      }
+      // The copy's earlier refusal is over (unless a save is failing: that message stays).
+      if (c.refused) {
+        c.refused = false
+        if (!saveError) page.postTo(c, { type: 'draft-saved' })
+      }
+      markDiscuss(draft)
+      pending = draft
+      clearTimeout(saveTimer)
+      saveTimer = setTimeout(flush, DRAFT_SAVE_MS)
+    }
+
+    /** Opens `url` on the device of the view that asked (§6: a guest's click opens on the guest's own screen). */
+    const openOn = (url, from, c) =>
+      ctx.openExternal(url, { view: from.view }).catch((e) =>
+        page.postTo(c, { type: 'error', message: errorFor(from, `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}`, GUEST_ERRORS.open) }),
+      )
+
+    // What each page message does, by the access main filled in `from` (design-overlay-views §6's table).
+    const onPageMessage = (m, from, c) => {
+      const owner = isOwner(from)
+      if (m.type === 'note-add' || m.type === 'note-change' || m.type === 'note-delete' || m.type === 'global') {
+        applyOp(m, from, c)
+      } else if (m.type === 'draft-sync' || m.type === 'draft-unsaved') {
+        // A copy's answer to Discuss's sync ask. Only an owner's unsent text stops the Discuss.
+        for (const w of [...draftWaiters]) {
+          if (!w.waiting.has(c.id)) continue
+          if (m.type === 'draft-unsaved' && owner) {
+            w.reject(new Error('the draft is too large to send: shorten or delete a note first'))
+            continue
+          }
+          w.waiting.delete(c.id)
+          if (!w.waiting.size) w.resolve()
         }
-        draft = review.cleanDraft(m.draft)
-        markDiscuss(draft)
-        pending = draft
-        clearTimeout(saveTimer)
-        saveTimer = setTimeout(flush, DRAFT_SAVE_MS)
-      } else if (m.type === 'draft-unsaved') {
-        // The page's own size check refused the draft: Discuss would send an older one.
-        for (const w of [...draftWaiters]) w.reject(new Error('the draft is too large to send: shorten or delete a note first'))
       } else if (m.type === 'layout' && LAYOUTS.includes(m.layout)) {
+        // The owner's app-wide pref; a guest's switch stays in its own copy (the page already switched).
+        if (!owner) return
+        layout = m.layout
         ctx.appStorage.set(LAYOUT_KEY, m.layout).catch((e) => ctx.log.error(`layout save: ${e.message}`))
       } else if (m.type === 'split' && subject.companion && splitOk(m.split)) {
+        if (!owner) return
+        split = m.split
         ctx.appStorage.set(SPLIT_KEY, m.split).catch((e) => ctx.log.error(`divider save: ${e.message}`))
       } else if (m.type === 'open-url') {
         // The page names no URL (it shows the caller's content in a sandboxed frame), only which
         // document's icon was clicked: the host opens the one it was given for it. The app refuses
         // some (user:pass@, 3 per 10 s): the page says why.
         const url = m.doc === 'companion' ? companionUrl : openUrl
-        if (url !== null) ctx.openExternal(url).catch((e) => post({ type: 'error', message: `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}` }))
+        if (url !== null) openOn(url, from, c)
       } else if (m.type === 'open-link' && links !== null) {
         // A link clicked in the document or the details column. The href comes from the page, so it
         // opens only when the caller's own html or aside has that link (review.linkVerdict), and only
         // http(s): ctx.openExternal takes nothing else, so a mailto link is named, not opened.
         const v = review.linkVerdict(links, m.href)
-        if (v.refuse) post({ type: 'error', message: v.refuse })
-        else ctx.openExternal(v.open).catch((e) => post({ type: 'error', message: `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}` }))
-      } else if (m.type === 'action' && subject.actions && typeof m.id === 'string' && subject.actions.has(m.id)) {
-        // A button of the caller's document (`data-action`): told to every consumer of the service
-        // (events have no single addressee), with the key and the caller, so the one that annotated
-        // acts and the others ignore it. An id the caller's strings never had is dropped above.
+        if (v.refuse) page.postTo(c, { type: 'error', message: v.refuse })
+        else openOn(v.open, from, c)
+      } else if (m.type === 'action' && owner && subject.actions && typeof m.id === 'string' && subject.actions.has(m.id)) {
+        // A button of the caller's document (`data-action`), the owner's alone (a guest's copy draws
+        // none): told to every consumer of the service (events have no single addressee), with the key
+        // and the caller, so the one that annotated acts and the others ignore it. An id the caller's
+        // strings never had is dropped above.
         try {
           ctx.services.emit('reviewer', 'action', { key: subject.key, id: m.id, caller: subject.caller })
         } catch (e) {
           ctx.log.warn(`action ${m.id}: ${e.message}`)
         }
-      } else if (m.type === 'view' && subject.originals && review.VIEWS.includes(m.view)) {
-        // The person switched between the Original and the Reader view (feature 'original'): told to
-        // every consumer like an action, with the key and the caller, so the caller can remember it
-        // (the Gmail plugin keeps it per sender). The page has already switched.
+      } else if (m.type === 'view' && owner && subject.originals && review.VIEWS.includes(m.view)) {
+        // The owner switched between the Original and the Reader view (feature 'original'): kept as the
+        // overlay's (docView: what a reload or a later copy starts on), and told to every consumer like an
+        // action, with the key and the caller, so the caller can remember it (the Gmail plugin keeps it per
+        // sender). The page has already switched; a guest's switch stays in its own copy.
+        docView = m.view
         try {
           ctx.services.emit('reviewer', 'view', { key: subject.key, view: m.view, caller: subject.caller })
         } catch (e) {
           ctx.log.warn(`view ${m.view}: ${e.message}`)
         }
-      } else if (m.type === 'content' && after) {
-        // Once: the content is let go after it went out (it can be 10 MiB). A post that fails is
-        // logged and the page lives without it (an image shows its alt text after assets-done).
-        const list = after
-        after = null
-        for (const msg of list) post(msg)
+      } else if (m.type === 'content' && !c.content) {
+        // Once per copy, to that copy (the same for every viewer: the caller's content and the file's
+        // bytes carry no host path). A post that fails is logged and the page lives without it (an
+        // image shows its alt text after assets-done).
+        c.content = true
+        const late = replayed()
+        if (!hasAfter && !late.length) return
+        try {
+          page.attribute()
+        } catch (e) {
+          ctx.log.warn(`overlay sources: ${e.message}; no content sent`) // fail closed
+          return
+        }
+        for (const msg of afterOf()) page.postTo(c, msg)
+        for (const msg of late) page.postTo(c, msg)
       }
-    })
+    }
 
-    // The app's Discuss with Claude asks for the context (5 s): the review text built from the
-    // page's newest draft. Empty is fine (real-work feedback 9): build() then asks Claude to discuss
-    // the file or the text. A draft the host would cut, or one the page could not post, throws: the
-    // popover shows why and nothing is sent. The app adds `About:`, the type line and the note.
+    // The app's Discuss with Claude asks for the context (5 s): the review text built from the shared
+    // draft, once the editing copies' ops in flight are in (syncCopies). Empty is fine (real-work
+    // feedback 9): build() then asks Claude to discuss the file or the text. An owner's copy holding text
+    // it could not send throws: the popover shows why and nothing is sent. The app adds `About:`, the
+    // type line and the note.
     handle.onDiscuss(async () => {
-      const raw = await requestDraft()
-      const problem = review.draftProblem(raw)
-      if (problem) throw new Error(`not sent: ${problem}`)
-      const sent = review.cleanDraft(raw)
+      const seq = ++askSeq
+      await syncCopies()
+      // The shared draft as it is now (applyOp never changes a draft in place, so this snapshot stays
+      // what was sent, whatever comes after).
+      const sent = draft
       const { text, cut } = subject.build(sent)
       const prompts = new Map()
       try {
@@ -840,24 +1214,34 @@ exports.activate = (ctx) => {
       } catch (e) {
         ctx.log.warn(`sessions.list: ${e.message}`)
       }
-      discussed = { draft: sent, text, cut, prompts }
+      if (!lastAsk || seq > lastAsk.seq) lastAsk = { draft: sent, text, cut, prompts, seq }
       return { text }
     })
 
-    try {
-      handle.post(init)
-    } catch (e) {
-      open.delete(openKey)
-      flushers.delete(flush)
-      settle.reject(e)
-      handle.close()
-      throw e
-    }
+    // Every copy up now (prepare's loader, its error page) gets its init, later ones on their connect.
+    // A page may send note ops as soon as it has its init: the listener above is in place first.
+    page.fill({
+      greet: (c) => {
+        // Marked before the post: a page may answer its init at once (an op in the same turn).
+        c.inited = true
+        if (!page.postTo(c, initFor(c))) {
+          c.inited = false
+          // Only a draft grown since the open's size check gets here: this copy says so, the others live.
+          // Its Close follows the error page's rule (makePage).
+          c.errorPage = true
+          page.postTo(c, { type: 'failed', message: `${what} is too large to show here (with its draft).`, retry: false })
+          return
+        }
+        if (saveError && canNote(c.from)) page.postTo(c, draftErrorFor(c))
+      },
+      message: onPageMessage,
+    })
+
     // start() gives no "shown" signal, but a refused overlay (3 open, 10 a minute, a closed window)
     // rejects `result` at once, while one that opened settles only when the person closes it. Wait
     // briefly for a rejection and throw it: a click then goes to the built-in viewer, and the service
-    // and `ccc review` report the failure. The listener above and the post are wired first, so the
-    // page's first drafts are handled during the wait. A person closing it within the wait is a
+    // and `ccc review` report the failure. The page's hooks are in place first, so a copy's
+    // first drafts are handled during the wait. A person closing it within the wait is a
     // shown overlay; `done` below handles that result. A second open of the same file during the
     // wait finds the entry in `open` and waits on `opening`: it focuses the overlay once shown, or
     // throws the same refusal.
@@ -889,7 +1273,7 @@ exports.activate = (ctx) => {
     /** Stores the full draft whenever Claude may not have all of it; says whether that worked. */
     async function keep(value, kept) {
       try {
-        await ctx.storage.set(draftKey, value)
+        await write(value)
         return kept
       } catch (e) {
         ctx.log.error(`draft save: ${e.message}`)
@@ -898,32 +1282,38 @@ exports.activate = (ctx) => {
     }
 
     /**
-     * The app sent the review ({ kind: 'discussed', tabId, queued }): the draft goes once all of it
-     * reached Claude. A review cut to fit keeps the whole draft (deleting it lost the unsent part),
-     * and the person is told; a queued one keeps it until the tab takes it (watchQueued).
+     * The app sent the review ({ kind: 'discussed', tabId, queued }): what it sent goes from the draft once
+     * all of it reached Claude, and only that (review.subtractSent: the notes unchanged since the delivered
+     * ask's snapshot, never an abandoned ask's, the comment if unchanged), so a note added or edited on another screen while the popover was up
+     * stays. A review cut to fit keeps the whole draft (deleting it lost the unsent part), and the person
+     * is told; a queued one keeps it until the tab takes it (watchQueued). What is kept is the draft as it
+     * is now, never the snapshot (which would write over the notes added since).
      */
     async function sentToClaude(res) {
-      const sent = discussed
-      if (!sent) return // no context was asked for, so this is not the reviewer's text: keep the draft
-      if (sent.cut) {
-        ctx.notify(`Review of ${what} was too long and was cut at ${review.MAX_CONTEXT} characters. ${await keep(sent.draft, 'The full draft is kept.')}`)
+      const delivered = lastAsk
+      if (!delivered) return // no context was asked for, so this is not the reviewer's text: keep the draft
+      const sent = review.cleanDraft(delivered.draft)
+      if (delivered.cut) {
+        ctx.notify(`Review of ${what} was too long and was cut at ${review.MAX_CONTEXT} characters. ${await keep(draft, 'The full draft is kept.')}`)
         return
       }
       if (res.queued) {
         const KEPT = 'The draft is kept until Claude gets it.'
-        const kept = await keep(sent.draft, KEPT)
-        watchQueued({ what, draftKey, path: subject.path, tabId: res.tabId, text: sent.text, sentDraft: sent.draft, prevPrompt: sent.prompts.get(res.tabId), kept: kept === KEPT })
+        const kept = await keep(draft, KEPT)
+        watchQueued({ what, draftKey, path: subject.path, tabId: res.tabId, text: delivered.text, sentDraft: sent, prevPrompt: delivered.prompts.get(res.tabId), kept: kept === KEPT })
         return
       }
-      // All of it reached Claude: only now does the draft go. A failed delete only leaves it.
-      await ctx.storage.delete(draftKey).catch((e) => ctx.log.warn(`draft delete: ${e.message}`))
+      // All of it reached Claude: only now does what it sent go. A failed write only leaves it.
+      const left = review.subtractSent(draft, sent)
+      draft = left
+      await serialNotes(draftKey, () => write(left)).catch((e) => ctx.log.warn(`draft delete: ${e.message}`))
       notesChanged(subject.path)
     }
 
     const done = handle.result
       .then(async (res) => {
         await flush()
-        for (const w of [...draftWaiters]) w.resolve(draft)
+        for (const w of [...draftWaiters]) w.resolve()
         if (res && res.kind === 'discussed' && typeof res.tabId === 'string') return sentToClaude(res)
         // Close, Esc, ✕: nothing is sent and the draft stays.
         return closedUnsaved()
@@ -942,19 +1332,26 @@ exports.activate = (ctx) => {
   // ---- entry points ----
 
   disposers.push(
-    ctx.files.onOpen(async ({ path, tabId }) => {
+    ctx.files.onOpen(async ({ path, tabId, requestedBy }) => {
       // Throwing before the overlay is up hands the click to the built-in viewer (binary, too
-      // big, unreadable); after that, awaiting the overlay keeps the click ours.
-      const { done } = await openReview(path, { tabId })
+      // big, unreadable); after that, awaiting the overlay keeps the click ours. `requestedBy` (set by
+      // main: the plugins whose ctx.files.open or ctx.sessions.openFile this is, the service chain it
+      // was made in first, the caller last) is attributed whole before the file's content leaves, so a
+      // guest who may not see one of them never gets it (D-4).
+      const sources = Array.isArray(requestedBy) ? requestedBy.filter((id) => typeof id === 'string' && id !== '') : []
+      const { done } = await openReview(path, { tabId, sources })
       await done
     }),
   )
 
   ctx.services.provide('reviewer', {
     async open(path, options) {
+      // The caller chain, read before the first await (start() adds it to the overlay too; kept with the
+      // page so a copy that connects later re-asserts it).
+      const sources = callersOf()
       try {
         const tabId = options && typeof options === 'object' && typeof options.tabId === 'string' ? options.tabId : undefined
-        await openReview(path, { tabId })
+        await openReview(path, { tabId, sources })
         return { opened: true }
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)
@@ -966,8 +1363,10 @@ exports.activate = (ctx) => {
       // Read before the first await: the caller of this call (the `action` event names it, and only
       // it may update the document). An app without ctx.services.caller: null, and update refuses.
       const caller = callerOf()
+      // Its chain too (A -> B -> reviewer: both), kept with the content (makePage's attribute).
+      const chain = callersOf()
       try {
-        const r = await openAnnotation(options, caller)
+        const r = await openAnnotation(options, caller, chain)
         // The person closed its loading overlay while the caller fetched: nothing opens.
         return { opened: !(r && r.dismissed) }
       } catch (e) {
@@ -980,8 +1379,9 @@ exports.activate = (ctx) => {
     async prepare(options) {
       // Read before the first await, as annotate does: fail() and a later prepare check it.
       const caller = callerOf()
+      const chain = callersOf()
       try {
-        await prepareAnnotation(options, caller)
+        await prepareAnnotation(options, caller, chain)
         return { opened: true }
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)
@@ -1002,8 +1402,9 @@ exports.activate = (ctx) => {
     // nothing (filled, never prepared) and for another plugin's loader; the caller then cancels.
     async fail(options) {
       const caller = callerOf()
+      const chain = callersOf()
       try {
-        return { failed: failPrepared(options, caller) }
+        return { failed: failPrepared(options, caller, chain) }
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)
       }
@@ -1028,7 +1429,7 @@ exports.activate = (ctx) => {
     },
     // Additive in v1 (feature 'notes'): one more line note on a file's working-tree side, in the same
     // stored draft the overlay reads when it opens, so the note is there at the next review and in what
-    // Discuss sends. Refused while that file's review is open (its page owns the draft and would write
+    // Discuss sends. Refused while that file's review is open (its draft is the open review's and would write
     // over the note: the person adds it there), when the draft is full or too large, and for any input
     // the page's own note box would not take. Resolves { id }.
     async addNote(rel, note) {
@@ -1065,7 +1466,7 @@ exports.activate = (ctx) => {
     // Ask Claude) go, as the notes of a review Discuss delivered do (watchQueued): only those
     // whose id and text still match what the caller read, so a note edited or added since stays; the
     // global comment is never touched (notes() does not give it, so no caller sent it). A draft left with
-    // nothing in it is deleted. Refused while that file's review is open (its page owns the draft and
+    // nothing in it is deleted. Refused while that file's review is open (its draft is the open review's and
     // would write the notes back), as addNote is. Resolves { removed } (0: nothing matched).
     async removeNotes(rel, list) {
       try {
@@ -1097,12 +1498,13 @@ exports.activate = (ctx) => {
     // plugin annotated, so a caller learns nothing of the others' keys.
     async update(options) {
       const caller = callerOf()
+      const chain = callersOf()
       try {
         const u = review.updateInput(options)
         const entry = open.get(`text:${u.key}`)
         if (!entry || !entry.html || !caller || entry.caller !== caller) throw new files.ReviewError(`no open HTML annotation with the key ${u.key}`)
         await entry.opening
-        entry.update(u)
+        entry.update(u, chain)
         return { updated: true }
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)

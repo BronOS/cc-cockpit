@@ -733,7 +733,8 @@ and `inbox-item` `{ source, id }`.
 
 **Overlay loader.** `OverlayInfo.loading` is main's: an overlay is on the stack from the request, with a
 `.cc-spinner` until its content is up (an html page's `pageReady`, or `ccPanel.ready()` for
-`ready: 'manual'`, relayed to the parent window as `{ type: 'cc-plugin.ready' }`; a url view's first
+`ready: 'manual'`, relayed to the parent window as `{ type: 'cc-plugin.ready' }`, marked `early: true` when the page
+had no port yet and said again unmarked once it has one, so a `perView` copy's loader goes with its own load; a url view's first
 `did-finish-load` / `did-fail-load` / `did-stop-loading`; a terminal's first PTY output). "Still
 loading…" after 10 s; ✕ and Esc work throughout. A renderer reload brings an html overlay's loader back.
 

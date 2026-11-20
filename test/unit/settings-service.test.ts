@@ -286,6 +286,18 @@ describe('seesAllSessions (the access declaration)', () => {
   })
 })
 
+describe('overlaysPerView and providesServices (the manifest flags the Plugins page words its guest line from)', () => {
+  it('come from the manifest, absent otherwise', () => {
+    const r = rig()
+    r.plugins.push(plugin('test.pv', { overlays: { perView: true }, services: { provides: { review: 1 } } }))
+    const v = r.service.plugins().find((p) => p.id === 'test.pv')
+    expect(v?.overlaysPerView).toBe(true)
+    expect(v?.providesServices).toBe(true)
+    expect(r.service.plugins().find((p) => p.id === 'test.mail')).not.toHaveProperty('overlaysPerView')
+    expect(r.service.plugins().find((p) => p.id === 'test.mail')).not.toHaveProperty('providesServices')
+  })
+})
+
 describe('off in all projects (bundled plugins)', () => {
   const BID = 'cockpit.editor'
   function withBundled(): Rig {

@@ -47,6 +47,21 @@ export function guestExposureLines(access: PluginGuestAccess): string[] {
   return [summary, `Read-only guests: ${e.read}`, `Write guests: ${e.write}`]
 }
 
+/**
+ * The line (or two) about a plugin's windows under the card's guest lines (docs/design-overlay-views.md §7, D-4),
+ * only for a plugin shown to guests: nothing while it is hidden or blocked. Plain words for the owner. The flags
+ * come from main's reading of the manifest (`PluginView`), never from the page.
+ */
+export function guestWindowLines(plugin: Pick<PluginView, 'guestAccess' | 'overlaysPerView' | 'providesServices'>): string[] {
+  const access = guestAccessOf(plugin)
+  if (access.blocked !== undefined) return []
+  if (access.effective !== 'shown' && appGuestValue(access) !== 'shown') return []
+  if (plugin.overlaysPerView !== true) return ["Its windows stay on your screen; guests see a note."]
+  const lines = ["Its windows show on guests' screens too."]
+  if (plugin.providesServices === true) lines.push('What another plugin opens in it reaches guests only when that plugin is shown too; data it fetches itself is shown as its own.')
+  return lines
+}
+
 /** Why Shown is off in a browser view of a desktop cockpit (main refuses a widening from it, design §16.2). */
 export const GUEST_SHOW_DESKTOP_ONLY = 'Showing a plugin to guests is done in the cockpit window on the host computer; from a browser you can only hide it.'
 

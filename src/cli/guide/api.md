@@ -145,7 +145,7 @@ with full Node access.
 - `ctx.views.access(view)` (`'owner' | 'read' | 'write'`, undefined once gone) and `ctx.views.onChange(listener)`: the
   views your pages are open in and who is behind each (the owner or a guest); `onMessage` and `onAction` listeners get
   `from: { view, access }` (an older app has no `ctx.views`: check `typeof ctx.views === 'object'`). A view is known
-  once one of your pages (a panel, slot or page tab) connected there and gone when the last one closed;
+  once one of your pages (a panel, slot, page tab or a per-view overlay's copy) connected there and gone when the last one closed;
   `onChange(({ view, access }) => …)` hears both (`access` undefined when it went) and returns a disposer; a new
   listener first hears every view already open, before `onChange` returns. The
   access is main's word for that view, fixed for its life (a guest switched between read-only and write comes back
@@ -241,9 +241,36 @@ with full Node access.
   (e.g. primary once there is something to send). The app sends `About: <title>`, the type, your text (20,000 characters at
   most, your text cut first; the person may add a closing prompt in Settings, which comes after your text and is never cut), closes the overlay with `{ kind: 'discussed', tabId, queued }` and
   shows the tab.
+- Who acted, on every overlay: `onMessage((message, from) => …)`, `onButton(id, (from) => …)`,
+  `onDiscuss((from) => …)` and a type button's `run(info, from)` get `from: { view, access, person? }` (the view
+  is `'desktop'` or `web:<n>`, `person` a guest's invite name), set by the app from the connection, never by the
+  page; the listener also runs in that view. Answer by it: `ctx.openExternal(url, { view: from.view })`. An
+  older app never sends `from`: read it as `from?.view`.
+- Per-view copies (manifest `"overlays": { "perView": true }`, `plugins` topic): every view that shows an html
+  overlay loads its own copy of the page. `onConnect((from) => …)` hears a copy come up (`from.copy`, an opaque
+  id; a reload is a new copy), `onDisconnect((from) => …)` it go; send each copy its starting state from
+  `onConnect` with `post(m, { copy: from.copy })`, and later changes to all with `post(m)` (a copy hears
+  broadcasts only after your first post to it). `onMessage`'s `from.copy` names the copy that posted.
+  `hide({ copy })` hides one copy in its view (a read guest's close; it holds for that guest), while `close()`
+  ends the overlay for everyone. A connected copy's view is in `ctx.views`. On an overlay without `perView`,
+  `post(m, { copy })` (a defined copy) and `hide` throw; `copy: undefined` is a plain `post`. An `onConnect`
+  added later first hears every copy already connected (as `ctx.views.onChange` replays), so registering after
+  an await misses none. An older app has none of `onConnect`, `onDisconnect`, `hide` and `addSources`: check
+  `typeof handle.onConnect === 'function'`.
+- `handle.addSources(pluginIds)`: this overlay now also shows content another plugin asked for, so a guest
+  sees it only when those plugins are shown to guests too. Inside a service call the app does this itself for
+  `start`, `post` and `setButtons` (the caller chain, `ctx.services.callers()`); for content you show later,
+  keep `ctx.services.callers()` from the live call, or a file open's `requestedBy` list (`ctx.files.onOpen`),
+  and call `addSources` with it before you post that content.
+  A plugin that shows other plugins' content in a window (a viewer service) must do this: a guest of a plugin
+  shown to guests would otherwise see what a hidden plugin asked it to show. Data you fetch from another plugin and
+  show as your own is not followed. Declare `"overlays": { "perView": true }` in `plugin.json` first (`plugins` topic).
+  An older app has no `ctx.services.callers` and sends no `requestedBy`: check `typeof ctx.services.callers ===
+  'function'`; and it ignores `{ view }` on `ctx.openExternal`, so a `perView` plugin needs the app version that
+  has `perView` anyway.
 - `ctx.overlay.buttons(typeName, provider)`: add buttons to every overlay of that `type` in the
   window, whoever opened it. `provider(info)` gets `{ type: { name, data }, title, opener }` and
-  answers up to 4 buttons, each with a `run(info)`; it is asked when such an overlay opens, after
+  answers up to 4 buttons, each with a `run(info, from)`; it is asked when such an overlay opens, after
   every click on its buttons and when the opener calls `setButtons`, and has 500 ms (a slower or
   throwing one is skipped and logged in your plugin's log). `data` came from the opener: check it
   (an id is yours, a path resolves inside the project). `opener` is the app's own record of the
@@ -484,7 +511,12 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
   it throws. `listener({ path, tabId })` gets the file relative to the project folder (`src/a.ts`,
   `/` separators, never outside the project) and the Claude tab whose list was clicked; both come
   from the app. `tabId` is absent when the open did not come from a tab (a `ctx.files.open` call
-  without one), so check it before use. Opens reach the plugin only when the project uses it to open files: it is the
+  without one), so check it before use. `requestedBy` is the list of plugins whose request it is (the app's
+  record): the one that called `ctx.files.open` or `ctx.sessions.openFile` last, the service callers it ran in
+  before it, outermost first (`['a.mail', 'a.tree']`); absent when no plugin asked (a tab's `ccc`). A click in the
+  Sessions panel names that panel's plugin. Pass the whole list to the overlay's `addSources` before showing the
+  file: `handle.addSources(requestedBy ?? [])`.
+  Opens reach the plugin only when the project uses it to open files: it is the
   only enabled plugin declaring `openFile`, or the one picked in Settings > This Project ("Plugin used
   to open files", where "Built-in viewer" is also a choice); with `whenPicked` only the pick
   counts. The built-in viewer (a diff or the
@@ -592,6 +624,8 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
       enabled, disabled): call `providers()` again. Several changes at once call it once.
     The Plugins page shows no "pick one" for a name only collectors use. Use `use` when one
     answer is wanted (the person's pick holds), `useAll` when every provider's answer is.
+  - `ctx.services.callers()`: the whole chain behind `caller()`, outermost first (A calls B, B calls C: C sees
+    `[A, B]`); `[]` wherever `caller()` is `undefined`. Provenance for overlays (docs/design-overlay-views.md).
   - `ctx.services.caller()`: in a provider, the id of the plugin whose call it is serving, for
     per-caller usage counts or caps. It holds inside the provided method and in what that method
     awaits or starts (timers, promise callbacks) while the call is still running; with nested calls
@@ -690,7 +724,7 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
     one without an action first, and one without an action never ends one with an action (it is
     not shown instead). A background browser tab counts unseen notices in its title. A browser that
     is closed (a phone in a pocket) gets nothing.
-- `ctx.openExternal(url)`: open a web page in the person's default browser, outside the app.
+- `ctx.openExternal(url, { view }?)`: open a web page in the person's default browser, outside the app.
   `url` is http or https, at most 2048 characters, with no `user:pass@` in it; anything else
   rejects, and so does a call past 3 per 10 s per plugin and window. The app opens the normalized
   URL (`new URL(url).href`) and resolves once it handed it to the system. Use this, not
@@ -700,6 +734,10 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
   with a URL the host chose (never one taken from the page as is). Asked from a browser (web
   access), the link opens in a new tab of that browser when the person's click is still recent
   (a few seconds), else it shows there as a notice to click; the host's browser is not opened.
+  Without `view`, "from a browser" is where the listener's message or click came from, for at most 10 s; with
+  `{ view: from.view }` it is that view alone: `'desktop'` opens the desktop's browser on this window's computer
+  (rejected in server mode), a browser view (the owner's or a guest's shown the plugin) gets the link there, and a
+  view that is gone, unknown or one the plugin may not reach rejects, never opening anywhere else.
 
 Calls that reach main (`exec`, `overlay`, `notify`, `webview`, `openExternal`, `files`, ...) are limited there and
 a rejected promise carries the reason; `ctx.services` calls never reach main, see above.

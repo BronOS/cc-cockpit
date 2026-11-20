@@ -49,7 +49,7 @@ import { createSettingsPageApi, SettingsPageHub, type SettingsPageOpenTag } from
 import { createTabsApi, PageTabHub, type PageTabOpenTag } from './tabs'
 import { createStorage, type StorageHandle } from './storage'
 import { createThemesApi } from './themes'
-import { createUiApi, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
+import { createUiApi, DESKTOP_VIEW, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
 import { viewIdOf, type ViewId } from '../../shared/views'
 import { dispatchInView } from './origin-view'
 import { HostViews, type ViewChange } from './views'
@@ -165,7 +165,7 @@ export class HostContexts {
     this.sessions = new SessionsHub((pluginId, m) => deps.log(pluginId, 'error', m))
     this.views = new HostViews((pluginId, m) => deps.log(pluginId, 'error', m))
     this.ports = new PanelPorts((pluginId, m) => deps.log(pluginId, 'warn', m), this.views)
-    this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m))
+    this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m), this.views)
     this.typeButtons = new OverlayButtonRegistry((pluginId, m) => deps.log(pluginId, 'warn', m))
     this.actions = new PanelActions((pluginId, m) => deps.log(pluginId, 'error', m), this.views)
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
@@ -387,12 +387,30 @@ export class HostContexts {
     // The host has no display or D-Bus env (host-manager.ts hostEnv), so `xdg-open` from ctx.exec
     // fails on Linux; main is where links leave the app. Only the shape is checked here, so a
     // mistake rejects at the call site without a round trip; main checks the URL itself again.
-    const openExternal = (url: string): Promise<void> =>
+    // `options.view` (docs/design-overlay-views.md §3): a `from.view`, `'desktop'` or a browser view's id,
+    // sent as its own field (an address main checks strictly, unlike the origin-view hint the RPC carries;
+    // main resolves `'desktop'` to this host's own window); absent or undefined sends exactly today's
+    // request. Anything else rejects here, never "no view".
+    const openExternal = (url: string, options?: { view?: string }): Promise<void> =>
       guardAsync(async () => {
         if (typeof url !== 'string' || url === '') throw new TypeError('openExternal needs a URL string')
         if (url.length > MAX_PLUGIN_URL_LENGTH) throw new TypeError(`openExternal: url is over ${MAX_PLUGIN_URL_LENGTH} characters`)
-        await call('openExternal', { pluginId: spec.id, url })
+        if (options !== undefined && (typeof options !== 'object' || options === null)) {
+          throw new TypeError('openExternal: options must be an object')
+        }
+        const view: unknown = options?.view
+        if (view !== undefined && view !== DESKTOP_VIEW && viewIdOf(view) === undefined) {
+          throw new TypeError("openExternal: view must be a from.view ('desktop' or a browser view's id)")
+        }
+        await call('openExternal', { pluginId: spec.id, url, ...(view !== undefined ? { view } : {}) })
       })
+
+    // The service caller chain at a call site (docs/design-overlay-views.md §4): an overlay call's `via`, and a
+    // main-routed file open's (ctx.files.open, ctx.sessions.openFile), which main hands the taker as `requestedBy`.
+    const callers = (): string[] => deps.services?.()?.callers(spec.id) ?? []
+    // Sources are this host's plugins only (main keeps only those too): filtered before any bound, never cut.
+    // No registry (a test host): no filter, so cleanSources throws past its floor instead.
+    const isHostPlugin = deps.services === undefined ? undefined : (id: string) => deps.services?.().knows(id) === true
 
     const ui = createUiApi({
       pluginId: spec.id,
@@ -403,6 +421,7 @@ export class HostContexts {
       guardAsync,
       ports: this.ports,
       overlays: this.overlays,
+      overlaysPerView: spec.overlaysPerView === true,
       actions: this.actions,
       headerUsed: () => {
         rt.headerUsed = true
@@ -415,6 +434,9 @@ export class HostContexts {
       typeButtonsUsed: () => {
         rt.typeButtonsUsed = true
       },
+      // An overlay call's `via` (docs/design-overlay-views.md §4): the chain ctx.services.callers() answers.
+      callers,
+      isHostPlugin,
       logError: (m) => logAs('error', m)
     })
 
@@ -487,7 +509,16 @@ export class HostContexts {
           rt.webviewUsed = true
         }
       }),
-      sessions: createSessionsApi({ pluginId: spec.id, call, alive, guardAsync, hub: this.sessions, sessionsAll: spec.sessionsAll === true }),
+      sessions: createSessionsApi({
+        pluginId: spec.id,
+        call,
+        alive,
+        guardAsync,
+        hub: this.sessions,
+        sessionsAll: spec.sessionsAll === true,
+        callers,
+        isHostPlugin
+      }),
       // Plain RPCs: rooms live in main (they span the tabs main owns), nothing is kept in the host.
       rooms: createRoomsApi({ pluginId: spec.id, call, guardAsync }),
       commands: Object.freeze({ register }),
@@ -498,7 +529,9 @@ export class HostContexts {
         alive,
         call,
         guardAsync,
-        listeners: rt.openListeners
+        listeners: rt.openListeners,
+        callers,
+        isHostPlugin
       }),
       services: Object.freeze({
         provide: (name: string, impl: Record<string, (...args: never[]) => unknown>) => {
@@ -522,6 +555,7 @@ export class HostContexts {
         // when the plugin is released finishes on the old copy (see ServiceRegistry.release), and a
         // read with no side effect must not break it.
         caller: () => servicesOf().caller(spec.id),
+        callers: () => servicesOf().callers(spec.id),
         // Resolved on every call (never cached): a provider enabled, disabled or re-picked since the
         // last ask is seen at once. A read with no side effect, so no alive() check either.
         available: (name: string) => servicesOf().available(spec.id, name),
@@ -753,6 +787,11 @@ export class HostContexts {
     if (event === 'overlay.message') {
       // Keyed by plugin and handle; a handle of a disposed copy was dropped with it.
       this.overlays.handleEvent(params)
+      return
+    }
+    if (event === 'overlay.connect' || event === 'overlay.disconnect') {
+      // A perView overlay's copy came or went (ctx/ui.ts OverlayLinks): the same keying.
+      this.overlays.handleCopyEvent(event, params)
       return
     }
     if (event === 'panel.action') {

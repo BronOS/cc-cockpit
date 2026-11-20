@@ -824,6 +824,36 @@ export class ServiceRegistry {
   }
 
   /**
+   * Whether `pluginId` is one of this host's plugins now (its declarations are set from its activate, every
+   * plugin's, until it unloads): an overlay's sources are filtered to these before anything else, so ids that
+   * name nothing never use up a bound and push a real source out (docs/design-overlay-views.md §4).
+   */
+  knows(pluginId: string): boolean {
+    return this.specs.has(pluginId)
+  }
+
+  /**
+   * `ctx.services.callers()` for `pluginId`: the consumers of the live `call` frames of the current
+   * chain, outermost first (A -> B -> C: inside C, [A, B]). The same gate as `caller`: the innermost
+   * frame must be a live call into `pluginId` itself (else this code is not serving the chain: a
+   * timer after settle, or another plugin's code running in someone else's frame), and an outer frame
+   * counts only while every frame after it is live (`liveChain`'s tail rule), so a stale outer
+   * frame never names a consumer that is already gone. Empty outside any frame.
+   */
+  callers(pluginId: string): string[] {
+    const frames = this.chain.getStore()
+    const last = frames?.[frames.length - 1]
+    if (!frames || !last || last.kind !== 'call' || !last.live || last.plugin !== pluginId) return []
+    const out: string[] = []
+    for (let i = frames.length - 1; i >= 0; i--) {
+      const f = frames[i]
+      if (!f || !f.live) break
+      if (f.kind === 'call' && f.caller !== undefined) out.unshift(f.caller)
+    }
+    return out
+  }
+
+  /**
    * The current chain cut to its live tail. Each frame is work the one before it started; it holds
    * that one back only while every frame after it is still running. So the walk goes from the end
    * and stops at the first finished frame: a timer an activate or a provider method started carries

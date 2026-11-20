@@ -2000,6 +2000,24 @@ describe('HostManager', () => {
         ['a.two', undefined]
       ])
     })
+
+    it("the manifest's overlays.perView rides in the spec as overlaysPerView, for that plugin only (the host's handle needs it)", async () => {
+      enabled.p1 = [plugin('a.one', { overlaysPerView: true }), plugin('a.two')]
+      let activateParams: unknown
+      factory.handlers = () => ({
+        ...okHandlers(),
+        activate: (p) => {
+          activateParams = p
+          return okHandlers().activate!(p)
+        }
+      })
+      await slotted.open('p1', 1)
+      const params = activateParams as { plugins: { id: string; overlaysPerView?: boolean }[] }
+      expect(params.plugins.map((p) => [p.id, p.overlaysPerView])).toEqual([
+        ['a.one', true],
+        ['a.two', undefined]
+      ])
+    })
   })
 
   describe('devReload (linked dev plugin changed, Task 29)', () => {

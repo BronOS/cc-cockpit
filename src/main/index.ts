@@ -34,7 +34,7 @@ import { join } from 'node:path'
 import { BUILD_VERSION } from '../shared/app-version'
 import { errorText } from '../shared/error-text'
 import { isPlainObject } from '../shared/guards'
-import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo, type TabCreateRequest, type TabInfo, type UpdateState } from '../shared/ipc'
+import { PANEL_PORT_CHANNEL, type EventChannel, type TabCreateRequest, type TabInfo, type UpdateState } from '../shared/ipc'
 import { notificationSoundOf } from '../shared/notify-sound'
 import { chosenServerName } from '../shared/remote-servers'
 import { liveChildren } from './child-registry'
@@ -119,6 +119,7 @@ import {
   type DiscussSessions,
   type OverlayChannel,
   type OverlayOrigin,
+  type OverlayStartOptions,
   type OverlayResult,
   type OverlayTypeButtons
 } from './overlays/overlay-manager'
@@ -221,7 +222,11 @@ import {
   guestUnsavedOf,
   offerTakerOf,
   guestMayDeliverOf,
+  mayConnectCopyOf,
+  overlayCopyPortOf,
+  overlayVisibleOf,
   ownerViewOf,
+  type OverlayCopySources,
   pageSelectTargetOf,
   pluginFocusSelectOf,
   pluginFocusViewOf,
@@ -1244,6 +1249,9 @@ function start(server: boolean): void {
       )
     }
   }
+  // A guest's copies of perView overlays read the guest services, built further down (they need `overlays`);
+  // set there before any view can connect. Until then no guest copy is admitted (fail closed).
+  const overlayCopyWiring: { sources?: () => OverlayCopySources } = {}
   const overlays: OverlayManager = new OverlayManager({
     backend: new NodePtyBackend(),
     // Server mode: the hidden page never sizes a terminal overlay nor answers it (design-web.md §9.8),
@@ -1267,7 +1275,8 @@ function start(server: boolean): void {
     emit: (windowId, channel, payload) => {
       // A webview panel's native view would paint over the overlay (and over a url overlay's own
       // view): the window's views hide while its stack is not empty, before the page draws it.
-      if (channel === 'overlays.updated') webviews.setWindowCovered(windowId, (payload as OverlayInfo[]).length > 0)
+      // An overlay the opener hid from the desktop's copy is off that stack, so it does not count (coversDesktop).
+      if (channel === 'overlays.updated') webviews.setWindowCovered(windowId, overlays.coversDesktop(windowId))
       sendToWindow(windowId, channel, payload)
     },
     // An html overlay's page lives in one view (design-web.md §5.4): its messages go there only.
@@ -1289,7 +1298,29 @@ function start(server: boolean): void {
     // `hosts` is defined below; these run once a typed overlay is open (design-next §3.3).
     typeButtons: (windowId): OverlayTypeButtons | undefined => hosts.overlayButtons(windowId),
     pluginTitle: (pluginId) => plugins.get(pluginId)?.manifest?.name ?? pluginId,
-    discuss: discussSessions
+    discuss: discussSessions,
+    // perView copies (docs/design-overlay-views.md §5): owner views always get one (D-1, the manager never
+    // asks for them); a guest's view by the §4 rule, read live on every connect and every page message
+    // (`guestStore`, `pluginGuestAccess`, defined below): the opener and every plugin it was opened for
+    // visible to that guest, not hidden by it, and the opener's guest port not `none` (one-way for a read
+    // guest of a plugin that is not guests.aware, D-17). The hidden page is refused by the manager itself.
+    mayConnectCopy: (windowId, overlayId, viewId) => {
+      const sources = overlayCopyWiring.sources
+      return sources !== undefined && mayConnectCopyOf(sources())(windowId, overlayId, viewId)
+    },
+    copyPort: (windowId, overlayId, viewId) => {
+      const sources = overlayCopyWiring.sources
+      return sources === undefined ? 'none' : overlayCopyPortOf(sources())(windowId, overlayId, viewId)
+    },
+    // A guest's hide is kept under the guest (a reconnect is a new view), main's own record of the view.
+    guestOf: (viewId) => {
+      const who = views.whoOf(viewId)
+      return who === undefined || who === 'owner' ? undefined : who.guest
+    },
+    // A not-ready copy dropped for an overflowing queue: that view's shell reloads its page as a new copy (Task 8).
+    reloadCopy: (viewId, _windowId, overlayId, copy) => {
+      views.toView(viewId, 'overlays.reload', { overlayId, copy })
+    }
   })
   // Ask Claude from a page tab (design-editor.md §4): the tab from main's own list, the context from
   // its plugin's instance in the asking view (`hosts`, defined below; this runs on a click).
@@ -1464,10 +1495,11 @@ function start(server: boolean): void {
     channel?: OverlayChannel,
     pluginId?: string,
     view?: ViewId,
-    origin?: OverlayOrigin
+    origin?: OverlayOrigin,
+    options?: OverlayStartOptions
   ): Promise<OverlayResult> => {
     await loginEnvReady
-    return overlays.open(windowId, spec, opener, peerGone, channel, pluginId, view, origin)
+    return overlays.open(windowId, spec, opener, peerGone, channel, pluginId, view, origin, options)
   }
   // Webview panels (`"kind": "webview"`, ctx.webview): one native view per panel per window, made
   // and judged in main (webview-manager.ts). Local files go through cc-preview://, answered on each
@@ -1742,6 +1774,8 @@ function start(server: boolean): void {
         ...(plugin.manifest.access !== undefined ? { access: plugin.manifest.access } : {}),
         // ctx.themes.set may replace only these (HostApi namespaces them by the plugin id).
         themes: (plugin.manifest.contributes?.themes ?? []).map((t) => t.id),
+        // Its html overlays get one copy per view (docs/design-overlay-views.md §2); only a strict true.
+        ...(plugin.manifest.overlays?.perView === true ? { overlaysPerView: true } : {}),
         // The icon is a plugin file (validate.ts checked it is inside the folder); the strip loads
         // it from cc-plugin:// like the panel page.
         panels: (plugin.manifest.contributes?.panels ?? []).map((p) => ({
@@ -1929,7 +1963,8 @@ function start(server: boolean): void {
       // ctx.sessions.rename: HostApi checked the tab is this project's and the name.
       renameTab: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
       // ctx.sessions.openFile: a session card's file click (the recorded-file check is routeOpenFile's).
-      openSessionFile: (caller, tabId, file, view) => routeOpenFile(openFileRoute, caller, tabId, file, view),
+      // `requestedBy`: the plugins HostApi checked the request for, the taker's provenance (never a payload's).
+      openSessionFile: (caller, tabId, file, view, requestedBy) => routeOpenFile(openFileRoute, caller, tabId, file, view, requestedBy),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
       openTab: (projectId, options, windowId, focus, place, view) => openClaudeTab(projectId, options, windowId, focus === true, place, view),
@@ -1971,8 +2006,18 @@ function start(server: boolean): void {
       },
       // The check behind a request's view hint (HostApi originOf).
       viewWindow: (viewId) => views.windowOf(viewId),
-      openOverlay,
-      postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
+      // A plugin's open has no CLI origin (the manager takes the plugin itself); `options.perView` is the
+      // opener's manifest as the host's launch saw it (HostApiPlugin.overlaysPerView).
+      openOverlay: (windowId, spec, opener, peerGone, channel, pluginId, view, options) =>
+        openOverlay(windowId, spec, opener, peerGone, channel, pluginId, view, undefined, options),
+      postOverlay: (windowId, overlayId, text, options) => overlays.post(windowId, overlayId, text, options),
+      hideOverlayCopy: (windowId, overlayId, copy) => overlays.hideCopy(windowId, overlayId, copy),
+      // Provenance (docs/design-overlay-views.md §4): HostApi checked the ids; the manager grows `via` and
+      // releases guest copies that may no longer see the overlay before the call's content is delivered.
+      addOverlaySources: (windowId, overlayId, ids) => overlays.addSources(windowId, overlayId, ids),
+      // Who is behind a view, read live on every overlay event (`from`: access and a guest's name). `guestStore`
+      // is defined below; this runs only once an overlay is open.
+      viewAccess: (viewId) => guestStore.whoAccess(viewId),
       closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
       focusOverlay: (windowId, overlayId) => overlays.focus(windowId, overlayId),
       setOverlayButtons: (windowId, overlayId, buttons) => overlays.setButtons(windowId, overlayId, buttons),
@@ -1986,10 +2031,14 @@ function start(server: boolean): void {
       updateTheme: (id, theme) => themes.update(id, theme),
       webview: webviews,
       // ctx.files.open: the click's route below (defined later; this runs only once a host exists).
-      openFile: (caller, path, tabId, view) => routeProjectFile(openFileRoute, caller, path, tabId, view),
+      // `requestedBy`: the plugins HostApi checked the request for, the taker's provenance (never a payload's).
+      openFile: (caller, path, tabId, view, requestedBy) => routeProjectFile(openFileRoute, caller, path, tabId, view, requestedBy),
       // ctx.openExternal: HostApi checked the URL (shared/web-url.ts) and the plugin's budget, and
-      // names its own window and the view main knows the plugin acted for.
+      // names its own window and the view main knows the plugin acted for (or the one it named, checked).
       openExternal,
+      // ctx.openExternal `{ view }` to a guest's view: only while the plugin is shown to guests, read live.
+      // `guestStore` is defined below; this runs only once a host exists.
+      guestPluginVisible: (projectId, pluginId) => guestStore.pluginVisible(projectId, pluginId),
       // ctx.files.reveal / openWithSystem / trash: HostApi checked the plugin and its budget and
       // passes its own scope as the caller; SystemFiles checks the path (files/system-files.ts).
       systemFiles,
@@ -2476,16 +2525,28 @@ function start(server: boolean): void {
   guestsForget.project = (id) => guestStore.projectRemoved(id)
   pluginGuestAccess.onChange(() => guestStore.pluginAccessChanged())
   /** What a guest view's filters read (guest-events.ts guestContext): main's live tables, never the payload. */
+  // The one overlay rule (guest-wiring.ts overlayVisibleOf): the router's target check, these filters and a
+  // copy's connect all read it, so the guest's hides and `via` hold on every route.
+  const overlayVisible = overlayVisibleOf({ guests: guestStore, windowIdOf: (projectId) => windows.windowIdOf(projectId), overlays })
+  overlayCopyWiring.sources = () => ({
+    whoOf: (viewId) => views.whoOf(viewId),
+    guests: guestStore,
+    windowIdOf: (projectId) => windows.windowIdOf(projectId),
+    overlayVisible,
+    overlays,
+    port: (projectId, pluginId, role) => pluginGuestAccess.port(projectId, pluginId, role)
+  })
   const guestSources: GuestContextSources = {
     guests: guestStore,
     overlayVisible: (guestId, overlayId) => {
       const access = guestStore.access({ guest: guestId })
-      if (access.kind !== 'guest') return false
-      const windowId = windows.windowIdOf(access.projectId)
-      return (
-        windowId !== undefined &&
-        overlays.visibleTo(windowId, overlayId, (t) => guestStore.tabVisible(guestId, t), (p) => guestStore.pluginVisible(access.projectId, p))
-      )
+      return access.kind === 'guest' && overlayVisible(access.projectId, overlayId, access)
+    },
+    // The guest sink's per-copy events (overlays.message, .hide, .reload): the receiving view's own copy only,
+    // by the manager's record of which view each copy is (or was) for, never the payload's word.
+    ownCopy: (viewId, overlayId, copy) => {
+      const windowId = views.windowOf(viewId as ViewId)
+      return windowId !== undefined && overlays.copyViewOf(windowId, overlayId, copy) === viewId
     },
     personOf: (viewId) => presence.personOf(viewId),
     tabOrder: (projectId) => tabs.list(projectId).map((t) => t.id),
@@ -3786,7 +3847,16 @@ function start(server: boolean): void {
     loaded: (windowId, overlayId, viewId) => overlays.pageLoaded(windowId, overlayId, viewId),
     take: (windowId, viewId, overlayId) => overlays.take(windowId, viewId, overlayId),
     button: (windowId, overlayId, click, viewId) => overlays.buttonClick(windowId, overlayId, click, viewId),
-    discuss: (windowId, overlayId, target, guest) => overlays.discuss(windowId, overlayId, target, guest),
+    discuss: (windowId, overlayId, target, guest, viewId) => overlays.discuss(windowId, overlayId, target, guest, viewId),
+    // perView copies (docs/design-overlay-views.md §5): the page's `overlays.ready` is its copy's connect and
+    // ready in one, answering the id every later call of that page names.
+    perView: (windowId, overlayId) => overlays.isPerView(windowId, overlayId),
+    connectCopy: (windowId, overlayId, viewId) => overlays.connectReady(windowId, overlayId, viewId),
+    copyLoaded: (windowId, overlayId, viewId, copy) => overlays.copyLoaded(windowId, overlayId, viewId, copy),
+    copyMessage: (windowId, overlayId, viewId, copy, text) => overlays.copyMessage(windowId, overlayId, viewId, copy, text),
+    copyResult: (windowId, overlayId, viewId, copy, value) => overlays.copyResult(windowId, overlayId, viewId, copy, value),
+    releaseCopy: (windowId, overlayId, viewId, copy) => overlays.releaseCopy(windowId, overlayId, viewId, copy),
+    guestHide: (windowId, overlayId, viewId) => overlays.guestHide(windowId, overlayId, viewId),
     // A guest's size report is remembered for its explicit take only (D-14).
     guestResize: (windowId, overlayId, cols, rows, viewId) => overlays.guestResize(windowId, overlayId, cols, rows, viewId)
   })

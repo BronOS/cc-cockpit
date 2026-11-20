@@ -86,6 +86,11 @@ export interface HostPluginSpec {
    */
   sessionsAll?: boolean
   /**
+   * The manifest says `"overlays": { "perView": true }`: the plugin's html overlays have one copy per view
+   * (ctx/ui.ts; main decides the same from the same manifest). Absent is false.
+   */
+  overlaysPerView?: boolean
+  /**
    * Set by `parsePluginSpecs`, never sent by main: why this plugin's spec cannot run (a malformed
    * `services` field). The loader marks only this plugin errored; the rest of the batch activates.
    */
@@ -99,7 +104,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
   const plugins = (params as { plugins?: unknown } | null)?.plugins
   if (!Array.isArray(plugins)) throw new Error('activate: plugins must be an array')
   return plugins.map((p: unknown, i) => {
-    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, slotTypes, pageTabTypes, panelSlots, services, openFile, settingsPage, sessionsAll, settings } = (p ?? {}) as Record<
+    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, slotTypes, pageTabTypes, panelSlots, services, openFile, settingsPage, sessionsAll, overlaysPerView, settings } = (p ?? {}) as Record<
       string,
       unknown
     >
@@ -146,6 +151,9 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
     const parsed = services === undefined ? undefined : parseServicesField(services)
     if (openFile !== undefined && typeof openFile !== 'boolean') throw new Error(`activate: plugin ${i} openFile must be a boolean`)
     if (sessionsAll !== undefined && typeof sessionsAll !== 'boolean') throw new Error(`activate: plugin ${i} sessionsAll must be a boolean`)
+    if (overlaysPerView !== undefined && typeof overlaysPerView !== 'boolean') {
+      throw new Error(`activate: plugin ${i} overlaysPerView must be a boolean`)
+    }
     if (settingsPage !== undefined && (!Array.isArray(settingsPage) || !settingsPage.every(isSettingsPageScope))) {
       throw new Error(`activate: plugin ${i} settingsPage must be an array of "app" / "project"`)
     }
@@ -173,6 +181,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       ...(openFile === true ? { openFile: true } : {}),
       ...(settingsPage !== undefined ? { settingsPage: settingsPage as SettingsPageScope[] } : {}),
       ...(sessionsAll === true ? { sessionsAll: true } : {}),
+      ...(overlaysPerView === true ? { overlaysPerView: true } : {}),
       settings: { project, app }
     }
   })

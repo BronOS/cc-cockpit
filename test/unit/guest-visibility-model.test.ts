@@ -12,6 +12,7 @@ import {
   guestChange,
   guestEffectiveText,
   guestExposureLines,
+  guestWindowLines,
   guestExposureText,
   guestOverrideNote,
   guestShowAskText,
@@ -151,5 +152,26 @@ describe('This Project choice', () => {
     expect(projectOverrideStart(access({ appValue: 'shown' }), BROWSER)).toBe('hidden')
     expect(projectOverrideStart(access(), BROWSER)).toBe('hidden')
     expect(projectOverrideStart(access(), DESKTOP)).toBe('hidden')
+  })
+})
+
+describe('guestWindowLines', () => {
+  const shown = access({ appValue: 'shown', effective: 'shown', source: 'app', aware: true })
+  it('a perView plugin: its windows show on guests', () => {
+    expect(guestWindowLines({ guestAccess: shown, overlaysPerView: true })).toEqual(["Its windows show on guests' screens too."])
+  })
+  it('a plugin without it: its windows stay on the owner, guests see a note', () => {
+    expect(guestWindowLines({ guestAccess: shown })).toEqual(['Its windows stay on your screen; guests see a note.'])
+  })
+  it('perView and a service: the D-4 line too', () => {
+    expect(guestWindowLines({ guestAccess: shown, overlaysPerView: true, providesServices: true })).toEqual([
+      "Its windows show on guests' screens too.",
+      'What another plugin opens in it reaches guests only when that plugin is shown too; data it fetches itself is shown as its own.'
+    ])
+  })
+  it('not shown to guests, or blocked: no line', () => {
+    expect(guestWindowLines({ guestAccess: access(), overlaysPerView: true })).toEqual([])
+    expect(guestWindowLines({ overlaysPerView: true })).toEqual([])
+    expect(guestWindowLines({ guestAccess: access({ ...shown, blocked: 'all-windows' }), overlaysPerView: true })).toEqual([])
   })
 })

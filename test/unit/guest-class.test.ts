@@ -49,12 +49,30 @@ describe('GUEST_CLASS', () => {
     }
   })
 
+  // docs/design-overlay-views.md §5 "Guest rows": a guest's own copy of a perView overlay (the handlers refuse any
+  // other overlay); Take over stays the owner's; results and the close are write (a read guest's ✕ is its release).
+  it('a guest connects, talks through and releases its own overlay copy (read, the overlay its target)', () => {
+    for (const channel of ['overlays.ready', 'overlays.loaded', 'overlays.message', 'overlays.release'] as const) {
+      const rule = GUEST_CLASS[channel]
+      expect(rule.cls, channel).toBe('read')
+      const target = 'target' in rule ? rule.target : undefined
+      expect(target?.({ overlayId: 'o1', copy: 'c' }), channel).toEqual([{ overlay: 'o1' }])
+      // Fails closed on a malformed request: no overlay named, or not a string.
+      expect(target?.({ copy: 'c' }), channel).toBeUndefined()
+      expect(target?.({ overlayId: 7 }), channel).toBeUndefined()
+      expect(target?.(undefined), channel).toBeUndefined()
+    }
+    expect(GUEST_CLASS['overlays.take'].cls).toBe('no')
+    expect(GUEST_CLASS['overlays.result'].cls).toBe('write')
+    expect(GUEST_CLASS['overlays.close'].cls).toBe('write')
+  })
+
   it('keeps the riskiest channels away from guests (design §4)', () => {
     const never: InvokeChannel[] = [
       'links.answer', 'oauth.paste', 'plugins.limits.set', 'plugins.globalLimits.set', 'projects.close',
       'settings.pluginInstall', 'settings.marketplaceInstall', 'settings.pluginSettingsSave', 'settings.webDeviceRevoke',
       'settings.webAccessSet', 'layout.set', 'tabs.flag', 'tabs.toggleFlag', 'tabs.rename', 'tabs.reorder', 'tabs.roomMark',
-      'tabs.commands', 'tabs.screen', 'rooms.doc', 'rooms.pause', 'overlays.take', 'overlays.message', 'sessions.closeAnswer',
+      'tabs.commands', 'tabs.screen', 'rooms.doc', 'rooms.pause', 'overlays.take', 'overlays.bounds', 'sessions.closeAnswer',
       'groups.place', 'groups.area', 'notices.click', 'settingsPage.connect', 'guests.list', 'guests.invite', 'guests.kick',
       'guests.setRole', 'guests.setScope', 'guests.shareTab', 'guests.revokeInvite', 'settings.pluginGuestAccessSet',
       'tabs.guestCloseAnswer', 'settings.claudeStatus', 'settings.claudeOfferSet', 'claude.offer', 'claude.install'

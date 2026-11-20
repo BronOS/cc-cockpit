@@ -1266,6 +1266,66 @@ describe('ServiceRegistry caller()', () => {
   })
 })
 
+describe('ServiceRegistry callers()', () => {
+  it('A -> B -> C: C sees [A, B] outermost first; B sees [A] before and after its await of C', async () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('a', { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sc: 1 }))
+    reg.setSpec(provider('c', { sc: 1 }))
+    reg.provide('c', 'sc', { who: async () => {
+      await flush()
+      return reg.callers('c')
+    } })
+    const bToC = reg.use('b', 'sc')
+    reg.provide('b', 'sb', { who: async () => {
+      const before = reg.callers('b')
+      const inC = await bToC.who!()
+      return { before, inC, after: reg.callers('b') }
+    } })
+    await expect(call(reg.use('a', 'sb'), 'who')).resolves.toEqual({ before: ['a'], inC: ['a', 'b'], after: ['a'] })
+  })
+
+  it('empty outside a call, in activate and once the call settled', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    expect(reg.callers('p')).toEqual([])
+    const frame = reg.beginActivate('p')
+    expect(frame.run(() => reg.callers('p'))).toEqual([])
+    frame.end()
+    reg.provide('p', 's', { who: () => reg.callers('p') })
+    await expect(call(reg.use('c', 's'), 'who')).resolves.toEqual(['c'])
+    expect(reg.callers('p')).toEqual([])
+  })
+
+  it('a timer started in the call and firing after it settled sees none', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    let fire!: () => void
+    const late = new Promise<void>((r) => (fire = r))
+    let after: string[] | undefined
+    let done!: () => void
+    const fired = new Promise<void>((r) => (done = r))
+    reg.provide('p', 's', { work: () => {
+      void late.then(() => setTimeout(() => ((after = reg.callers('p')), done()), 0))
+      return 'ok'
+    } })
+    await expect(call(reg.use('c', 's'), 'work')).resolves.toBe('ok')
+    fire()
+    await fired
+    expect(after).toEqual([])
+  })
+
+  it('code of a plugin that is not serving the frame sees none (same exclusion as caller)', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    reg.provide('p', 's', { go: () => ({ own: reg.callers('p'), other: reg.callers('x') }) })
+    await expect(call(reg.use('c', 's'), 'go')).resolves.toEqual({ own: ['c'], other: [] })
+  })
+})
+
 // Bundled reviewer/editor plan Task 6: `ctx.services.available(name)`. The reviewer hid its Edit
 // button by matching the "no enabled plugin" error text; this answers the same question by the
 // rule a call resolves with, fresh on every ask.

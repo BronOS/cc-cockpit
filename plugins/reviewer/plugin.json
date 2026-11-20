@@ -20,5 +20,11 @@
     "provides": {
       "reviewer": 1
     }
+  },
+  "overlays": {
+    "perView": true
+  },
+  "guests": {
+    "aware": true
   }
 }

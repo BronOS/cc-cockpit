@@ -32,7 +32,12 @@
 //   { type: 'cc-plugin.slot-width', width }        `ccPanel.slot.setWidth(px)`: the top bar's frame takes
 //                                                 that width (other positions ignore it)
 //   { type: 'cc-plugin.ready' }                    `ccPanel.ready()`: an html overlay's page has drawn, its
-//                                                 loader goes (spec `ready: 'manual'`); ignored elsewhere
+//                                                 loader goes (spec `ready: 'manual'`); ignored elsewhere.
+//                                                 `early: true` when the page had no port yet (it drew
+//                                                 before its frame's `load`): the shell cannot tell which
+//                                                 load of the frame that was (a page that reloads itself
+//                                                 keeps its window), so the SDK says it again, unmarked,
+//                                                 once the port came, and that one names the load
 //   { type: 'cc-plugin.tab-dirty', dirty }         `ccPanel.tab.setDirty(bool)`: the page tab holds unsaved
 //                                                 changes in this view, or not (sent on a change only)
 //   { type: 'cc-plugin.tab-key', chord, code }     an app chord typed in a page tab (one of `keys`): the
@@ -292,6 +297,8 @@ function cleanTheme(raw: unknown): PanelTheme | undefined {
 
 export class PanelClient {
   private port: PortLike | undefined
+  /** `ready()` came before the first port: said again, unmarked, when it comes (see `cc-plugin.ready` above). */
+  private readyBeforePort = false
   private queue: string[] = []
   private readonly listeners = new Set<(message: JsonValue) => void>()
   private readonly themeListeners = new Set<(theme: PanelTheme) => void>()
@@ -323,7 +330,15 @@ export class PanelClient {
     private readonly styles?: BaseStyles,
     componentsCss?: string,
     /** Where a slot page's size requests and `ready()` go: the parent window (the shell), in the browser. */
-    private readonly toParent?: (message: { type: string; height?: number; width?: number; dirty?: boolean; chord?: string; code?: string }) => void
+    private readonly toParent?: (message: {
+      type: string
+      height?: number
+      width?: number
+      dirty?: boolean
+      chord?: string
+      code?: string
+      early?: true
+    }) => void
   ) {
     const theme = {
       onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
@@ -366,7 +381,7 @@ export class PanelClient {
       onConnect: (listener: () => void) => this.onConnect(listener),
       theme: Object.freeze(theme) as PanelApi['theme'],
       view: Object.freeze(view) as PanelViewApi,
-      ready: (): void => this.toParent?.({ type: READY_MESSAGE })
+      ready: (): void => this.ready()
     }
     // A getter: the page learns it is a slot after load, and `slot` must then appear on the same object.
     Object.defineProperty(api, 'slot', { enumerable: true, get: (): SlotPageApi | undefined => this.slotApi })
@@ -477,6 +492,12 @@ export class PanelClient {
     // Assigning onmessage also starts the port (a MessagePort queues until then).
     port.onmessage = (event) => this.deliver(event.data)
     for (const text of this.queue.splice(0)) port.postMessage(text)
+    // A ready() before the port: the shell attached this load when it posted the port, so this one is this load's
+    // (second codex review, finding 4: an early ready went to the previous load's copy and this one's loader stayed).
+    if (this.readyBeforePort) {
+      this.readyBeforePort = false
+      this.toParent?.({ type: READY_MESSAGE })
+    }
     // Every new connection, so a page tab (whose frame is never reloaded to get one) can re-send.
     for (const listener of [...this.connectListeners]) {
       try {
@@ -485,6 +506,16 @@ export class PanelClient {
         this.warn(`an onConnect listener threw: ${errorText(err)}`)
       }
     }
+  }
+
+  /** `ccPanel.ready()`: marked `early` before the page's first port, and said again once it comes. */
+  private ready(): void {
+    if (this.port) {
+      this.toParent?.({ type: READY_MESSAGE })
+      return
+    }
+    this.readyBeforePort = true
+    this.toParent?.({ type: READY_MESSAGE, early: true })
   }
 
   private post(message: JsonValue): void {

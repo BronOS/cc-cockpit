@@ -13,19 +13,22 @@ import {
   guestUnsavedOf,
   offerTakerOf,
   guestMayDeliverOf,
+  mayConnectCopyOf,
+  overlayCopyPortOf,
   ownerViewOf,
   pageSelectTargetOf,
   pluginFocusSelectOf,
   pluginFocusViewOf,
   type GuestRouterSources,
-  type GuestTabSources
+  type GuestTabSources,
+  type OverlayCopySources
 } from '../../src/main/guest-wiring'
 import type { GuestService } from '../../src/main/ipc/guest-deps'
 import { overlayHandler } from '../../src/main/socket/handlers'
 import { windowSnapshot, type SnapshotSources } from '../../src/main/web/connection'
 import { createGuestCloseAsks } from '../../src/main/tabs/guest-close-asks'
 import type { GuestAccess, GuestOnlyAccess } from '../../src/shared/guests'
-import type { ViewId, Who } from '../../src/shared/views'
+import type { GuestRole, ViewId, Who } from '../../src/shared/views'
 
 const PROJECT = 'p1'
 const WINDOW = 7
@@ -52,6 +55,7 @@ describe('guestRouterDeps', () => {
       'ov-tab': { tabId: 't1' },
       'ov-hidden': { tabId: 't2' },
       'ov-plugin': { pluginId: 'shown.one' },
+      'ov-hid': { pluginId: 'shown.one' },
       'ov-none': {}
     }
     return {
@@ -66,7 +70,9 @@ describe('guestRouterDeps', () => {
           if (!o) return false
           if (o.tabId !== undefined) return tabVisible(o.tabId)
           return o.pluginId !== undefined && pluginVisible(o.pluginId)
-        }
+        },
+        // g1 hid ov-plugin-hid (its ✕ on a perView overlay).
+        hiddenFrom: (windowId, overlayId, guestId) => windowId === WINDOW && overlayId === 'ov-hid' && guestId === 'g1'
       },
       // f1: shown.one's frame in its own panel; f2: shown.one's frame in a hidden plugin's panel; f3: shown.one's in the top bar.
       slotFrame: (projectId, frameId) => {
@@ -111,6 +117,92 @@ describe('guestRouterDeps', () => {
     expect(deps.overlayVisible(PROJECT, 'ov-tab', { ...GUEST, id: 'g2' })).toBe(false)
     // No window open for the project: nothing.
     expect(deps.overlayVisible('p2', 'ov-tab', { ...GUEST, projectId: 'p2' })).toBe(false)
+    // A guest's own hide (docs/design-overlay-views.md §5): gone for that guest only, the same origin otherwise.
+    expect(deps.overlayVisible(PROJECT, 'ov-hid', GUEST)).toBe(false)
+    expect(deps.overlayVisible(PROJECT, 'ov-hid', { ...GUEST, id: 'g2' })).toBe(true)
+  })
+})
+
+// docs/design-overlay-views.md §5: which guest views get a copy of a perView overlay, and over which port (D-17).
+describe('mayConnectCopyOf / overlayCopyPortOf', () => {
+  /** web:2 is g1 (live, read or write as set), web:3 a revoked guest, web:4 g9 of another project. */
+  function setup(over: { role?: GuestRole; perView?: boolean; visible?: boolean; opener?: string; port?: 'none' | 'oneWay' | 'full'; windowOf?: number } = {}) {
+    const asked: string[] = []
+    const access = { ...GUEST, role: over.role ?? 'read' }
+    const s: OverlayCopySources = {
+      whoOf: (v) => (v === 'web:1' || v === 'desktop:7' ? 'owner' : v === 'web:2' ? { guest: 'g1' } : v === 'web:3' ? { guest: 'gone' } : v === 'web:4' ? { guest: 'g9' } : undefined),
+      guests: {
+        access: (who) =>
+          who === 'owner' ? { kind: 'owner' } : who.guest === 'g1' ? access : who.guest === 'g9' ? { ...GUEST, id: 'g9', projectId: 'p2' } : { kind: 'revoked' }
+      },
+      windowIdOf: (projectId) => (projectId === PROJECT ? (over.windowOf ?? WINDOW) : projectId === 'p2' ? 8 : undefined),
+      overlayVisible: (_p, overlayId, a) => {
+        asked.push(`visible ${overlayId} ${a.id}`)
+        return over.visible ?? true
+      },
+      overlays: {
+        isPerView: (w, o) => w === WINDOW && o === 'ov' && (over.perView ?? true),
+        openerPluginOf: (w, o) => (w === WINDOW && o === 'ov' ? (over.opener ?? 'shown.one') : undefined)
+      },
+      port: (projectId, pluginId, role) => {
+        asked.push(`port ${projectId} ${pluginId} ${role}`)
+        return over.port ?? (role === 'write' ? 'full' : 'oneWay')
+      }
+    }
+    return { may: mayConnectCopyOf(s), port: overlayCopyPortOf(s), asked }
+  }
+
+  it("a live guest of the window's project gets the opener's guest port for a visible perView overlay", () => {
+    const read = setup()
+    expect(read.may(WINDOW, 'ov', 'web:2')).toBe(true)
+    expect(read.port(WINDOW, 'ov', 'web:2')).toBe('oneWay')
+    expect(read.asked).toContain(`port ${PROJECT} shown.one read`)
+    const write = setup({ role: 'write' })
+    expect(write.port(WINDOW, 'ov', 'web:2')).toBe('full')
+    // A guests.aware plugin gives a read guest a full port (the store's answer, passed through).
+    expect(setup({ port: 'full' }).port(WINDOW, 'ov', 'web:2')).toBe('full')
+  })
+
+  it('refuses (none) for every failing piece: fail closed', () => {
+    expect(setup({ port: 'none' }).may(WINDOW, 'ov', 'web:2')).toBe(false)
+    expect(setup({ visible: false }).may(WINDOW, 'ov', 'web:2')).toBe(false)
+    expect(setup({ perView: false }).may(WINDOW, 'ov', 'web:2')).toBe(false)
+    expect(setup({ opener: undefined }).may(WINDOW, 'ov2', 'web:2')).toBe(false)
+    // Another window than the guest's project's.
+    expect(setup({ windowOf: 9 }).may(WINDOW, 'ov', 'web:2')).toBe(false)
+    const { may, port } = setup()
+    // A revoked guest, a gone view, a guest of another project, the owner's views (they never ask).
+    expect(may(WINDOW, 'ov', 'web:3')).toBe(false)
+    expect(may(WINDOW, 'ov', 'web:9')).toBe(false)
+    expect(may(WINDOW, 'ov', 'web:4')).toBe(false)
+    expect(port(WINDOW, 'ov', 'web:1')).toBe('none')
+    expect(port(WINDOW, 'ov', 'desktop:7')).toBe('none')
+  })
+
+  it('reads the access live on every ask (a role change applies to the next connect and message)', () => {
+    let role: GuestRole = 'write'
+    const s: OverlayCopySources = {
+      whoOf: () => ({ guest: 'g1' }),
+      guests: { access: () => ({ ...GUEST, role }) },
+      windowIdOf: () => WINDOW,
+      overlayVisible: () => true,
+      overlays: { isPerView: () => true, openerPluginOf: () => 'shown.one' },
+      port: (_p, _id, r) => (r === 'write' ? 'full' : 'oneWay')
+    }
+    const port = overlayCopyPortOf(s)
+    expect(port(WINDOW, 'ov', 'web:2')).toBe('full')
+    role = 'read'
+    expect(port(WINDOW, 'ov', 'web:2')).toBe('oneWay')
+  })
+
+  it('index.ts wires the manager with them and with the guest of a view', () => {
+    const src = readFileSync(join(__dirname, '../../src/main/index.ts'), 'utf8')
+    expect(src).toMatch(/return sources !== undefined && mayConnectCopyOf\(sources\(\)\)\(windowId, overlayId, viewId\)/)
+    expect(src).toMatch(/return sources === undefined \? 'none' : overlayCopyPortOf\(sources\(\)\)\(windowId, overlayId, viewId\)/)
+    expect(src).toMatch(/overlayCopyWiring\.sources = \(\) => \(\{/)
+    expect(src).toMatch(/guestOf: \(viewId\) =>/)
+    expect(src).toMatch(/ownCopy: \(viewId, overlayId, copy\) =>/)
+    expect(src).not.toMatch(/mayConnectCopy: \(\) => false/)
   })
 })
 
@@ -378,7 +470,13 @@ describe("index.ts wires 07a's guest deps", () => {
     expect(INDEX).toContain("if (tab) views.toView(view, 'tabs.added', tab)\n      views.toView(view, 'tabs.select', { tabId })")
     expect(INDEX).toContain("if (gen !== undefined) sendToProject(projectId, 'tabs.removed', { tabId, gen })")
     expect(INDEX).toContain('discuss: (caller, tabId, question, target, guest) => pageTabDiscuss.discuss(caller, tabId, question, target, guest),')
-    expect(INDEX).toContain('discuss: (windowId, overlayId, target, guest) => overlays.discuss(windowId, overlayId, target, guest),')
+    // The caller's view goes too (docs/design-overlay-views.md §3): the opener hears who asked.
+    expect(INDEX).toContain('discuss: (windowId, overlayId, target, guest, viewId) => overlays.discuss(windowId, overlayId, target, guest, viewId),')
+    // docs/design-overlay-views.md §3, §5: who acted is read live from the guest store; a guest's copy by the §4 rule.
+    expect(INDEX).toContain('viewAccess: (viewId) => guestStore.whoAccess(viewId),')
+    expect(block('new OverlayManager({')).toContain('mayConnectCopyOf(sources())')
+    expect(block('new OverlayManager({')).toContain('overlayCopyPortOf(sources())')
+    expect(block('registerOverlayHandlers(router, {')).toContain('perView: (windowId, overlayId) => overlays.isPerView(windowId, overlayId),')
     expect(INDEX).toContain("else if (target !== 'none') views.toView(target.viewId, 'tabs.select', { tabId })")
     // 03e (D-9): the outcome reaches the asking guest's own views only; an ended guest's asks settle.
     expect(INDEX).toContain("if (who !== undefined && who !== 'owner' && who.guest === guestId) views.toView(viewId, channel, payload)")

@@ -4,10 +4,10 @@
 //                                      (src/main/plugins/host-api.ts) against the host's scope
 //   overlay.open(spec)                 terminal (argv only), url (http/https), html (a file of the
 //                                      plugin's own folder, read by main); resolves when it closes
-//   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage, close,
-//                                      focus, onButton, setButtons, onDiscuss,
-//                                      setDiscussPrimary }; open(spec) is
-//                                      start(spec).result
+//   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage,
+//                                      onConnect, onDisconnect, hide, close, focus, onButton,
+//                                      setButtons, onDiscuss, setDiscussPrimary, addSources };
+//                                      open(spec) is start(spec).result
 //   overlay.buttons(type, provider)    buttons on every overlay of that type (host/overlay-buttons.ts)
 //   panels.post / panels.onMessage     over the panel's MessagePort
 //   panels.slots                       slot placements in the panel's column (shared/slots.ts rules,
@@ -29,8 +29,22 @@
 // shell renderer, see src/renderer/overlays/HtmlOverlay.tsx), over the host RPC. Each start picks a
 // random handle that main keys by plugin id (src/main/plugins/host-api.ts); main's
 // `overlay.message` events come back with it and OverlayLinks hands them to that handle's
-// listeners, in the view of the page that posted (`view`, origin-view.ts) as for panels. Once the
-// overlay ended, post/close do nothing and the listeners are dropped.
+// listeners, in the view of the page that posted (`view`, origin-view.ts) as for panels, with
+// `from` (who: view, access, a guest's person; main's word). Once the overlay ended, post/close do
+// nothing and the listeners are dropped.
+//
+// Per-view copies (docs/design-overlay-views.md): an html overlay of a plugin whose manifest says
+// `overlays.perView` has one copy of its page per view. Main announces each (`overlay.connect`, its
+// `copy` id and `from`) and takes it back (`overlay.disconnect`); the copy's view is one line of
+// ctx.views meanwhile, as a panel port is. The plugin answers a copy with `post(m, { copy })`, every
+// copy with `post(m)`, and hides one view's copy with `hide({ copy })`. Any other overlay has one
+// page: no copies, and `post { copy }` / `hide` throw at the call site.
+//
+// Provenance (docs/design-overlay-views.md §4, D-4): an overlay call made inside a service call (start,
+// post, setButtons; a title is only set at start) carries `via`, the service caller chain
+// (ctx.services.callers(), read at the plugin's call site), so main counts the overlay as shown for those
+// plugins too and hides it from a guest who may not see one of them. `handle.addSources(ids)` is the same
+// for content the plugin shows later, after the call settled (the chain is empty by then).
 import { randomUUID } from 'node:crypto'
 import type {
   BadgeValue,
@@ -47,15 +61,15 @@ import type {
   ViewFrom
 } from '../../sdk/types'
 import { MAX_DISCUSS_TEXT } from '../../shared/discuss'
-import { parseOverlayButtons, parseOverlayExtras } from '../../shared/overlay-buttons'
+import { MAX_OVERLAY_SOURCES, parseOverlayButtons, parseOverlayExtras } from '../../shared/overlay-buttons'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { parsePanelHeader } from '../../shared/panel-header'
 import { isAppSlotType, parseSlotPlacements } from '../../shared/slots'
 import { errorText } from '../../shared/error-text'
-import { viewIdOf, type ViewId } from '../../shared/views'
+import { PLUGIN_DESKTOP_VIEW, viewIdOf, type ViewId } from '../../shared/views'
 import type { OverlayButtonRegistry } from '../overlay-buttons'
 import { dispatchInView } from './origin-view'
-import { HostViews, tagAccess } from './views'
+import { HostViews, tagAccess, viewFromOf } from './views'
 
 /** Longest panel message, as JSON text (the RPC cap). */
 export const MAX_PANEL_MESSAGE_LENGTH = 1024 * 1024
@@ -163,7 +177,6 @@ export function panelPortTag(data: unknown): { pluginId: string; panelId: string
   return undefined
 }
 
-type PageListener = (message: JsonValue) => void
 type MessageListener = (message: JsonValue, from: PanelMessageSource) => void
 
 /**
@@ -177,8 +190,8 @@ export interface PanelMessageSource {
   readonly access: ViewAccess
 }
 
-/** The `view` a plugin sees for the desktop window's own page. */
-export const DESKTOP_VIEW = 'desktop'
+/** The `view` a plugin sees for the desktop window's own page (shared/views.ts PLUGIN_DESKTOP_VIEW). */
+export const DESKTOP_VIEW = PLUGIN_DESKTOP_VIEW
 
 interface Attached {
   port: PanelPort
@@ -395,39 +408,102 @@ export class PanelActions {
   }
 }
 
+/** Who a copy's or a holder's message came from, as the plugin's listeners get it. */
+type OverlayFrom = ViewFrom & { copy?: string }
+type OverlayMessageListener = (message: JsonValue, from: OverlayFrom) => void
+type CopyListener = (from: ViewFrom & { copy: string }) => void
+type FromHandler = (from: ViewFrom) => unknown
+
+/** One live copy of a perView overlay, as main announced it (`overlay.connect`). */
+interface LiveCopy {
+  /** The connect's `from`: the disconnect gets the same one (the view may be gone from main's registry by then). */
+  readonly from: ViewFrom
+  /** Main's id of the copy's view (undefined: the desktop page): the listeners run in it. */
+  readonly view: ViewId | undefined
+  /** Ends the copy's line in ctx.views (views.ts). */
+  readonly release: () => void
+}
+
 /** One ctx.overlay.start handle of this host, while its overlay is open. */
 interface OverlayLink {
   readonly pluginId: string
   readonly handle: string
-  readonly listeners: Set<PageListener>
+  /**
+   * An html overlay of a plugin whose manifest says `overlays.perView` (main decides the same from the same
+   * manifest): one copy per view, connect and disconnect, `post { copy }` and `hide`. Otherwise one page, held
+   * by one view: its messages carry no copy and nothing connects.
+   */
+  readonly perView: boolean
+  readonly listeners: Set<OverlayMessageListener>
+  readonly connectListeners: Set<CopyListener>
+  readonly disconnectListeners: Set<CopyListener>
   /** Button id -> click handlers (main's `overlay.buttonClick` for an opener button runs them, `click`). */
-  readonly buttonHandlers: Map<string, Set<() => unknown>>
+  readonly buttonHandlers: Map<string, Set<FromHandler>>
   /** The Discuss context answerers, in the order added; the first to return text wins (main asks over RPC). */
-  readonly discussHandlers: Set<() => unknown>
+  readonly discussHandlers: Set<FromHandler>
+  /** perView: the copies main announced and has not taken back, by copy id. */
+  readonly copies: Map<string, LiveCopy>
   ended: boolean
 }
 
+/** Longest copy id taken from main (it mints 32 hex characters); anything else names no copy. */
+const MAX_COPY_ID_LENGTH = 100
+
+function copyIdOf(raw: unknown): string | undefined {
+  return typeof raw === 'string' && raw !== '' && raw.length <= MAX_COPY_ID_LENGTH ? raw : undefined
+}
+
 /**
- * The open overlay handles of every plugin of one host, keyed `<pluginId>/<handle>`, and the
- * routing of main's `overlay.message { pluginId, handle, message }` to their listeners.
+ * The open overlay handles of every plugin of one host, keyed `<pluginId>/<handle>`, and the routing of main's
+ * overlay events and requests to their listeners. Every one carries `from` (docs/design-overlay-views.md §3),
+ * main's word for who acted, checked here (views.ts viewFromOf): a missing or malformed one drops a message or a
+ * connect and refuses a request, never reads as the owner. A disconnect does not read its own `from`: it runs
+ * with its connect's (dropping it would leave the copy's ctx.views line behind). Each listener runs in the acting view (origin-view.ts), so
+ * what it opens or focuses without naming a view shows there; plugins should still answer by `from`.
+ *
+ * Listeners are called one at a time, in the order added, each with its own copy of `from` and of the
+ * message; one that throws (or rejects) is logged in the plugin's log and the next still runs.
  */
 export class OverlayLinks {
   private readonly links = new Map<string, OverlayLink>()
 
-  constructor(private readonly log: (pluginId: string, message: string) => void) {}
+  constructor(
+    private readonly log: (pluginId: string, message: string) => void,
+    /** ctx.views: a perView copy is one line of its view while it is connected (views.ts). */
+    private readonly views: HostViews = new HostViews(log)
+  ) {}
 
-  open(pluginId: string): OverlayLink {
-    const link: OverlayLink = { pluginId, handle: randomUUID(), listeners: new Set(), buttonHandlers: new Map(), discussHandlers: new Set(), ended: false }
+  open(pluginId: string, perView = false): OverlayLink {
+    const link: OverlayLink = {
+      pluginId,
+      handle: randomUUID(),
+      perView,
+      listeners: new Set(),
+      connectListeners: new Set(),
+      disconnectListeners: new Set(),
+      buttonHandlers: new Map(),
+      discussHandlers: new Set(),
+      copies: new Map(),
+      ended: false
+    }
     this.links.set(`${pluginId}/${link.handle}`, link)
     return link
   }
 
-  /** The overlay ended: post/close become no-ops and its listeners are dropped. */
+  /**
+   * The overlay ended: post/close become no-ops and its listeners are dropped. Its copies' lines in ctx.views
+   * end too (no onDisconnect: the listeners are the overlay's, and it is gone), so a closed overlay never keeps
+   * a guest's view known.
+   */
   end(link: OverlayLink): void {
     link.ended = true
     link.listeners.clear()
+    link.connectListeners.clear()
+    link.disconnectListeners.clear()
     link.buttonHandlers.clear()
     link.discussHandlers.clear()
+    for (const copy of [...link.copies.values()]) copy.release()
+    link.copies.clear()
     const key = `${link.pluginId}/${link.handle}`
     if (this.links.get(key) === link) this.links.delete(key)
   }
@@ -447,26 +523,28 @@ export class OverlayLinks {
   }
 
   /**
-   * main's `overlay.buttonClick { pluginId, handle, buttonId }` for one of the opener's own buttons:
-   * every `onButton` handler of that id runs, and the answer comes once all have settled (main shows
-   * the button busy until then, bounded to 30 s there). A handler that throws is logged in the
-   * plugin's log; the click still answers. Main only sends a click on a button it shows on that
-   * plugin's overlay; one for an ended handle runs nothing.
+   * main's `overlay.buttonClick { pluginId, handle, buttonId, view?, from }` for one of the opener's own
+   * buttons: every `onButton` handler of that id runs with `from` (who clicked), in the clicking view, and the
+   * answer comes once all have settled (main shows the button busy until then, bounded to 30 s there). A
+   * handler that throws is logged in the plugin's log; the click still answers. Main only sends a click on a
+   * button it shows on that plugin's overlay; one for an ended handle runs nothing.
    */
   async click(params: unknown): Promise<null> {
-    const { pluginId, handle, buttonId, view: rawView } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, handle, buttonId, view: rawView, from: rawFrom } = (params ?? {}) as Record<string, unknown>
     if (typeof pluginId !== 'string' || typeof handle !== 'string' || typeof buttonId !== 'string') {
       throw new Error('overlay.buttonClick: bad button')
     }
     // The remote view whose toolbar was clicked; one main did not mint is refused, never read as the desktop's.
     const view = viewIdOf(rawView)
     if (rawView !== undefined && view === undefined) throw new Error('overlay.buttonClick: bad view')
+    const from = viewFromOf(rawFrom, view)
+    if (!from) throw new Error('overlay.buttonClick: bad from')
     const link = this.links.get(`${pluginId}/${handle}`)
     if (!link || link.ended) return null
     const handlers = [...(link.buttonHandlers.get(buttonId) ?? [])]
     // Each in the clicking view (origin-view.ts); a rejection is logged below, from the outcomes.
     const outcomes = await Promise.allSettled(
-      handlers.map((h) => Promise.resolve().then(() => dispatchInView(view, h, () => undefined)))
+      handlers.map((h) => Promise.resolve().then(() => dispatchInView(view, () => h({ ...from }), () => undefined)))
     )
     for (const o of outcomes) {
       if (o.status === 'rejected') this.log(pluginId, `an overlay onButton("${buttonId}") handler threw: ${errorText(o.reason)}`)
@@ -475,22 +553,27 @@ export class OverlayLinks {
   }
 
   /**
-   * main's `overlay.discuss { pluginId, handle }` (Discuss with Claude's Send): the handle's
-   * `onDiscuss` handlers are asked in the order they were added, and the first that answers
-   * `{ text }` wins; `null` (or nothing) passes to the next, and all null means "no extra context".
-   * A handler that throws, or answers anything else, fails the ask: main shows the error in the
-   * popover and sends nothing (it also bounds the ask to 5 s). The text is cut to the whole
+   * main's `overlay.discuss { pluginId, handle, view?, from }` (Discuss with Claude's Send): the handle's
+   * `onDiscuss` handlers are asked with `from` (whose Send it was), in the sending view, in the order they were
+   * added, and the first that answers `{ text }` wins; `null` (or nothing) passes to the next, and all null
+   * means "no extra context". A handler that throws, or answers anything else, fails the ask: main shows the
+   * error in the popover and sends nothing (it also bounds the ask to 5 s). The text is cut to the whole
    * message's cap here, so a huge answer never crosses the port; main cuts it to fit again.
    */
   async discuss(params: unknown): Promise<{ text: string } | null> {
-    const { pluginId, handle } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, handle, view: rawView, from: rawFrom } = (params ?? {}) as Record<string, unknown>
     if (typeof pluginId !== 'string' || typeof handle !== 'string') throw new Error('overlay.discuss: bad handle')
+    const view = viewIdOf(rawView)
+    if (rawView !== undefined && view === undefined) throw new Error('overlay.discuss: bad view')
+    const from = viewFromOf(rawFrom, view)
+    if (!from) throw new Error('overlay.discuss: bad from')
     const link = this.links.get(`${pluginId}/${handle}`)
     if (!link || link.ended) return null
     for (const handler of [...link.discussHandlers]) {
       let answer: unknown
       try {
-        answer = await handler()
+        // The rejection is handled by this await; dispatchInView's own handler only keeps it from being unhandled.
+        answer = await dispatchInView(view, () => handler({ ...from }), () => undefined)
       } catch (err) {
         this.log(pluginId, `an overlay onDiscuss handler threw: ${errorText(err)}`)
         throw err
@@ -507,27 +590,119 @@ export class OverlayLinks {
   }
 
   /**
-   * main's `overlay.message`; anything malformed or for an ended handle is dropped. Each listener
-   * runs in the posting page's view (`view`, a remote one; none for the desktop's).
+   * main's `overlay.message { pluginId, handle, message, view?, copy?, from }`; anything malformed or for an
+   * ended handle is dropped. A perView overlay's message names a copy main announced, from that copy's view;
+   * any other overlay's names none (its holder posted). Each listener runs in the posting page's view.
    */
   handleEvent(params: unknown): void {
-    const { pluginId, handle, message, view: rawView } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, handle, message, view: rawView, copy: rawCopy, from: rawFrom } = (params ?? {}) as Record<string, unknown>
     if (typeof pluginId !== 'string' || typeof handle !== 'string') return
     // A view main did not mint is refused, never read as the desktop's (as slots.ts does).
     const view = viewIdOf(rawView)
     if (rawView !== undefined && view === undefined) return
     const link = this.links.get(`${pluginId}/${handle}`)
     if (!link || link.ended) return
+    const from = viewFromOf(rawFrom, view)
+    if (!from) {
+      this.log(pluginId, 'dropped an overlay message with no valid sender')
+      return
+    }
+    let copy: string | undefined
+    if (link.perView) {
+      copy = copyIdOf(rawCopy)
+      // Only a live copy of that view: a stale or unannounced one (main drops those too) is nobody. Looked up
+      // first: from the desktop page `view` is undefined, and so is a missing copy's view (the Task 7 review).
+      const live = copy === undefined ? undefined : link.copies.get(copy)
+      if (!live || live.view !== view) return
+    } else if (rawCopy !== undefined) {
+      return
+    }
     for (const listener of [...link.listeners]) {
+      if (link.ended) return
       try {
         // Each listener its own copy, as for panels: one cannot change what the next one sees.
         dispatchInView(
           view,
-          () => listener(structuredClone(message as JsonValue)),
+          () => listener(structuredClone(message as JsonValue), { ...from, ...(copy !== undefined ? { copy } : {}) }),
           (err) => this.log(pluginId, `an overlay onMessage listener failed: ${errorText(err)}`)
         )
       } catch (err) {
         this.log(pluginId, `an overlay onMessage listener threw: ${errorText(err)}`)
+      }
+    }
+  }
+
+  /**
+   * main's `overlay.connect` / `overlay.disconnect { pluginId, handle, copy, view?, from }` for a perView
+   * overlay. A connect makes the copy's view one line of ctx.views (with `from.access`, as a panel port does)
+   * BEFORE the onConnect listeners run, so a listener asking ctx.views already finds it; a disconnect runs the
+   * onDisconnect listeners with the connect's `from` and ends that line after them. A repeated connect, a
+   * disconnect of a copy never announced, and anything for a non-perView or ended handle are dropped. A reload
+   * is a disconnect of the old copy and a connect of a new one (main sends them in that order).
+   */
+  handleCopyEvent(event: 'overlay.connect' | 'overlay.disconnect', params: unknown): void {
+    const { pluginId, handle, copy: rawCopy, view: rawView, from: rawFrom } = (params ?? {}) as Record<string, unknown>
+    if (typeof pluginId !== 'string' || typeof handle !== 'string') return
+    const copy = copyIdOf(rawCopy)
+    if (copy === undefined) return
+    const view = viewIdOf(rawView)
+    if (rawView !== undefined && view === undefined) return
+    const link = this.links.get(`${pluginId}/${handle}`)
+    if (!link || link.ended || !link.perView) return
+    if (event === 'overlay.connect') {
+      const from = viewFromOf(rawFrom, view)
+      if (!from) {
+        this.log(pluginId, 'dropped an overlay copy with no valid viewer')
+        return
+      }
+      if (link.copies.has(copy)) return
+      const release = this.views.add(pluginId, from.view, from.access)
+      link.copies.set(copy, { from, view, release })
+      this.runCopyListeners(link, link.connectListeners, from, view, copy, 'onConnect')
+      return
+    }
+    const live = link.copies.get(copy)
+    if (!live) return
+    link.copies.delete(copy)
+    try {
+      this.runCopyListeners(link, link.disconnectListeners, live.from, live.view, copy, 'onDisconnect')
+    } finally {
+      live.release()
+    }
+  }
+
+  /**
+   * A new onConnect listener first hears every copy already live (as ctx.views.onChange replays its views), each
+   * dispatched in that copy's view, before onConnect returns: a plugin that registers after an await still sends
+   * every copy its starting state. Copies in the order main announced them.
+   */
+  replayConnects(link: OverlayLink, listener: CopyListener): void {
+    const once = new Set([listener])
+    for (const [copy, live] of [...link.copies]) {
+      if (!link.copies.has(copy) || !link.connectListeners.has(listener)) break
+      this.runCopyListeners(link, once, live.from, live.view, copy, 'onConnect')
+    }
+  }
+
+  private runCopyListeners(
+    link: OverlayLink,
+    listeners: Set<CopyListener>,
+    from: ViewFrom,
+    view: ViewId | undefined,
+    copy: string,
+    what: string
+  ): void {
+    for (const listener of [...listeners]) {
+      // A listener that closed the overlay (or disposed the next one) ends the round.
+      if (link.ended || !listeners.has(listener)) continue
+      try {
+        dispatchInView(
+          view,
+          () => listener({ ...from, copy }),
+          (err) => this.log(link.pluginId, `an overlay ${what} listener failed: ${errorText(err)}`)
+        )
+      } catch (err) {
+        this.log(link.pluginId, `an overlay ${what} listener threw: ${errorText(err)}`)
       }
     }
   }
@@ -560,6 +735,11 @@ export interface UiApiDeps {
   ports: PanelPorts
   /** The host's overlay handles (ctx.overlay.start). */
   overlays: OverlayLinks
+  /**
+   * The manifest says `overlays.perView` (main sent it in the spec): the plugin's html overlays have one copy
+   * per view (connect, disconnect, `post { copy }`, `hide`). Absent: false.
+   */
+  overlaysPerView?: boolean
   /** The host's type-button providers (ctx.overlay.buttons). */
   typeButtons: OverlayButtonRegistry
   /** The plugin added type buttons: its dispose must tell main (`plugin.disposed`), which asks the toolbars again. */
@@ -577,6 +757,52 @@ export interface UiApiDeps {
   slotsUsed?(): void
   /** Where a failed fire-and-forget request (badge, panels.header) is reported. */
   logError(message: string): void
+  /**
+   * The service caller chain the plugin's code runs in now (ServiceRegistry.callers, outermost first),
+   * sent as an overlay call's `via`. Absent, or one that throws: none.
+   */
+  callers?(): string[]
+  /**
+   * Whether an id is one of this host's plugins (ServiceRegistry.knows): sources are filtered to these before
+   * anything else. Absent: every non-empty string is kept, and a list past MAX_OVERLAY_SOURCES throws instead.
+   */
+  isHostPlugin?(pluginId: string): boolean
+}
+
+/**
+ * Sources as main takes them: this host's plugins only (`isHostPlugin`), each once. Never cut to a bound: `via`
+ * only narrows who sees an overlay, so a dropped source would fail open (a guest kept seeing content shown for a
+ * hidden plugin; Task 4 review). Filtered first, the list is bounded by the host's plugin count, which main
+ * accepts; ids that name nothing are dropped before they could use up anything. With no filter wired, a list
+ * past MAX_OVERLAY_SOURCES throws at the call site (fail closed) rather than lose an id.
+ */
+export function cleanSources(ids: readonly unknown[], isHostPlugin?: (id: string) => boolean): string[] {
+  const out = new Set<string>()
+  for (const id of ids) {
+    if (typeof id !== 'string' || id === '') continue
+    if (isHostPlugin !== undefined && !isHostPlugin(id)) continue
+    out.add(id)
+  }
+  if (isHostPlugin === undefined && out.size > MAX_OVERLAY_SOURCES) {
+    throw new RangeError(`overlay sources: more than ${MAX_OVERLAY_SOURCES} plugin ids`)
+  }
+  return [...out]
+}
+
+/**
+ * The service caller chain the plugin's code runs in now, as main takes it (cleanSources): an overlay call's `via`,
+ * and the `via` of a main-routed file open (ctx.files.open, ctx.sessions.openFile), which main hands the taker as
+ * `requestedBy`. Read at the plugin's call site, before any await. A `callers` that throws is none; a list that
+ * cannot be sent whole throws at the call site (fail closed).
+ */
+export function callerChainNow(callers?: () => string[], isHostPlugin?: (id: string) => boolean): string[] {
+  let raw: string[]
+  try {
+    raw = callers?.() ?? []
+  } catch {
+    raw = []
+  }
+  return cleanSources(raw, isHostPlugin)
 }
 
 /** A declared html panel: panels.post/onMessage on a webview panel would go nowhere (no port ever comes). */
@@ -607,15 +833,25 @@ export function createUiApi(
 ): Pick<PluginContext, 'panels' | 'badge' | 'overlay'> {
   const { pluginId, ports, overlays, actions } = deps
 
+  /** `{ via }` for the call being made now (the service chain at this call site), nothing outside a service call. */
+  const viaNow = (): { via?: string[] } => {
+    const chain = callerChainNow(deps.callers, deps.isHostPlugin)
+    return chain.length > 0 ? { via: chain } : {}
+  }
+
   const start = (spec: OverlaySpec): OverlayHandle => {
     const html = typeof spec === 'object' && spec !== null && (spec as { kind?: unknown }).kind === 'html'
+    // Main makes the same call from the same manifest (overlay-manager.ts: html and the opener's perView).
+    const perView = html && deps.overlaysPerView === true
+    // Read here, synchronously at the plugin's call site, while its service frame is the current one.
+    const openVia = viaNow()
     /** Made when the request goes out (below); stays undefined when the call is refused first. */
     let link: OverlayLink | undefined
     const result = deps.guardAsync(async () => {
       if (typeof spec !== 'object' || spec === null) throw new TypeError('overlay.open needs a spec object')
       // type, buttons, ready, discuss: the plugin gets the TypeError here; main checks them again.
       parseOverlayExtras(spec as unknown as Record<string, unknown>, String((spec as { kind?: unknown }).kind))
-      link = overlays.open(pluginId)
+      link = overlays.open(pluginId, perView)
       try {
         // No timeout: the overlay is open until the user (or its program) ends it. A host that
         // stops rejects it (the RPC closes) and main dismisses the overlay; a ctx disposed in a
@@ -623,7 +859,7 @@ export function createUiApi(
         // synchronously, inside start(), so a post right after start() reaches main behind it.
         return (await deps.call(
           'overlay.open',
-          { pluginId, spec, handle: link.handle },
+          { pluginId, spec, handle: link.handle, ...openVia },
           { timeoutMs: Infinity }
         )) as OverlayResult
       } finally {
@@ -637,26 +873,74 @@ export function createUiApi(
     const send = (method: string, params: Record<string, unknown>): void => {
       void deps.call(method, params).catch((err: unknown) => deps.logError(`${method}: ${errorText(err)}`))
     }
-    return Object.freeze({
+    /** One copy's id from a plugin's options, checked at its call site (main checks it is this overlay's live copy). */
+    const copyOption = (options: unknown, what: string, required: boolean): string | undefined => {
+      if (options === undefined && !required) return undefined
+      if (typeof options !== 'object' || options === null) throw new TypeError(`overlay ${what}: options must be an object`)
+      const copy = (options as { copy?: unknown }).copy
+      if (copy === undefined && !required) return undefined
+      if (typeof copy !== 'string' || copy === '') throw new TypeError(`overlay ${what}: copy must be the \`copy\` of a from`)
+      if (!perView) {
+        throw new Error(
+          `overlay ${what}: { copy } is for an overlay of a plugin that declares "overlays": { "perView": true }; this overlay has one page`
+        )
+      }
+      return copy
+    }
+    /** A listener set of the current link, or a no-op disposer once it ended (or never opened). */
+    const listen = <L>(pick: (l: OverlayLink) => Set<L>, entry: L): Disposer => {
+      const current = link
+      if (!current || current.ended) return () => {}
+      deps.alive()
+      const set = pick(current)
+      set.add(entry)
+      return () => {
+        set.delete(entry)
+      }
+    }
+    const handle: OverlayHandle = {
       result,
-      post: (message: JsonValue): void => {
+      post: (message: JsonValue, options?: { copy?: string }): void => {
         htmlOnly('post')
+        // Checked even when the overlay ended: a bad call fails where it is made.
+        const copy = copyOption(options, 'post', false)
         if (!link || link.ended) return
         deps.alive()
         overlayMessageText(message)
-        send('overlay.post', { pluginId, handle: link.handle, message })
+        send('overlay.post', { pluginId, handle: link.handle, message, ...(copy !== undefined ? { copy } : {}), ...viaNow() })
       },
-      onMessage: (listener: PageListener): Disposer => {
+      onMessage: (listener: (message: JsonValue, from: ViewFrom & { copy?: string }) => void): Disposer => {
         htmlOnly('onMessage')
         if (typeof listener !== 'function') throw new TypeError('overlay onMessage needs a function')
-        const current = link
-        if (!current || current.ended) return () => {}
-        deps.alive()
-        const entry: PageListener = (m) => listener(m)
-        current.listeners.add(entry)
-        return () => {
-          current.listeners.delete(entry)
+        // Wrapped: the same function registered twice is two registrations, each with its disposer.
+        return listen((l) => l.listeners, (m: JsonValue, from: OverlayFrom) => listener(m, from))
+      },
+      onConnect: (listener: (from: ViewFrom & { copy: string }) => void): Disposer => {
+        htmlOnly('onConnect')
+        if (typeof listener !== 'function') throw new TypeError('overlay onConnect needs a function')
+        // Accepted on any html overlay so one plugin's code runs on either kind; only a perView one connects.
+        const entry = (from: ViewFrom & { copy: string }): void => listener(from)
+        const dispose = listen((l) => l.connectListeners, entry)
+        // The copies already up hear it now (replayConnects), so a late listener misses none.
+        if (link && !link.ended && link.connectListeners.has(entry)) overlays.replayConnects(link, entry)
+        return dispose
+      },
+      onDisconnect: (listener: (from: ViewFrom & { copy: string }) => void): Disposer => {
+        htmlOnly('onDisconnect')
+        if (typeof listener !== 'function') throw new TypeError('overlay onDisconnect needs a function')
+        return listen((l) => l.disconnectListeners, (from: ViewFrom & { copy: string }) => listener(from))
+      },
+      hide: (options: { copy: string }): void => {
+        htmlOnly('hide')
+        if (!perView) {
+          throw new Error('overlay hide: only an overlay of a plugin that declares "overlays": { "perView": true } has copies to hide; use close()')
         }
+        const copy = copyOption(options, 'hide', true) as string
+        if (!link || link.ended) return
+        deps.alive()
+        // Fire and forget like post: main releases that copy in its own view only (a guest's hide holds for
+        // every view of that guest) and refuses a copy that is not this overlay's.
+        send('overlay.hide', { pluginId, handle: link.handle, copy })
       },
       close: (): void => {
         if (!link || link.ended) return
@@ -668,13 +952,13 @@ export function createUiApi(
         deps.alive()
         send('overlay.focus', { pluginId, handle: link.handle })
       },
-      onButton: (id: string, handler: () => unknown): Disposer => {
+      onButton: (id: string, handler: (from: ViewFrom) => unknown): Disposer => {
         if (typeof id !== 'string' || typeof handler !== 'function') throw new TypeError('overlay onButton needs an id and a function')
         const current = link
         if (!current || current.ended) return () => {}
         deps.alive()
-        const entry = (): unknown => handler()
-        const set = current.buttonHandlers.get(id) ?? new Set()
+        const entry: FromHandler = (from) => handler(from)
+        const set = current.buttonHandlers.get(id) ?? new Set<FromHandler>()
         set.add(entry)
         current.buttonHandlers.set(id, set)
         return () => {
@@ -688,7 +972,17 @@ export function createUiApi(
         deps.alive()
         // Fire and forget like post; main checks the list again and applies it to this plugin's
         // overlay of this handle only (held until the overlay exists). The port keeps order.
-        send('overlay.setButtons', { pluginId, handle: link.handle, buttons: clean })
+        send('overlay.setButtons', { pluginId, handle: link.handle, buttons: clean, ...viaNow() })
+      },
+      // Any kind (a terminal overlay has a title too). Checked at the call site; main keeps only this host's plugins.
+      addSources: (pluginIds: readonly string[]): void => {
+        if (!Array.isArray(pluginIds)) throw new TypeError('overlay addSources needs an array of plugin ids')
+        const ids = cleanSources(pluginIds, deps.isHostPlugin)
+        if (!link || link.ended || ids.length === 0) return
+        deps.alive()
+        // Fire and forget like post, and on the same port before it: a post after this call reaches main
+        // after the sources grew, so the content it carries never reaches a guest who may not see them.
+        send('overlay.addSources', { pluginId, handle: link.handle, ids })
       },
       setDiscussPrimary: (on: boolean): void => {
         if (typeof on !== 'boolean') throw new TypeError('setDiscussPrimary needs a boolean')
@@ -697,12 +991,12 @@ export function createUiApi(
         // Fire and forget like setButtons; held in main until the overlay exists.
         send('overlay.discussPrimary', { pluginId, handle: link.handle, on })
       },
-      onDiscuss: (handler: () => unknown): Disposer => {
+      onDiscuss: (handler: (from: ViewFrom) => Promise<{ text: string } | null> | { text: string } | null): Disposer => {
         if (typeof handler !== 'function') throw new TypeError('overlay onDiscuss needs a function')
         const current = link
         if (!current || current.ended) return () => {}
         deps.alive()
-        const entry = (): unknown => handler()
+        const entry: FromHandler = (from) => handler(from)
         // Main shows Discuss on an untyped overlay only while it has a handler: told on the first
         // one and when the last goes (fire and forget, held in main until the overlay exists).
         const first = current.discussHandlers.size === 0
@@ -713,7 +1007,8 @@ export function createUiApi(
           if (current.discussHandlers.size === 0) send('overlay.discussable', { pluginId, handle: current.handle, on: false })
         }
       }
-    })
+    }
+    return Object.freeze(handle)
   }
 
   return {

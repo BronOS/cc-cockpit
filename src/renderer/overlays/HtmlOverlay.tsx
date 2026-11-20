@@ -4,9 +4,10 @@ import { isPlainObject } from '../../shared/guards'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { isPluginPage, overlayMessageOf, overlayResultOf } from '../plugins/frame-messages'
 import { frameTarget, PluginFrame } from '../plugins/PluginFrame'
-import { isWebShell } from '../shell-kind'
+import { isWebShell, viewAccessHint } from '../shell-kind'
 import { shellPageUrl } from '../web/page-paths'
 import { FrameLoads } from '../web/port-relay'
+import { CopyLine, type CopyLineState } from './overlay-copies'
 
 /** Hands an inline page its MessagePort (transferred alongside); it has no SDK. */
 const INLINE_PORT_MESSAGE = Object.freeze({ type: 'cc-overlay.port' })
@@ -77,9 +78,142 @@ export function HtmlOverlay(props: {
   overlayId: string
   title: string
   src: string
+  /**
+   * The overlay is `perView` (OverlayInfo.perView): this view loads its own copy (CopyOverlay). Only a plugin's
+   * page can be one (a plugin opens html overlays from its own files).
+   */
+  perView?: boolean
+  /** perView: this view's copy's loader or final refusal changed (OverlayStack draws them). */
+  onCopyState?: (state: CopyLineState) => void
+  /** perView: main hid this view's copy; the overlay leaves this view's stack. */
+  onHidden?: () => void
 }): React.JSX.Element {
-  if (isPluginPage(props.src)) return <PluginOverlay {...props} />
-  return <InlineOverlay {...props} />
+  const { perView, onCopyState, onHidden, ...page } = props
+  if (isPluginPage(props.src)) {
+    if (perView === true) return <CopyOverlay {...page} onCopyState={onCopyState} onHidden={onHidden} />
+    return <PluginOverlay {...page} />
+  }
+  return <InlineOverlay {...page} />
+}
+
+/**
+ * This view's copy of a `perView` plugin overlay (docs/design-overlay-views.md §5; the lifecycle is CopyLine's,
+ * overlay-copies.ts): every load of the frame connects a new copy, every page call names it, main's events for
+ * this overlay are routed by copy, and `overlays.reload` loads the page again (a new frame element, so a new
+ * load and a new copy). The page's `{ result }` follows this view's access (resultActionOf).
+ */
+function CopyOverlay(props: {
+  overlayId: string
+  title: string
+  src: string
+  onCopyState?: ((state: CopyLineState) => void) | undefined
+  onHidden?: (() => void) | undefined
+}): React.JSX.Element {
+  const { overlayId } = props
+  /** The frame element's generation: a reload asked by main is a new element (a new load, a new copy). */
+  const [generation, setGeneration] = useState(0)
+  /** One answer per overlay, whatever pages it loads. */
+  const answered = useRef(false)
+  const onCopyState = useRef(props.onCopyState)
+  const onHidden = useRef(props.onHidden)
+  useEffect(() => {
+    onCopyState.current = props.onCopyState
+    onHidden.current = props.onHidden
+  })
+  /**
+   * This view's copy line (CopyLine), made in a layout effect so it exists before the frame's first load can fire
+   * (the frame's own loads are set up in its layout effect, the load event comes later); read only from callbacks.
+   */
+  const line = useRef<CopyLine | null>(null)
+  useLayoutEffect(() => {
+    const current = new CopyLine({
+      access: viewAccessHint(),
+      ready: async () => window.cockpit.invoke('overlays.ready', { overlayId }),
+      loaded: (copy) => {
+        window.cockpit.invoke('overlays.loaded', { overlayId, copy }).catch(() => {})
+      },
+      message: (copy, message) => {
+        window.cockpit.invoke('overlays.message', { overlayId, message, copy }).catch((err: unknown) => {
+          console.warn('overlay message refused', err)
+        })
+      },
+      release: (copy) => {
+        window.cockpit.invoke('overlays.release', { overlayId, copy }).catch(() => {})
+      },
+      hide: () => {
+        window.cockpit.invoke('overlays.release', { overlayId, hide: true }).catch((err: unknown) => console.warn('overlay hide failed', err))
+      },
+      close: () => {
+        window.cockpit.invoke('overlays.close', { overlayId }).catch(() => {})
+      },
+      result: async (copy, value) => window.cockpit.invoke('overlays.result', { overlayId, value, copy }),
+      reload: () => setGeneration((g) => g + 1),
+      hidden: () => onHidden.current?.(),
+      state: (state) => onCopyState.current?.(state),
+      log: (message) => console.warn(message)
+    })
+    line.current = current
+    // main's events for this overlay, routed by copy (a replaced copy's late ones reach nobody).
+    const offMessage = window.cockpit.on('overlays.message', ({ overlayId: id, message, copy }) => {
+      if (id !== overlayId || typeof message !== 'string' || typeof copy !== 'string') return
+      current.fromMain(copy, message)
+    })
+    const offHide = window.cockpit.on('overlays.hide', ({ overlayId: id, copy }) => {
+      if (id === overlayId && typeof copy === 'string') current.mainHide(copy)
+    })
+    const offReload = window.cockpit.on('overlays.reload', ({ overlayId: id, copy }) => {
+      if (id === overlayId && typeof copy === 'string') current.mainReload(copy)
+    })
+    return () => {
+      offMessage()
+      offHide()
+      offReload()
+      if (line.current === current) line.current = null
+    }
+  }, [overlayId])
+
+  return (
+    <PluginFrame
+      key={generation}
+      src={props.src}
+      title={props.title}
+      className="overlay-html"
+      allowPopups
+      localPort
+      onPageMessage={(data) => {
+        // `early`: said before the page had its port; CopyLine waits for the SDK's repeat at the port (that load's).
+        if (typeOf(data) === READY_MESSAGE) line.current?.pageDrawn((data as { early?: unknown }).early === true)
+      }}
+      connect={(deliver) => {
+        const ch = new MessageChannel()
+        ch.port1.onmessage = (event: MessageEvent<unknown>) => {
+          if (answered.current) return
+          const answer = overlayResultOf(event.data)
+          if (answer) {
+            if (!line.current) return
+            answered.current = true
+            line.current.pageResult(answer.value, () => {
+              answered.current = false
+            })
+            return
+          }
+          const text = overlayMessageOf(event.data)
+          if (text === undefined) {
+            console.warn(`overlay message dropped: not JSON, or over ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
+            return
+          }
+          line.current?.fromPage(text)
+        }
+        deliver(ch.port2)
+        // Asks main for this load's copy; the returned end lets it go (a plain release) when the load ends.
+        const end = line.current?.attach({ post: (text) => ch.port1.postMessage(text) })
+        return () => {
+          end?.()
+          ch.port1.close()
+        }
+      }}
+    />
+  )
 }
 
 function PluginOverlay(props: { overlayId: string; title: string; src: string }): React.JSX.Element {
