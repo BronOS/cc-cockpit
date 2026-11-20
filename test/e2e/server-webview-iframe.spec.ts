@@ -7,14 +7,12 @@
 //
 // The fixture: a top page on http://127.0.0.1:<p1> holding an iframe on http://localhost:<p2>, two
 // sites, so with site isolation the iframe is its own renderer process (each case checks the two
-// frames' pids differ before any input). Each document logs its trusted presses and releases and the
-// buttons of its last move; the cases read the documents through main (`executeJavaScript` on each
-// frame of the off-screen page), never by pixels, and only read: focus and carets come from the
+// frames' pids differ before any input). Each document logs its trusted presses and releases; the
+// cases read the documents through main (`executeJavaScript` on each frame of the off-screen page),
+// never by pixels, and change nothing there but clearing a log: focus and carets come from the
 // clicks and keys under test.
-import { writeFileSync } from 'node:fs'
 import { createServer, type Server as HttpServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { join } from 'node:path'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import { expectMainAlive, launchServer, type Server } from './server-fixtures'
@@ -35,15 +33,14 @@ test.afterEach(async () => {
 })
 
 /** What every document runs: its log, its state, one field `#i` at its top left. */
-const DOC_SCRIPT = `window.__log = []; window.__move = -1
+const DOC_SCRIPT = `window.__log = []
 for (const t of ['mousedown', 'mouseup']) document.addEventListener(t, (e) => { if (e.isTrusted) __log.push(t + ':' + (e.target.id || e.target.tagName)) }, true)
-document.addEventListener('mousemove', (e) => { if (e.isTrusted) __move = e.buttons }, true)
 const rect = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height } }
 const i = document.getElementById('i')
 window.__state = () => ({ ready: document.readyState, value: i.value, sel: [i.selectionStart, i.selectionEnd],
   active: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : null,
-  input: rect(i), frame: rect(document.getElementById('A')), log: __log.slice(), move: __move })
-window.__clear = () => { __log.length = 0; __move = -1 }`
+  input: rect(i), frame: rect(document.getElementById('A')), log: __log.slice() })
+window.__clear = () => { __log.length = 0 }`
 
 const STYLE = `html,body{margin:0;height:100%}
 input{position:absolute;left:10px;top:10px;width:180px;height:30px;margin:0;font:16px monospace}
@@ -74,7 +71,6 @@ interface DocState {
   input: Rect
   frame: Rect | null
   log: string[]
-  move: number
 }
 type Role = 'top' | 'frame'
 
@@ -147,8 +143,6 @@ async function openFixture(): Promise<Fixture> {
   const topPort = await serve(() => topPage(`http://localhost:${framePort}/?role=frame`))
   server = await launchServer({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
   const s = server
-  // The fake claude needs a project file to start in; the page itself is on the http servers.
-  writeFileSync(join(s.cockpit.projectDir, 'readme.txt'), 'iframe input\n')
   await expect
     .poll(async () => (await s.cockpit.hook<HostStatus>('hostStatus', s.cockpit.projectDir)).plugins.find((p) => p.id === 'cockpit.browser')?.state, {
       timeout: 20_000
@@ -182,6 +176,8 @@ async function openFixture(): Promise<Fixture> {
   const top = await state('top')
   const frame = await state('frame')
   // Site isolation: the localhost iframe is out of process (else the router's frame road is untested).
+  expect(top.pid).toBeGreaterThan(0)
+  expect(frame.pid).toBeGreaterThan(0)
   expect(frame.pid, `top pid ${top.pid}, iframe pid ${frame.pid}`).not.toBe(top.pid)
 
   const layer = await section.locator('.webview-input').boundingBox()
@@ -238,11 +234,17 @@ test('server mode, cross-site iframe: a drag that starts inside it and ends outs
   const kinds = async (role: Role): Promise<string[]> => (await f.state(role)).log.map((l) => l.split(':')[0]!)
   await expect.poll(() => kinds('frame'), { timeout: 10_000 }).toEqual(['mousedown', 'mouseup'])
   expect((await f.state('top')).log, 'the top page got no press or release').toEqual([])
-  // No button left down in the iframe: a plain move over it reports none held.
-  await docState(server!, await pageId(server!), 'frame', '__clear()')
-  await f.page.mouse.move(start.x + 10, start.y)
-  await f.page.mouse.move(start.x + 20, start.y)
-  await expect.poll(async () => (await f.state('frame')).move, { timeout: 10_000 }).toBe(0)
+  // Nothing left held in the iframe: a click on the top field and typing go to the top page (a
+  // capture the iframe kept would take the press there), and the iframe sees none of it.
+  const id = await pageId(server!)
+  await docState(server!, id, 'frame', '__clear()')
+  await docState(server!, id, 'top', '__clear()')
+  const inTop = await f.fieldPoint('top')
+  await f.page.mouse.click(inTop.x, inTop.y)
+  await f.page.keyboard.type('after')
+  await expectValues(f, 'after', '')
+  expect((await f.state('top')).log).toEqual(['mousedown:i', 'mouseup:i'])
+  expect((await f.state('frame')).log).toEqual([])
   await expectMainAlive(server!)
 })
 
@@ -252,19 +254,9 @@ test('server mode, cross-site iframe: Tab from the top field moves into its fiel
   const p = await f.fieldPoint('top')
   await f.page.mouse.click(p.x, p.y)
   await expect.poll(async () => (await f.state('top')).active, { timeout: 10_000 }).toBe('i')
-  // One Tab should do (the iframe's field is the next focusable); a few allowed, each awaited.
-  let reached = false
-  for (let n = 0; n < 4 && !reached; n++) {
-    await f.page.keyboard.press('Tab')
-    reached = await expect
-      .poll(async () => (await f.state('frame')).active, { timeout: 2_000 })
-      .toBe('i')
-      .then(
-        () => true,
-        () => false
-      )
-  }
-  expect(reached, 'Tab never focused the iframe field').toBe(true)
+  // One Tab: the iframe's field is the next focusable after the top field.
+  await f.page.keyboard.press('Tab')
+  await expect.poll(async () => (await f.state('frame')).active, { timeout: 10_000 }).toBe('i')
   // The browser's focus stays on the panel's textarea (Tab went to the page, not the shell).
   await expect(f.textbox).toBeFocused()
   await f.page.keyboard.type('tabbed')
