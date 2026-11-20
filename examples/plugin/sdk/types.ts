@@ -1435,6 +1435,18 @@ export interface PluginContext {
    * normalized (`new URL(url).href`) before it is opened. Resolves once the app handed it to the
    * system; whether a browser then showed it is not reported. Use it on a person's click, not
    * unasked: a page opening by itself takes them out of what they were doing.
+   *
+   * Which screen: without `options.view`, where the call came from as the app knows it (a listener
+   * handling a browser view's page message opens there while it runs, at most 10 s; past that, or
+   * from a timer, the desktop's browser, or in server mode every browser view of the window).
+   * With `options.view`, that view alone: pass the `from.view` of the message, click or connect you
+   * are answering. A browser view (the owner's or a guest's) gets the link as its own clickable link;
+   * a guest's view only while the guest is still in and the plugin is shown to guests. A view that
+   * is gone, unknown, of another window, or a guest's the plugin may not reach rejects, and the link
+   * then opens nowhere, never in the desktop's browser instead. The desktop page has no view id:
+   * `from.view` is absent for it, so pass `{ view: from.view }` as is (undefined is the same as no
+   * `view`) and a desktop click opens the desktop's browser as before. Any other non-string, `null`
+   * or `''` rejects. The server's own page in server mode is never a target.
    */
   openExternal(url: string, options?: { view?: string }): Promise<void>
 }

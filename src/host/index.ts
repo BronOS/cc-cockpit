@@ -57,7 +57,8 @@
 //   overlay.setButtons { pluginId, handle, buttons } (the opener's buttons, checked again in main),
 //   overlay.discussable { pluginId, handle, on } (the handle has an onDiscuss handler: Discuss shows),
 //   files.open { pluginId, path, tabId? } -> { via } (ctx.files.open; main routes it like a click),
-//   openExternal { pluginId, url } -> null (ctx.openExternal; main checks the URL and opens the browser)
+//   openExternal { pluginId, url, view? } -> null (ctx.openExternal; main checks the URL and opens the browser, or
+//   only in `view` when named: a `from.view` id, checked in main)
 // Events to main:
 //   log        { pluginId, level, text }      a ctx.log line
 //   status     { pluginId, error: string|null }  a scheduled job started or stopped failing (the ⚠)

@@ -2017,8 +2017,11 @@ function start(server: boolean): void {
       // `requestedBy`: the plugin HostApi checked the request for, the taker's provenance (never a payload's).
       openFile: (caller, path, tabId, view, requestedBy) => routeProjectFile(openFileRoute, caller, path, tabId, view, requestedBy),
       // ctx.openExternal: HostApi checked the URL (shared/web-url.ts) and the plugin's budget, and
-      // names its own window and the view main knows the plugin acted for.
+      // names its own window and the view main knows the plugin acted for (or the one it named, checked).
       openExternal,
+      // ctx.openExternal `{ view }` to a guest's view: only while the plugin is shown to guests, read live.
+      // `guestStore` is defined below; this runs only once a host exists.
+      guestPluginVisible: (projectId, pluginId) => guestStore.pluginVisible(projectId, pluginId),
       // ctx.files.reveal / openWithSystem / trash: HostApi checked the plugin and its budget and
       // passes its own scope as the caller; SystemFiles checks the path (files/system-files.ts).
       systemFiles,

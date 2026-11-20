@@ -282,13 +282,27 @@ External review: sol / high
 - Modify: `src/main/external/open-external.ts`, `src/main/plugins/host-api.ts`, `src/host/ctx/` (openExternal)
 - Modify: `test/unit/open-external.test.ts`, `test/unit/host-api.test.ts`
 
-- [ ] `ctx.openExternal(url, { view })`: main routes to that view only (a browser view gets it as its own link open;
+- [x] `ctx.openExternal(url, { view })`: main routes to that view only (a browser view gets it as its own link open;
   the system opener only when `view` is the desktop); a gone view or a guest's view never falls back to the system
   opener: refused with a clear error
-- [ ] without `view`, today's behaviour (the origin-view hint) unchanged
-- [ ] tests: desktop view opens with the system opener; owner browser view and guest view get the view-only open; a
+- [x] without `view`, today's behaviour (the origin-view hint) unchanged
+- [x] tests: desktop view opens with the system opener; owner browser view and guest view get the view-only open; a
   gone view and an expired hint with `view` set are refused, never the system opener
-- [ ] run tests - must pass before task 7
+- [x] run tests - must pass before task 7
+- ⚠️ the desktop page has no id a plugin gets (shared/views.ts: only `web:n` travels through a host), so a plugin
+  names the desktop by omitting `view`: `{ view: from.view }` with `from.view` absent (or `undefined`) is today's
+  request, the origin hint deciding (the desktop's system browser when no browser view is behind the call). `null`,
+  `''` and any non-`web:n` value reject (host TypeError, main again). The adapter's `addressed` target can name
+  `desktop:<own window>` (the system opener on the desktop, refused in server mode: the hidden page has no screen),
+  but HostApi never builds one from a plugin.
+- ⚠️ `{ view }` is an address, not the hint: HostApi `linkView` checks `web:n`, this window (`viewWindow`), then
+  `viewAccess` live (owner; a guest of this project only while `guestPluginVisible`, the new dep wired to
+  `GuestStore.pluginVisible`; revoked, another project's guest or an unwired lookup: refused) before the budget; the
+  adapter (`OpenTarget.addressed`) sends `{ url, to }` to that view alone or throws `VIEW_GONE_TEXT`, in both modes
+  (an unaddressed gone view on the desktop still resolves silently, as before). The URL check runs first on every route.
+- ⚠️ Task 10 / 12: the Reviewer's mail links and `open-url` / `open-link` pass `{ view: from.view }`; the guide
+  (`api.md` ctx.openExternal) gets the text of the `openExternal` JSDoc in `src/sdk/types.ts` (already copied to
+  `examples/plugin/sdk/types.ts`).
 
 ### Task 7: Host overlay handle for perView plugins [model: opus]
 

@@ -119,10 +119,14 @@
 //                                                                'plugin' or 'builtin'); no manifest declaration.
 //                                                                The taker's open event carries `requestedBy`:
 //                                                                the plugin this request was checked for
-//   openExternal    { pluginId, url }          -> null           the system browser on an http(s) link
+//   openExternal    { pluginId, url, view? }   -> null           the system browser on an http(s) link
 //                                                                (shared/web-url.ts checkWebUrl: no other
 //                                                                scheme, no user:pass@, 2048 chars); the
-//                                                                normalized href is what is opened
+//                                                                normalized href is what is opened. `view`
+//                                                                (a `from.view` id): that view only, a
+//                                                                live view of THIS window (a guest's only
+//                                                                while live and shown the plugin), else
+//                                                                refused; never the system opener
 //   files.reveal    { pluginId, path }         -> null           a project file or folder ('' the project
 //   files.openWithSystem { pluginId, path }    -> null            folder, reveal only) handed to the system:
 //   files.trash     { pluginId, path }         -> { trashed }     main/files/system-files.ts checks the path
@@ -152,8 +156,9 @@
 // Every request may carry the remote view it acts for (rpc.ts `view`, host/ctx/origin-view.ts): used
 // by sessions.focus (select in that view), panels.show (reveal there), overlay.open (an html page
 // opens in that view, design-web.md §5.4), files.open and sessions.openFile (handed on to the plugin
-// that opens the file), openExternal (a link notice there) and the desktop-only calls (refused),
-// and only when it is a live view of this host's own window (originOf); otherwise ignored.
+// that opens the file), openExternal without `view` (a link notice there) and the desktop-only calls
+// (refused), and only when it is a live view of this host's own window (originOf); otherwise ignored.
+// openExternal's own `view` field is an address, not this hint: checked strictly and refused, never ignored.
 // events main pushes to the host:
 //   sessions        { sessions: SessionInfo[] }                  this project's tabs changed (throttled)
 //   sessions.all    { sessions: SessionSummary[] }               any window's Claude tab changed (throttled;
@@ -248,7 +253,7 @@
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import { MAX_RPC_MESSAGE_LENGTH, type RpcHandler, type RpcMeta } from '../../host/rpc'
-import { isRemoteViewId, type ViewAccess, type ViewId } from '../../shared/views'
+import { isRemoteViewId, viewIdOf, type ViewAccess, type ViewId } from '../../shared/views'
 import type { GuestAccess } from '../../shared/guests'
 import { DOWNLOAD_PLUGIN_MAX, DOWNLOAD_PLUGIN_WINDOW_MS } from '../../shared/downloads'
 import { DOWNLOAD_DESKTOP_TEXT, DOWNLOAD_NO_ORIGIN_TEXT } from '../files/downloads'
@@ -698,9 +703,16 @@ export interface HostApiDeps {
    * ctx.openExternal: hand an already checked http(s) URL to the openExternal adapter
    * (external/open-external.ts) for this host's window and the view the plugin acted for: the system
    * browser on the desktop, a clickable notice in a browser view, never the host's browser in server
-   * mode. Without it openExternal is refused.
+   * mode. Without it openExternal is refused. `target.addressed`: the plugin named the view (`{ view }`,
+   * checked here first), so the adapter sends to that view alone or refuses.
    */
   openExternal?(url: string, target: OpenTarget): Promise<void>
+  /**
+   * GuestStore.pluginVisible: whether guests of `projectId` are shown `pluginId` now (read live). Asked
+   * before a plugin's link goes to a guest's view (ctx.openExternal `{ view }`); without it every guest
+   * view is refused (fail closed).
+   */
+  guestPluginVisible?(projectId: string, pluginId: string): boolean
   /**
    * main's server flag (server-mode.ts): true refuses ctx.files.reveal and openWithSystem whatever
    * started the call, and lets ctx.oauth.authorize run for a browser view (design-web.md §9.9).
@@ -2174,10 +2186,12 @@ export class HostApi {
    */
   private async openExternal(params: unknown, meta?: RpcMeta): Promise<null> {
     this.alive()
-    const { pluginId, url } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, url, view } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'openExternal')
     const href = checkWebUrl(url, { method: 'openExternal', maxLength: MAX_PLUGIN_URL_LENGTH, noUserinfo: true })
     if (!this.deps.openExternal) throw new Error('openExternal: opening links is not available')
+    // Before the budget: a refused view opens nothing, so it costs nothing.
+    const named = view === undefined ? undefined : this.linkView(plugin.id, view)
     if (!this.externalOpens.take(plugin.id)) {
       throw new Error(
         `openExternal: more than ${MAX_EXTERNAL_OPENS_PER_WINDOW} links in ${EXTERNAL_OPEN_WINDOW_MS / 1000} s; try again in a moment`
@@ -2186,12 +2200,40 @@ export class HostApi {
     // This host's window and the view main knows the plugin acted for (originOf), never anything the
     // plugin sent: the adapter gives a browser view's click a clickable notice there (design-web.md
     // §6.1) and, in server mode, never opens the host's browser. Same budget either way.
+    // A named view (linkView) replaces the hint: the adapter sends there alone or refuses (addressed).
+    const target: OpenTarget =
+      named === undefined
+        ? { windowId: this.scope.windowId, viewId: this.originOf(meta) }
+        : { windowId: this.scope.windowId, viewId: named, addressed: true }
     try {
-      await this.deps.openExternal(href, { windowId: this.scope.windowId, viewId: this.originOf(meta) })
+      await this.deps.openExternal(href, target)
     } catch (err) {
       throw withMethod('openExternal', err)
     }
     return null
+  }
+
+  /**
+   * ctx.openExternal's `{ view }` (docs/design-overlay-views.md §3): the view the plugin names, an address, so
+   * unlike originOf nothing degrades to "no view" (that would be the owner's system browser). A remote view id
+   * main minted (the `from.view` the plugin got), a live view of THIS host's window, and someone the plugin may
+   * reach: the owner, or a guest of this project, live, to whom the plugin is shown (read live, never cached).
+   * Anything else throws. The desktop page is never named: it has no id a plugin gets (shared/views.ts), so
+   * `{ view }` omitted is how a plugin answers it. Plugins sharing a host can name each other (the boundary is
+   * the project, the header says why); the visibility asked is the named plugin's.
+   */
+  private linkView(pluginId: string, raw: unknown): ViewId {
+    const view = viewIdOf(raw)
+    if (view === undefined) throw new Error("openExternal: view must be a browser view's id (from.view); omit it for the desktop")
+    if (this.deps.viewWindow?.(view) !== this.scope.windowId) throw new Error('openExternal: that view is gone, or is not one of this window')
+    const access = this.deps.viewAccess?.(view)
+    if (access?.kind === 'owner') return view
+    if (access?.kind === 'guest' && access.projectId === this.scope.projectId) {
+      if (this.deps.guestPluginVisible?.(this.scope.projectId, pluginId) === true) return view
+      throw new Error("openExternal: this plugin is not shown to that view's guest")
+    }
+    // Revoked, another project's guest, or no lookup wired: nobody (never the owner by default).
+    throw new Error('openExternal: that view is gone, or is not one of this window')
   }
 
   /**

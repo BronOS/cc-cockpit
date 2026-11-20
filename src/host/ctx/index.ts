@@ -387,11 +387,21 @@ export class HostContexts {
     // The host has no display or D-Bus env (host-manager.ts hostEnv), so `xdg-open` from ctx.exec
     // fails on Linux; main is where links leave the app. Only the shape is checked here, so a
     // mistake rejects at the call site without a round trip; main checks the URL itself again.
-    const openExternal = (url: string): Promise<void> =>
+    // `options.view` (docs/design-overlay-views.md §3): a `from.view` id, sent as its own field (an
+    // address main checks strictly, unlike the origin-view hint the RPC carries); absent or undefined
+    // sends exactly today's request. Anything else that is not a view id rejects here, never "no view".
+    const openExternal = (url: string, options?: { view?: string }): Promise<void> =>
       guardAsync(async () => {
         if (typeof url !== 'string' || url === '') throw new TypeError('openExternal needs a URL string')
         if (url.length > MAX_PLUGIN_URL_LENGTH) throw new TypeError(`openExternal: url is over ${MAX_PLUGIN_URL_LENGTH} characters`)
-        await call('openExternal', { pluginId: spec.id, url })
+        if (options !== undefined && (typeof options !== 'object' || options === null)) {
+          throw new TypeError('openExternal: options must be an object')
+        }
+        const view: unknown = options?.view
+        if (view !== undefined && viewIdOf(view) === undefined) {
+          throw new TypeError("openExternal: view must be a browser view's id (from.view); omit it for the desktop")
+        }
+        await call('openExternal', { pluginId: spec.id, url, ...(view !== undefined ? { view } : {}) })
       })
 
     const ui = createUiApi({

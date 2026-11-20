@@ -227,6 +227,26 @@ describe('ctx.notify and ctx.log', () => {
     await expect(ctx.openExternal('https://example.com')).rejects.toThrow('deactivated')
   })
 
+  // docs/design-overlay-views.md §3: `{ view }` is its own field (an address main checks), never the RPC's hint.
+  it('ctx.openExternal { view }: a view id goes as its own field, undefined sends today\'s request, anything else rejects here', async () => {
+    const { ctx, calls } = setup()
+    await ctx.openExternal('https://example.com/a', { view: 'web:3' })
+    await ctx.openExternal('https://example.com/a', { view: undefined })
+    await ctx.openExternal('https://example.com/a', {})
+    expect(calls).toEqual([
+      ['openExternal', { pluginId: 'a.one', url: 'https://example.com/a', view: 'web:3' }],
+      ['openExternal', { pluginId: 'a.one', url: 'https://example.com/a' }],
+      ['openExternal', { pluginId: 'a.one', url: 'https://example.com/a' }]
+    ])
+    for (const view of ['', 'desktop:1', 'web:0', 'web:x', null, 5, {}]) {
+      await expect(ctx.openExternal('https://example.com/a', { view } as never), String(view)).rejects.toThrow("browser view's id")
+    }
+    for (const options of [null, 'web:3', 5]) {
+      await expect(ctx.openExternal('https://example.com/a', options as never), String(options)).rejects.toThrow('options must be an object')
+    }
+    expect(calls).toHaveLength(3)
+  })
+
   it('sends log lines to main tagged with the plugin id and level', () => {
     const { ctx, logs } = setup()
     ctx.log.info('a', 1)
