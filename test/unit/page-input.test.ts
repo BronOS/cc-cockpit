@@ -2268,6 +2268,40 @@ describe("PageInputRouter: main's scripts (scriptAt, scriptIn, scriptInFocus)", 
     }
   })
 
+  // codex review 2026-11-20 (the fix's re-check): scriptIn's frame run had the same gap, so a choice
+  // made under the old attachment was reported as made under the new one.
+  it("scriptIn: a new attachment between the end of the frame's run and the answer drops it", async () => {
+    for (const how of ['reset', 'rendererGone'] as const) {
+      const s = setup()
+      const sc = scripts(s)
+      s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+      const hit = await s.router.scriptAt(20, 220, () => 'hit')
+      expect(hit?.value, how).toBe('A:hit')
+      sc.opts.hold.add('A Runtime.evaluate')
+      const result = s.router.scriptIn(hit!.frame, 'choose')
+      await s.flush()
+      // Two timers: the call's and the run's own deadline (set first: scriptIn starts its run as the
+      // call starts, before the pump sets the call's).
+      expect(s.timers.size, how).toBe(2)
+      const runTimer = Math.min(...s.timers.keys())
+      let ended = false
+      const timers = s.timers
+      const clear = timers.delete.bind(timers)
+      timers.delete = (h: number): boolean => {
+        const had = clear(h)
+        if (h === runTimer && !ended) {
+          ended = true
+          if (how === 'reset') s.router.reset()
+          else s.router.rendererGone()
+        }
+        return had
+      }
+      sc.release('A Runtime.evaluate')
+      await expect(result, how).resolves.toBeUndefined()
+      expect(ended, how).toBe(true)
+    }
+  })
+
   it('a script asked under an attachment that ended is rejected as dropped', async () => {
     const s = setup()
     const epoch = s.router.inputEpoch()

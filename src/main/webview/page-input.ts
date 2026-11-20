@@ -884,9 +884,14 @@ export class PageInputRouter implements ChildFrameObserver {
   scriptIn(frame: ScriptFrame, code: string, epoch?: number): Promise<unknown> {
     return this.script(async () => {
       if (frame === TOP_FRAME) return this.topScript(code)
+      const callEpoch = this.epoch
       const lane = this.scriptFrames.get(frame)
       if (!lane || !this.open(lane)) return undefined
-      return (await this.bounded((run) => this.evaluate(lane, code, run), STEP_TIMEOUT_MS))?.value
+      const ran = await this.bounded((run) => this.evaluate(lane, code, run), STEP_TIMEOUT_MS)
+      // A new attachment between the run's end and this continuation: the old page's answer is not
+      // the new one's (codex review 2026-11-20, as scriptAt's and scriptInFocus's checks).
+      if (!ran || callEpoch !== this.epoch) return undefined
+      return ran.value
     }, true, epoch)
   }
 
