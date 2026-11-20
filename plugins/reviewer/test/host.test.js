@@ -1901,10 +1901,11 @@ test('a prepared overlay is replayed: a copy up while loading gets the fill, a l
   assert.deepEqual(h.posts, [])
   await f.provided.reviewer.fail({ key: 'chat:1', message: 'down', retry: true })
   assert.deepEqual(h.posts, [{ type: 'failed', message: 'down', retry: true }])
-  assert.deepEqual(early, [{ type: 'failed', message: 'down', retry: false }])
+  // A guest's copy gets a fixed text, never the caller's words (they may name a host path, D-33).
+  assert.deepEqual(early, [{ type: 'failed', message: host.GUEST_ERRORS.failed, retry: false }])
   // After the failure a late copy gets the error page too, as its viewer may see it.
   assert.deepEqual(h.connect(OWNER_WEB), [{ type: 'failed', message: 'down', retry: true }])
-  assert.deepEqual(h.connect(WRITER), [{ type: 'failed', message: 'down', retry: false }])
+  assert.deepEqual(h.connect(WRITER), [{ type: 'failed', message: host.GUEST_ERRORS.failed, retry: false }])
   // Try again: the owner's only (from any of the owner's screens).
   h.sayAs(READER, { type: 'retry' })
   h.sayAs(WRITER, { type: 'retry' })
@@ -2093,6 +2094,71 @@ test('draft errors go to the copies that edit, and an owner copy that connects l
   assert.equal(h.posts.at(-1).type, 'draft-error')
   assert.ok(!h.inboxOf(READER.copy).some((m) => m.type.startsWith('draft')))
   assert.deepEqual(types(h.connect(OWNER_WEB)), ['init', 'draft-error'])
+  host.deactivate()
+})
+
+test('a storage error reaches a guest\'s copy as a fixed text with no host path, the owner\'s with the detail', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store } = storeFake(f)
+  // As the host's createStorage words a read-only store: the plugin's storage.json, absolute.
+  const file = path.join(f.ctx.projectDir, '.data', 'plugins', 'cockpit.reviewer', 'storage.json')
+  f.ctx.storage.set = async () => {
+    throw new Error(`storage is read-only: ${file} cannot be written (see the plugin log)`)
+  }
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  await wait(0)
+  const h = f.handles[0]
+  const ann = h.connect(WRITER)
+  h.sayAs(WRITER, { type: 'note-add', tag: '~0', note: lineNote('guest') })
+  await wait(SAVE_WAIT)
+  assert.equal(store.size, 0)
+  const errorsOf = (inbox) => inbox.filter((m) => m.type === 'draft-error' || m.type === 'error').map((m) => m.message)
+  assert.deepEqual(errorsOf(ann), [host.GUEST_ERRORS.draft])
+  assert.match(errorsOf(h.posts).at(-1), /^Draft not saved: storage is read-only: .*storage\.json cannot be written/)
+  assert.ok(errorsOf(h.posts).at(-1).includes(file), 'the owner keeps the detail')
+  // A copy that connects while the error stands is told the same way.
+  h.connect(OWNER_WEB)
+  assert.ok(errorsOf(h.inboxOf(OWNER_WEB.copy)).at(-1).includes(file))
+  h.disconnect(WRITER.copy)
+  const again = h.connect(WRITER)
+  assert.deepEqual(errorsOf(again).slice(-1), [host.GUEST_ERRORS.draft])
+  assertNoHostPath(errorsOf(ann).concat(errorsOf(again)), f.ctx.projectDir)
+  for (const s of errorsOf(ann).concat(errorsOf(again))) assert.ok(!s.includes(file) && !/\//.test(s), `a path in ${s}`)
+  host.deactivate()
+})
+
+test('an openExternal refusal reaches a guest\'s copy as a fixed text, the owner\'s with the detail', async () => {
+  const f = setup({ editorAvailable: false })
+  const file = path.join(f.ctx.projectDir, 'secret', 'thing')
+  f.ctx.openExternal = async () => {
+    throw new Error(`openExternal: refused ${file}`)
+  }
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await richAnnotation(f)
+  const h = f.handles[0]
+  const ann = h.connect(WRITER)
+  h.sayAs(WRITER, { type: 'open-url' })
+  h.sayAs(OWNER, { type: 'open-url' })
+  await wait(10)
+  assert.deepEqual(ann.filter((m) => m.type === 'error'), [{ type: 'error', message: host.GUEST_ERRORS.open }])
+  assert.equal(h.posts.filter((m) => m.type === 'error').at(-1).message, `Not opened in the browser: refused ${file}`)
+  host.deactivate()
+})
+
+test('a note added and deleted by its tag before the answer, edited meanwhile on another screen, is deleted at the host', async () => {
+  const { store, h } = await sharedReview()
+  const ann = h.connect(WRITER)
+  h.sayAs(OWNER, { type: 'note-add', tag: '~0', note: lineNote('oops') })
+  const id = lastOf(h.posts, 'note-added').note.id
+  // Ann edits the host's note before the owner's delete (sent by the tag) arrives.
+  h.sayAs(WRITER, { type: 'note-change', id, text: 'edited by Ann' })
+  h.sayAs(OWNER, { type: 'note-delete', tag: '~0' })
+  assert.deepEqual(lastOf(ann, 'note-deleted'), { type: 'note-deleted', id })
+  await wait(SAVE_WAIT)
+  assert.equal(store.has('draft:a.js'), false)
   host.deactivate()
 })
 
@@ -2428,18 +2494,29 @@ test('the owner\'s single screen: open, add notes, Discuss sends them and the de
   host.deactivate()
 })
 
-test('two screens asked Discuss: a delivery clears only what both snapshots sent', async () => {
-  const { store, h } = await sharedReview()
-  h.connect(OWNER_WEB)
-  h.say({ type: 'draft', draft: { global: 'g', notes: [{ id: 'a', ...lineNote('one') }] } })
-  await h.discussFn(OWNER)
-  // The other screen adds a note and asks too; the app's answer does not say which ask it sent.
-  h.sayAs(OWNER_WEB, { type: 'note-add', tag: '~0', note: lineNote('two') })
-  await h.discussFn(OWNER_WEB)
-  h.end({ kind: 'discussed', tabId: 't1', queued: false })
-  await wait(50)
-  assert.deepEqual(store.get('draft:a.js'), { global: '', notes: [{ id: lastOf(h.inboxOf(OWNER_WEB.copy), 'note-added').note.id, ...lineNote('two') }] })
-  host.deactivate()
+test('two screens asked Discuss: a delivery clears what the delivered ask sent, never narrowed by an abandoned ask', async () => {
+  for (const queued of [false, true]) {
+    const tab = { tabId: 't1', status: 'working', lastPrompt: 'earlier work' }
+    const changes = []
+    const { store, h } = await sharedReview({ sessions: { list: async () => [tab], onChange: (l) => (changes.push(l), () => {}) } })
+    h.connect(WRITER)
+    h.say({ type: 'draft', draft: { global: 'g', notes: [{ id: 'a', ...lineNote('one') }] } })
+    // The desktop's Discuss took the context, then its send failed (main asks one Discuss at a time).
+    await h.discussFn(OWNER)
+    // Ann adds a note and her Discuss sends both.
+    h.sayAs(WRITER, { type: 'note-add', tag: '~0', note: lineNote('two') })
+    const { text } = await h.discussFn(WRITER)
+    assert.match(text, /one[\s\S]*two/)
+    h.end({ kind: 'discussed', tabId: 't1', queued })
+    await wait(50)
+    if (queued) {
+      assert.equal(store.get('draft:a.js').notes.length, 2, 'kept until the tab takes it')
+      changes[0]([{ ...tab, lastPrompt: `About: Review: a.js\nFile: a.js\n\n${text}` }])
+      await wait(30)
+    }
+    assert.equal(store.size, 0, 'both notes and the comment reached Claude: nothing stays')
+    host.deactivate()
+  }
 })
 
 test('a queued or cut review keeps the draft as it is now, never the older snapshot; the queued delivery clears only what was sent', async () => {

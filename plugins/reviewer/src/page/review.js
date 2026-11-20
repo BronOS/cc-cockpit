@@ -83,7 +83,7 @@ import { markdownHtml, initialMarkdownView, markdownText } from './markdown.mjs'
 import { markHtmlLines, mdRangeLines, htmlRangeLines } from './html-lines.mjs'
 import { startBytes, formatSize } from './bytes.mjs'
 import { showPdfIn, pdfSelection, scrollToPage } from './pdf.js'
-import { tagOf, addOp, changeOp, deleteOp, ackAdd, dropTagged, draftSizeError, NoteSync, remapNoteId } from './note-ops.mjs'
+import { tagOf, addOp, changeOp, deleteOp, draftSizeError, NoteSync, remapNoteId } from './note-ops.mjs'
 
 /* global ccPanel */
 
@@ -1612,7 +1612,7 @@ function renderNotesKeepingFocus() {
 }
 
 function onNoteAdded(m) {
-  const r = ackAdd(state.draft.notes, m.tag, m.note)
+  const r = sync.added(state.draft.notes, m.tag, m.note)
   if (!r) return
   // The maps keyed by the note's id follow it from its tag to the host's id.
   focusedNote = remapNoteId(located, focusedNote, r.oldId, r.note.id)
@@ -1655,7 +1655,7 @@ function onDraftError(m) {
   saveState.hostError = typeof m.message === 'string' ? m.message : 'Draft not saved.'
   showSaveState()
   // An add the host refused: its note is not in the draft, so it goes here too.
-  if (typeof m.tag === 'string' && dropTagged(state.draft.notes, m.tag)) renderNotesKeepingFocus()
+  if (typeof m.tag === 'string' && sync.refused(state.draft.notes, m.tag)) renderNotesKeepingFocus()
 }
 
 // ---- init ----

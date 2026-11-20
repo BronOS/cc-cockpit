@@ -17,7 +17,8 @@
 //   (FEATURES), so a caller can tell;
 //   prepare({ key, title, type?, tabId? }) opens that overlay at once with a loader, for a caller that still fetches
 //   what it shows (the annotate with the same key fills it), and cancel({ key }) closes one never filled;
-//   fail({ key, message, retry? }) turns one never filled into an error page (Close, Try again);
+//   fail({ key, message, retry? }) turns one never filled into an error page (Close, Try again; a guest's
+//   copy shows a fixed text, never the message);
 //   for a mail (app 0.13.0): annotate's `kind: 'mail'` (the reading layout), `data-action` buttons in
 //   the document whose clicks are the service event `action` { key, id, caller }, and update({ key,
 //   assets?, hide?, status? }), which adds images to an open document without rendering it again;
@@ -62,7 +63,7 @@ const splitOk = (v) => typeof v === 'number' && Number.isFinite(v) && v >= SPLIT
 // 'original' (annotate's `originals` and `view`: the main document's parts as their sender made them,
 // each in a sandboxed frame, with an Original | Reader switch on the page told as the event `view`).
 // 'fail' (fail({ key, message, retry? }): a prepared loader whose fetch failed shows the error, with a
-// Try again told as the event `action`, instead of closing; app 0.13.2).
+// Try again told as the event `action`, instead of closing; app 0.13.2; a guest's copy gets a fixed text).
 // 'notes' (notes(path), addNote(path, note) and the event `notesChange`: the line notes of a file's review,
 // read and added from outside the overlay; the editor shows them in its gutter).
 // 'removeNotes' (removeNotes(path, [{ id, text }]): the notes a caller sent to Claude itself go, as a sent
@@ -164,6 +165,25 @@ function guestSides(sides) {
   return rest
 }
 exports.guestSides = guestSides
+
+// The fixed texts a guest's copy gets for an error (errorFor).
+const GUEST_ERRORS = Object.freeze({
+  draft: 'Draft not saved: it could not be stored. The last saved draft is kept.',
+  open: 'Not opened in the browser.',
+  failed: 'This could not be loaded.',
+})
+
+/**
+ * An error's text as the copy of `from` gets it: the owner the `detail`, a guest the fixed `plain` (one of
+ * GUEST_ERRORS). An Error's message is not the guest's to read: a read-only storage's names the absolute
+ * path of the plugin's `storage.json`, an openExternal refusal or a caller's fail message may carry any
+ * text (design-guests D-33: guest-visible text never carries a host path). Every error text that reaches a
+ * copy goes through here; the fixed texts that name nothing of the host (a note over its size cap, a link
+ * that is not the document's) need not. Exported for tests.
+ */
+const errorFor = (from, detail, plain) => (isOwner(from) ? detail : plain)
+exports.errorFor = errorFor
+exports.GUEST_ERRORS = GUEST_ERRORS
 exports.SPLIT_MIN = SPLIT_MIN
 exports.SPLIT_MAX = SPLIT_MAX
 exports.FEATURES = FEATURES
@@ -247,7 +267,8 @@ exports.activate = (ctx) => {
       if (page.sources.size) page.handle.addSources([...page.sources])
     }
     // The error page's Try again is the owner's alone (§6: `retry` re-asks the consumer, a service event).
-    const failedFor = (c) => ({ type: 'failed', message: page.failure.message, retry: page.failure.retry && isOwner(c.from) })
+    // Its message is the caller's words, which may name anything of its host: a guest gets a fixed text.
+    const failedFor = (c) => ({ type: 'failed', message: errorFor(c.from, page.failure.message, GUEST_ERRORS.failed), retry: page.failure.retry && isOwner(c.from) })
     /** A copy's starting state: nothing while loading (the page starts on its loader), else the phase's. */
     page.greet = (c) => {
       if (page.phase === 'loading') return
@@ -546,9 +567,9 @@ exports.activate = (ctx) => {
    * prompt before the send: the same review sent twice is not mistaken for this one's delivery. No
    * plugin API reports a queued item's fate, hence the prompt match.
    */
-  function watchQueued({ what, draftKey, path, tabId, texts, sentDraft, prevPrompt, kept }) {
-    // Each Discuss ask's text (two screens may each have asked): the delivered one is one of them.
-    const wants = texts.map(promptStart)
+  function watchQueued({ what, draftKey, path, tabId, text, sentDraft, prevPrompt, kept }) {
+    // The delivered Discuss ask's text (the one that started last: sentToClaude).
+    const want = promptStart(text)
     let over = false
     const end = () => {
       over = true
@@ -558,7 +579,7 @@ exports.activate = (ctx) => {
     const check = async (list) => {
       if (over) return
       const s = list.find((x) => x.tabId === tabId)
-      if (s && s.lastPrompt !== prevPrompt && wants.some((want) => promptText(s.lastPrompt).includes(want))) {
+      if (s && s.lastPrompt !== prevPrompt && promptText(s.lastPrompt).includes(want)) {
         end()
         // Only what was sent goes (by note id and text, the global note when unchanged): a note added since
         // (the editor's addNote works while the overlay is closed) or an edit from a reopened review stays.
@@ -923,16 +944,15 @@ exports.activate = (ctx) => {
     let failed = null // the draft whose write failed (retried once at close)
     // Discuss's waits for the editing copies to say all their ops are out (`draft-sync`).
     const draftWaiters = new Set()
-    // What the newest Discuss ask of each view handed the app: view -> { draft, text, cut, prompts, seq }
-    // (prompts: each tab's lastPrompt then, so a queued review's delivery is told from the prompt before
-    // it), the newest ask last. An ask whose send never happened (a refused send) is replaced by that
-    // view's next one; two screens that both asked leave two, and since the app's answer does not say
-    // which was sent, a delivery clears only what both sent. Whether it was cut and the prompt before it
-    // come from the delivered ask alone: main asks one Discuss at a time per overlay (`discussing`) and
-    // sends right after the answer, so the delivered text is the ask that started last (`seq`, taken at
-    // the call: an ask that timed out may still record after a newer one). A refused or older ask's `cut`
-    // must not mark an uncut delivered review as cut.
-    const asks = new Map()
+    // What the Discuss ask that started last handed the app: { draft, text, cut, prompts, seq } (prompts:
+    // each tab's lastPrompt then, so a queued review's delivery is told from the prompt before it). Main
+    // asks one Discuss at a time per overlay (`discussing`) and sends right after the answer, so the
+    // delivered text is the ask that started last, on whichever screen (`seq`, taken at the call: an ask
+    // that timed out may still record after a newer one, and is dropped). Everything a delivery does (what
+    // it clears, whether it was cut, the prompt before it) comes from that ask alone: an ask whose send never
+    // happened (refused after it took the context) must neither narrow what is cleared (a note added after
+    // it and sent by the newer ask stayed stored though Claude had it) nor mark the delivered review as cut.
+    let lastAsk = null
     let askSeq = 0
     // The copies that hold the draft (their init went out) and may change it: they get its save errors
     // and Discuss's sync asks. A read guest's copy sees the notes and nothing about saving them.
@@ -941,10 +961,12 @@ exports.activate = (ctx) => {
     // A note change to every other copy that holds the draft (never back to its sender: a late echo of an
     // older keystroke would overwrite what the person typed since).
     const toOthers = (msg, origin) => page.each(msg, (c) => c.inited && c !== origin)
-    const draftErrorText = () => `Draft not saved: ${saveError}. The last saved draft is kept.`
+    // `saveError` is the storage's own words (a read-only store's name the absolute path of storage.json):
+    // the owner's copies get them, a write guest's the fixed text (errorFor).
+    const draftErrorFor = (c) => ({ type: 'draft-error', message: errorFor(c.from, `Draft not saved: ${saveError}. The last saved draft is kept.`, GUEST_ERRORS.draft) })
     const showSaveError = (why) => {
       saveError = why
-      toEditors({ type: 'draft-error', message: draftErrorText() })
+      toEditors(draftErrorFor)
     }
     const write = (value) => (review.isEmpty(value) ? ctx.storage.delete(draftKey) : ctx.storage.set(draftKey, value))
     function flush() {
@@ -1081,7 +1103,9 @@ exports.activate = (ctx) => {
 
     /** Opens `url` on the device of the view that asked (§6: a guest's click opens on the guest's own screen). */
     const openOn = (url, from, c) =>
-      ctx.openExternal(url, { view: from.view }).catch((e) => page.postTo(c, { type: 'error', message: `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}` }))
+      ctx.openExternal(url, { view: from.view }).catch((e) =>
+        page.postTo(c, { type: 'error', message: errorFor(from, `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}`, GUEST_ERRORS.open) }),
+      )
 
     // What each page message does, by the access main filled in `from` (design-overlay-views §6's table).
     const onPageMessage = (m, from, c) => {
@@ -1165,7 +1189,7 @@ exports.activate = (ctx) => {
     // feedback 9): build() then asks Claude to discuss the file or the text. An owner's copy holding text
     // it could not send throws: the popover shows why and nothing is sent. The app adds `About:`, the
     // type line and the note.
-    handle.onDiscuss(async (from) => {
+    handle.onDiscuss(async () => {
       const seq = ++askSeq
       await syncCopies()
       // The shared draft as it is now (applyOp never changes a draft in place, so this snapshot stays
@@ -1178,10 +1202,7 @@ exports.activate = (ctx) => {
       } catch (e) {
         ctx.log.warn(`sessions.list: ${e.message}`)
       }
-      // An older app gives no `from`: its asks count as one view's.
-      const view = from && typeof from.view === 'string' ? from.view : ''
-      asks.delete(view)
-      asks.set(view, { draft: sent, text, cut, prompts, seq })
+      if (!lastAsk || seq > lastAsk.seq) lastAsk = { draft: sent, text, cut, prompts, seq }
       return { text }
     })
 
@@ -1199,7 +1220,7 @@ exports.activate = (ctx) => {
           page.postTo(c, { type: 'failed', message: `${what} is too large to show here (with its draft).`, retry: false })
           return
         }
-        if (saveError && canNote(c.from)) page.postTo(c, { type: 'draft-error', message: draftErrorText() })
+        if (saveError && canNote(c.from)) page.postTo(c, draftErrorFor(c))
       },
       message: onPageMessage,
     })
@@ -1250,17 +1271,16 @@ exports.activate = (ctx) => {
 
     /**
      * The app sent the review ({ kind: 'discussed', tabId, queued }): what it sent goes from the draft once
-     * all of it reached Claude, and only that (review.subtractSent: the notes unchanged since the snapshot,
-     * the comment if unchanged), so a note added or edited on another screen while the popover was up
+     * all of it reached Claude, and only that (review.subtractSent: the notes unchanged since the delivered
+     * ask's snapshot, never an abandoned ask's, the comment if unchanged), so a note added or edited on another screen while the popover was up
      * stays. A review cut to fit keeps the whole draft (deleting it lost the unsent part), and the person
      * is told; a queued one keeps it until the tab takes it (watchQueued). What is kept is the draft as it
      * is now, never the snapshot (which would write over the notes added since).
      */
     async function sentToClaude(res) {
-      const asked = [...asks.values()]
-      if (!asked.length) return // no context was asked for, so this is not the reviewer's text: keep the draft
-      const sent = review.commonSent(asked.map((a) => a.draft))
-      const delivered = asked.reduce((a, b) => (b.seq > a.seq ? b : a))
+      const delivered = lastAsk
+      if (!delivered) return // no context was asked for, so this is not the reviewer's text: keep the draft
+      const sent = review.cleanDraft(delivered.draft)
       if (delivered.cut) {
         ctx.notify(`Review of ${what} was too long and was cut at ${review.MAX_CONTEXT} characters. ${await keep(draft, 'The full draft is kept.')}`)
         return
@@ -1268,7 +1288,7 @@ exports.activate = (ctx) => {
       if (res.queued) {
         const KEPT = 'The draft is kept until Claude gets it.'
         const kept = await keep(draft, KEPT)
-        watchQueued({ what, draftKey, path: subject.path, tabId: res.tabId, texts: asked.map((a) => a.text), sentDraft: sent, prevPrompt: delivered.prompts.get(res.tabId), kept: kept === KEPT })
+        watchQueued({ what, draftKey, path: subject.path, tabId: res.tabId, text: delivered.text, sentDraft: sent, prevPrompt: delivered.prompts.get(res.tabId), kept: kept === KEPT })
         return
       }
       // All of it reached Claude: only now does what it sent go. A failed write only leaves it.
