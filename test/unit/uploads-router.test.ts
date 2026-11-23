@@ -350,7 +350,7 @@ describe('upload ids and the role after an await', () => {
   })
 })
 
-describe('uploads.paste: the gate only (the rule is the terminal entry\'s)', () => {
+describe('uploads.paste: the gate only (the rule is Uploads.paste, upload-paste.test.ts)', () => {
   it('is refused while main has no paste rule wired', async () => {
     const { router, web } = setup()
     await expect(router.dispatch(web(OWNER, 'owner'), 'uploads.paste', { uploadId: 'u' })).rejects.toThrow(/refused/)

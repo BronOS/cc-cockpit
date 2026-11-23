@@ -1113,6 +1113,12 @@ body.shell-dragging .page-tab-frame {
    axis only and is kept at the bottom and the cursor (terminal-session.ts). The other axis stays
    hidden: a scaled font's cell rounding can overshoot it by a pixel or two, which is no reason for a
    scrollbar. */
+/* A `Files` drag over a terminal that takes uploads (terminal-drop.ts, design-upload.md §4.1): the drop
+   lands in this pane. Inset, so a split's neighbour keeps its own edge. */
+.terminal-host.terminal-drop-target {
+  box-shadow: inset 0 0 0 2px var(--cc-accent);
+  background: color-mix(in srgb, var(--cc-accent) 10%, var(--cc-terminal-bg));
+}
 .terminal-host.terminal-crop-cols {
   overflow-x: auto;
 }

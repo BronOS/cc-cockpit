@@ -17,6 +17,7 @@ import { currentXtermTheme, onXtermTheme } from '../theme/theme-store'
 import { drawAt, type TermSize, usableSize } from './terminal-draw'
 import { loadTerminalFont, sameFont, xtermFontOptions } from './terminal-font'
 import { gateTerminalIo, implicitTakesAllowed, type TerminalIo } from './terminal-access'
+import { attachTerminalEntry, type DropContainer, type TerminalEntry } from './terminal-drop'
 
 function openLink(uri: string): void {
   window.cockpit.invoke('app.openExternal', { url: uri }).catch((err: unknown) => {
@@ -162,6 +163,8 @@ export class TerminalSession {
   private baseFontSize: number
   /** Loaded on main's first `tabs.screenAsk` for this terminal (answerScreen); most never get one. */
   private serializer: SerializeAddon | undefined
+  /** The uploads entry's listeners on the container (terminal-drop.ts), removed with the others. */
+  private offEntry: (() => void) | undefined
 
   constructor(
     tabId: string,
@@ -418,8 +421,12 @@ export class TerminalSession {
     if (!this.focusing && userActivated()) this.takeSize()
   }
 
-  /** Show the terminal in `container`; safe to call again with a new container (a remount). */
-  attach(container: HTMLElement): void {
+  /**
+   * Show the terminal in `container`; safe to call again with a new container (a remount). `entry`: this
+   * terminal takes uploads (a Claude or shell tab of the web shell, not a read view: TerminalView decides,
+   * terminal-drop.ts `takesUploads`); a drop then counts as a click on the pane, its select and its take.
+   */
+  attach(container: HTMLElement, entry?: TerminalEntry): void {
     if (this.disposed) return
     this.observer?.disconnect()
     this.removeContainerListeners()
@@ -431,6 +438,17 @@ export class TerminalSession {
     if (this.io.act) {
       container.addEventListener('keydown', this.onOwnAct, true)
       container.addEventListener('paste', this.onOwnAct, true)
+    }
+    // After the own-act listener (design-upload.md §4.1): a file paste stops on its way to xterm's
+    // textarea, but this element's earlier listener has run, so it still counts as the person's act.
+    if (entry) {
+      this.offEntry = attachTerminalEntry(container as unknown as DropContainer, {
+        tabId: entry.tabId,
+        select: () => {
+          entry.select()
+          this.onPointerDown()
+        }
+      })
     }
     this.term.textarea?.removeEventListener('focus', this.onTermFocus)
     this.term.textarea?.addEventListener('focus', this.onTermFocus)
@@ -445,6 +463,19 @@ export class TerminalSession {
     this.container?.removeEventListener('pointerdown', this.onPointerDown, true)
     this.container?.removeEventListener('keydown', this.onOwnAct, true)
     this.container?.removeEventListener('paste', this.onOwnAct, true)
+    this.offEntry?.()
+    this.offEntry = undefined
+  }
+
+  /**
+   * The upload's paths, pasted with xterm's own `paste` (design-upload.md §4.3): the program's
+   * bracketed-paste mode holds, and the text goes the person's own input path (`onData`, `tabs.input`,
+   * main's `viewInput`: the tab becomes typed). Never an Enter. False once disposed.
+   */
+  paste(text: string): boolean {
+    if (this.disposed) return false
+    this.term.paste(text)
+    return true
   }
 
   detach(): void {
@@ -718,6 +749,15 @@ export class SessionRegistry {
    * are not made yet (a tab just created with +, a split's new pane): get() hands each its take.
    */
   private readonly selectTakes = new Set<string>()
+
+  /**
+   * Pastes into `tabId`'s terminal (TerminalSession.paste) only when it has one here: never makes a
+   * session (a paste into a terminal nobody sees would go nowhere the person looks). False otherwise.
+   */
+  paste(tabId: string, text: string): boolean {
+    if (this.closed.has(tabId)) return false
+    return this.sessions.get(tabId)?.paste(text) ?? false
+  }
 
   /**
    * Main asks for a tab's screen (TerminalSession.answerScreen). A tab with no session here has

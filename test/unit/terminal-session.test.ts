@@ -23,6 +23,8 @@ vi.mock('@xterm/xterm', () => ({
     // What shared/terminal-screen.ts atGround reads: 0 is the parser's ground state.
     _core = { _inputHandler: { _parser: { currentState: 0 } } }
     readonly resizes: Array<[number, number]> = []
+    // What xterm's own `paste` was handed (the upload's paths, design-upload.md §4.3).
+    readonly pasted: string[] = []
     constructor(options: Record<string, unknown>) {
       this.options = { ...options }
     }
@@ -49,6 +51,9 @@ vi.mock('@xterm/xterm', () => ({
       this.resizes.push([cols, rows])
     }
     focus(): void {}
+    paste(text: string): void {
+      this.pasted.push(text)
+    }
     dispose(): void {}
   }
 }))
@@ -150,7 +155,7 @@ function laidOutPane(): HTMLElement {
     isConnected: true,
     parentElement: null,
     appendChild: () => undefined,
-    classList: { toggle: () => undefined, remove: () => undefined, contains: () => false }
+    classList: { add: () => undefined, toggle: () => undefined, remove: () => undefined, contains: () => false }
   }) as unknown as HTMLElement
 }
 
@@ -694,5 +699,86 @@ describe("a guest view's terminal", () => {
     expect(calls).toEqual(['resize 120x40'])
     container.dispatchEvent(new Event('keydown'))
     expect(calls).toEqual(['resize 120x40'])
+  })
+})
+
+// The terminal entry of uploads (design-upload.md §4.1, §4.3; terminal-drop.ts holds the rules): attached
+// only with an entry, after the own-act listener, so a write guest's file paste is still its act; the
+// paths go in through xterm's own `paste`, and the registry never makes a terminal to paste into.
+const drop = (await import('../../src/renderer/tabs/terminal-drop')) as {
+  onTerminalUpload(fn: (tabId: string, files: readonly unknown[], opts: unknown) => void): () => void
+}
+type EntrySession = Session & {
+  attach(container: HTMLElement, entry?: { tabId: string; select(): void }): void
+  detach(): void
+  paste(text: string): boolean
+}
+
+describe('the uploads entry on a terminal', () => {
+  afterEach(() => guestKind.resetShellKindForTest())
+
+  const filePaste = (): Event => {
+    const e = new Event('paste', { cancelable: true })
+    return Object.assign(e, { clipboardData: { types: ['Files'], files: [{ name: 'image.png', size: 1, type: 'image/png', slice: () => new Blob([]) }] } })
+  }
+
+  it("a write guest's file paste uploads and still counts as its act (the own-act listener runs first)", () => {
+    guestKind.markWebShell()
+    guestKind.setGuestHint({ id: 'g1', name: 'Ana', role: 'write', ownerName: 'Host' })
+    const calls: string[] = []
+    const off = drop.onTerminalUpload((tabId) => void calls.push(`upload ${tabId}`))
+    const io = gateTerminalIo({ input: (d) => void calls.push(`input ${d}`), ack: () => undefined, resize: (c, r) => void calls.push(`resize ${c}x${r}`) }, 'write')
+    const s = new TerminalSession('t1', io) as unknown as EntrySession
+    made.push(s)
+    const container = laidOutPane()
+    s.attach(container, { tabId: 't1', select: () => undefined })
+    const e = filePaste()
+    container.dispatchEvent(e)
+    off()
+    expect(calls).toEqual(['resize 120x40', 'upload t1'])
+    expect(e.defaultPrevented).toBe(true)
+  })
+
+  it('without an entry (a command tab, a read view, the desktop) a file paste is left to xterm', () => {
+    const calls: string[] = []
+    const off = drop.onTerminalUpload(() => void calls.push('upload'))
+    const { s, container } = session(false)
+    ;(s as unknown as EntrySession).attach(container)
+    const e = filePaste()
+    container.dispatchEvent(e)
+    off()
+    expect(calls).toEqual([])
+    expect(e.defaultPrevented).toBe(false)
+  })
+
+  it('a detach takes the entry off; a reattach without one leaves it off', () => {
+    const calls: string[] = []
+    const off = drop.onTerminalUpload(() => void calls.push('upload'))
+    const { s, container } = session(false)
+    const es = s as unknown as EntrySession
+    es.attach(container, { tabId: 't1', select: () => undefined })
+    container.dispatchEvent(filePaste())
+    expect(calls).toEqual(['upload'])
+    es.detach()
+    container.dispatchEvent(filePaste())
+    es.attach(container)
+    container.dispatchEvent(filePaste())
+    off()
+    expect(calls).toEqual(['upload'])
+  })
+
+  it("pastes with xterm's own paste; the registry pastes only into a terminal it holds", () => {
+    const { s, term } = session()
+    expect((s as unknown as EntrySession).paste('/p/a\\ b.png ')).toBe(true)
+    expect((term as unknown as { pasted: string[] }).pasted).toEqual(['/p/a\\ b.png '])
+    const reg = new SessionRegistry(() => ({ input: () => undefined, ack: () => undefined, resize: () => undefined })) as unknown as Registry & {
+      paste(tabId: string, text: string): boolean
+    }
+    expect(reg.paste('none', 'x ')).toBe(false)
+    const held = reg.get('t') as unknown as { term: { pasted: string[] } }
+    expect(reg.paste('t', 'x ')).toBe(true)
+    expect(held.term.pasted).toEqual(['x '])
+    reg.disposeAll()
+    expect(reg.paste('t', 'y ')).toBe(false)
   })
 })

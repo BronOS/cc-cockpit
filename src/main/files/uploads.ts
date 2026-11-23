@@ -33,20 +33,31 @@
 // settled finishes it rather than removing it (the rest settle as cancelled), so its partial result
 // still pastes.
 //
+// The paste (§4.3, `paste`): main types nothing; it answers the text the shell pastes with xterm's own
+// `paste` in that view, or holds it with a reason. Only for an upload whose source was a tab, begun by
+// the caller's device in the caller's window, finished. The automatic call is taken at most once per
+// upload, whatever it answers; Paste path (`manual`) any number of times. Both need the tab alive and
+// selected in the calling view (typing would go nowhere else); the automatic one needs a Claude tab
+// `waiting` (at the prompt: `idle` is not established, `working` lags a dialog), Paste path any status
+// but `needs-permission` (a keystroke could answer the dialog) and `ended`.
+//
 // Refusal texts reach the view (a guest's too, D-33): project-relative names and fixed reasons only,
 // never a host path and never an fs error's own message (ENOENT and EACCES texts carry the absolute
 // path). No Electron (the plan's rule).
 import { randomBytes } from 'node:crypto'
 import type { Dirent } from 'node:fs'
 import { lstat, readdir, realpath, stat, statfs } from 'node:fs/promises'
-import { join, relative, resolve, sep } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { downloadSizeText } from '../../shared/downloads'
+import type { TabStatus } from '../../shared/ipc'
+import type { TabKind } from '../../shared/types'
 import { dataDirRefused } from '../../shared/outside-paths'
 import {
   checkUploadName,
   dedupeNames,
   insideGit,
   numberedUploadName,
+  pasteText,
   UPLOAD_BEGINS_MAX,
   UPLOAD_BEGINS_WINDOW_MS,
   UPLOAD_FOLDER_LIST_MAX,
@@ -63,6 +74,7 @@ import {
   type UploadError,
   type UploadFileToken,
   type UploadFoldersReply,
+  type UploadPasteReply,
   type UploadRefusedFile,
   type UploadResolveReply,
   type UploadSource,
@@ -84,6 +96,36 @@ export const UPLOAD_UNKNOWN_TEXT = 'no such upload'
 
 /** A file still live when a partly settled upload is cancelled (`cancel`, §3.4): its outcome. */
 export const UPLOAD_CANCELLED_TEXT = 'cancelled'
+
+/** The paste's holds (§4.3): fixed words, shown in the held notice beside Paste path. */
+export const UPLOAD_PASTE_AGAIN_TEXT = 'the paths were offered once already: use Paste path'
+export const UPLOAD_PASTE_ENDED_TEXT = 'the tab has ended'
+export const UPLOAD_PASTE_NOT_SELECTED_TEXT = 'the tab is not the one selected here'
+export const UPLOAD_PASTE_NOT_WAITING_TEXT = 'Claude is not waiting for input'
+export const UPLOAD_PASTE_PERMISSION_TEXT = 'Claude is asking for a permission'
+export const UPLOAD_PASTE_UNSAFE_TEXT = 'the path holds a character that cannot be pasted safely'
+export const UPLOAD_PASTE_NO_PATH_TEXT = "the path cannot be given from the tab's folder"
+
+/** The source tab as main's tables have it at the paste (index.ts reads TabManager and the session registry). */
+export interface UploadPasteTab {
+  kind: TabKind
+  /** The tab's starting folder (TabInfo.cwd: absolute, real, inside the project). */
+  cwd: string
+  /** Its process ended (or a restored tab never started): nothing takes input. */
+  exited: boolean
+  /** A Claude tab's status (the session registry); undefined for a shell tab, or a Claude tab with no entry. */
+  status?: TabStatus
+}
+
+/** What the paste rule reads of main's tables at the moment of the call, never of the payload. */
+export interface UploadPasteFacts {
+  /** The tab now, by id; undefined once it is closed. */
+  tab(tabId: string): UploadPasteTab | undefined
+  /** The calling view's selected tab (ViewSelections.selectionOf). */
+  selected: string | undefined
+  /** A guest's text is relative to the tab's starting folder, never a host path (D-33). */
+  guest: boolean
+}
 
 /** Who calls: main's own tables (the router's bound view), never a payload. */
 export interface UploadCaller {
@@ -174,6 +216,8 @@ interface UploadRecord {
   results: Map<number, UploadFileOutcome>
   /** When body bytes were last read (or the tokens minted): the idle clock's start. */
   lastBytes: number
+  /** The automatic paste was asked once (§4.3: at most once per upload, whatever it answered). */
+  autoPasted?: true
   timer?: ReturnType<typeof setTimeout>
 }
 
@@ -341,10 +385,73 @@ export class Uploads {
     if (record.tokens.size === 0) this.finish(record)
   }
 
-  /** The upload's state and outcomes (the terminal entry's paste, Task 11), when it is the caller's. */
+  /** The upload's state and outcomes, when it is the caller's (tests; the paste reads the record itself). */
   outcome(caller: UploadCaller, uploadId: unknown): { state: UploadRecord['state']; source: UploadSource; results: ReadonlyMap<number, UploadFileOutcome> } | undefined {
     const record = this.owned(caller, uploadId)
     return record && { state: record.state, source: record.source, results: record.results }
+  }
+
+  /**
+   * `uploads.paste` (§4.3, the rule in this file's header): `{text}` to paste now, or `{held, text}` with
+   * the reason and the text the notice keeps (its Paste path and Copy; the shell offers no Copy for unsafe
+   * text). Synchronous from the lookup to the answer, so two calls cannot both take the automatic one.
+   * Throws one answer (UPLOAD_UNKNOWN_TEXT) for an id that is unknown, another device's or window's, from a
+   * panel, not finished, or with no file uploaded: nothing to paste, and no way to tell them apart.
+   */
+  paste(caller: UploadCaller, uploadId: unknown, manual: boolean, facts: UploadPasteFacts): UploadPasteReply {
+    const record = this.owned(caller, uploadId)
+    if (!record || record.windowId !== caller.windowId || !('tab' in record.source) || record.state !== 'finished') {
+      throw new Error(UPLOAD_UNKNOWN_TEXT)
+    }
+    const tabId = record.source.tab
+    // Index order, as the person picked them; the real folder resolved at begin (each commit compared
+    // the folder's real path with it again), so the path is where the file is.
+    const placed = record.files.flatMap((f) => {
+      const out = record.results.get(f.index)
+      return out?.ok === true ? [join(record.folderReal, out.name)] : []
+    })
+    if (placed.length === 0) throw new Error(UPLOAD_UNKNOWN_TEXT)
+    const tab = facts.tab(tabId)
+    let paths = placed
+    if (facts.guest) {
+      // Relative to the tab's starting folder, so it is right whichever folder of the project the tab
+      // began in (`./x`, `../other/x`). A tab gone has no folder: nothing is said then (no host path).
+      if (!tab) return this.held(record, manual, UPLOAD_PASTE_ENDED_TEXT, '')
+      const rel = placed.map((path) => relative(tab.cwd, path))
+      if (rel.some((r) => r === '' || isAbsolute(r))) return this.held(record, manual, UPLOAD_PASTE_NO_PATH_TEXT, '')
+      paths = rel.map((r) => (r === '..' || r.startsWith(`..${sep}`) ? r : `.${sep}${r}`))
+    }
+    const text = pasteText(paths)
+    // A path holding a control, bidi or invisible character is never pasted (§4.3: an ESC [201~ in a
+    // folder name would end the bracketed paste early). The plain paths go with the hold for the notice;
+    // the shell offers no Copy for them, and Paste path comes back here and is held again.
+    if (text === null) return this.held(record, manual, UPLOAD_PASTE_UNSAFE_TEXT, `${paths.join(' ')} `)
+    if (!tab || (tab.kind !== 'claude' && tab.kind !== 'shell') || tab.exited || tab.status === 'ended') {
+      return this.held(record, manual, UPLOAD_PASTE_ENDED_TEXT, text)
+    }
+    if (facts.selected !== tabId) return this.held(record, manual, UPLOAD_PASTE_NOT_SELECTED_TEXT, text)
+    if (tab.kind === 'claude') {
+      // A keystroke could answer a permission prompt: never then, not even on the person's click.
+      if (tab.status === 'needs-permission') return this.held(record, manual, UPLOAD_PASTE_PERMISSION_TEXT, text)
+      // No entry is no status, so not at the prompt. Paste path takes any other status (the person's own
+      // click, as typing would be); the automatic paste only `waiting`.
+      if (tab.status === undefined || (!manual && tab.status !== 'waiting')) return this.held(record, manual, UPLOAD_PASTE_NOT_WAITING_TEXT, text)
+    }
+    if (manual) return { text }
+    if (record.autoPasted) return { held: UPLOAD_PASTE_AGAIN_TEXT, text }
+    record.autoPasted = true
+    return { text }
+  }
+
+  /**
+   * A hold. An automatic one takes the automatic call too (at most once per upload, whatever it answered),
+   * and a repeat says so rather than the reason again: after a hold only Paste path pastes.
+   */
+  private held(record: UploadRecord, manual: boolean, reason: string, text: string): UploadPasteReply {
+    if (manual) return { held: reason, text }
+    if (record.autoPasted) return { held: UPLOAD_PASTE_AGAIN_TEXT, text }
+    record.autoPasted = true
+    return { held: reason, text }
   }
 
   /** The device's revoke or disconnect, a guest's end, leaving None mode (`none`): its uploads end. */

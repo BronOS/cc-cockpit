@@ -2435,7 +2435,7 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
   })
 }
 
-/** The terminal entry's paste request as the router hands it on (design-upload.md §4.3; the rule is Task 11's). */
+/** The terminal entry's paste request as the router hands it on (design-upload.md §4.3; the rule is Uploads.paste). */
 export interface UploadPasteCall {
   caller: UploadCaller
   projectId: string
@@ -2462,7 +2462,7 @@ export interface UploadHandlerDeps {
   resolve(caller: UploadCaller, uploadId: unknown, choice: unknown): Promise<UploadResolveReply>
   cancel(caller: UploadCaller, uploadId: unknown): Promise<void>
   folders(windowId: number, path: unknown): Promise<UploadFoldersReply | UploadError>
-  /** The paste rule (Task 11: the upload's source tab, its status, the view's selection). Absent: refused. */
+  /** The paste rule (Uploads.paste: the upload's source tab, its status, the view's selection). Absent: refused. */
   paste?(call: UploadPasteCall): Promise<UploadPasteReply> | UploadPasteReply
 }
 

@@ -9,8 +9,8 @@
 //
 // Several uploads run at once, each with its own notice and `AbortController`; how many a device may
 // run is main's limit (its refusal at begin is one notice). Every call can answer `{error}` and can
-// also reject (the socket away, a refusal main throws, `uploads.paste` before the terminal entry is
-// wired): both end in a notice, never an unhandled rejection, and a Cancel while the host is away
+// also reject (the socket away, a refusal main throws, such as `uploads.paste` for an upload it no
+// longer keeps): both end in a notice, never an unhandled rejection, and a Cancel while the host is away
 // still stops the bytes locally.
 //
 // Created once in `startShell` (web/main.tsx), not inside React: `<App>` remounts on every reconnect
@@ -45,8 +45,9 @@ export interface UploadFile extends UploadBytes {
 }
 
 /**
- * What starts an upload: a panel's request (its folder named) or the terminal entry's (Task 11 of the
- * upload plan: `{ tab }`, no folder, so the chooser asks; `pasted` for a clipboard paste, named by main).
+ * What starts an upload: a panel's request (its folder named) or the terminal entry's
+ * (tabs/terminal-drop.ts: `{ tab }`, no folder, so the chooser asks; `pasted` for a clipboard paste, its
+ * files already named `pasted-<date>-<time>.<ext>` there, main checks the name as any other).
  */
 export interface ControllerRequest {
   source: UploadRequest['source']
@@ -71,7 +72,7 @@ export interface UploadControllerDeps {
   /** Defaults to upload-client's `runUpload`. */
   run?: (files: readonly UploadBytes[], tokens: readonly UploadFileToken[], opts: UploadRunOptions) => Promise<UploadFileResult[]>
   /**
-   * The terminal entry's seams (Task 11): whether this view is keys-off for that pane (the renderer's
+   * The terminal entry's seams (tabs/terminal-drop.ts, wired in web/main.tsx): whether this view is keys-off for that pane (the renderer's
    * own guard, design §4.3; keys-off counts as held), and the paste with xterm's own `paste` in that
    * view. Unwired, every terminal paste is held: the result keeps the paths with Paste path.
    */
@@ -125,7 +126,7 @@ export class UploadController {
   }
 
   /**
-   * The terminal entry's call (Task 11): files dropped on or pasted into a Claude or shell tab. The
+   * The terminal entry's call (tabs/terminal-drop.ts `onTerminalUpload`): files dropped on or pasted into a Claude or shell tab. The
    * chooser asks for the folder, and the paths are pasted into that tab when the upload is done.
    */
   startForTab(tabId: string, files: readonly UploadFile[], opts: { folders?: readonly string[]; pasted?: boolean } = {}): Promise<void> {

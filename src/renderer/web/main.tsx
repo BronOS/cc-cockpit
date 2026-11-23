@@ -52,6 +52,7 @@ import '../styles.css'
 import './web.css'
 import { setWebviewFrameSource } from './webview-stream'
 import { leaveThenClose, UploadController } from './upload-controller'
+import { cancelUnhandledFileDrops, onTerminalUpload, pasteIntoTerminal, terminalKeysOff } from '../tabs/terminal-drop'
 import { onUploadRequest } from './upload-request'
 import { uploadUi, type PresetStorage } from '../notices/upload-model'
 import { startShellScrolling } from '../../sdk/scroll-edges'
@@ -322,13 +323,21 @@ function startShell(reactRoot: ReturnType<typeof createRoot>, guest: SessionGues
   // `<App>` remounts on every reconnect and a reconnect does not end an upload (the token is the
   // device's, §3.4). Panel frames' requests reach it through upload-request.ts; the terminal entry
   // calls `startForTab`. The preset's storage is read lazily: `localStorage` itself can throw.
+  // The terminal entry (tabs/terminal-drop.ts, §4): drops and file pastes on a Claude or shell tab come
+  // through `onTerminalUpload`; keys-off and the paste are asked of the mounted tab pane at the paste.
   const uploads = new UploadController({
     invoke: bridge.api.invoke.bind(bridge.api),
     ui: uploadUi,
     projectId: project,
-    storage: pageStorage()
+    storage: pageStorage(),
+    keysOff: terminalKeysOff,
+    pasteInto: pasteIntoTerminal
   })
   onUploadRequest((request) => void uploads.start(request))
+  onTerminalUpload((tabId, files, opts) => void uploads.startForTab(tabId, files, opts))
+  // A `Files` drop nobody takes (a near miss beside a pane, the strip, a dialog) would open the file in
+  // this browser tab, replacing the shell and ending its uploads (§3.6): cancelled by default.
+  cancelUnhandledFileDrops(window)
   // Leaving the page cancels its uploads, before the socket closes (a closed bridge refuses the
   // cancel at once); no beforeunload prompt for them (§5.3: the remote window's close would hang).
   window.addEventListener('pagehide', () => leaveThenClose(uploads, () => bridge.close()))

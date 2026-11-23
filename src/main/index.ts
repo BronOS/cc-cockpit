@@ -4030,7 +4030,9 @@ function start(server: boolean): void {
   })
   // Uploads (design-upload.md §3.1): the view's device is main's own (the connection's sign-in, `none` in None
   // mode), as the gateway keys `/u/`; the source panel through the layout's zones now, the tab through main's
-  // tab table, both in the caller's own project. The paste rule (`paste`) comes with the terminal entry.
+  // tab table, both in the caller's own project. The terminal entry's paste (§4.3) reads, at the call, the
+  // source tab in main's tab table (its starting folder, its exit), its Claude status in the session registry
+  // and the calling view's selection (ViewSelections), never the payload.
   registerUploadHandlers(router, {
     deviceOf: (viewId, windowId) => webConnections.deviceIdOf(viewId, windowId),
     placedPanel: (projectId, panelKey) => layouts.placedPanel(projectId, panelKey),
@@ -4038,7 +4040,18 @@ function start(server: boolean): void {
     begin: (caller, source, folder, files) => uploads.begin(caller, source, folder, files),
     resolve: (caller, uploadId, choice) => uploads.resolve(caller, uploadId, choice),
     cancel: (caller, uploadId) => uploads.cancel(caller, uploadId),
-    folders: (windowId, path) => uploads.folders(windowId, path)
+    folders: (windowId, path) => uploads.folders(windowId, path),
+    paste: (call) =>
+      uploads.paste(call.caller, call.uploadId, call.manual, {
+        guest: call.guest,
+        selected: selections.selectionOf(call.viewId),
+        tab: (tabId) => {
+          const tab = tabs.list(call.projectId).find((t) => t.id === tabId)
+          if (!tab) return undefined
+          const status = tab.kind === 'claude' ? sessions.get(tabId)?.status : undefined
+          return { kind: tab.kind, cwd: tab.cwd, exited: tab.exit !== undefined, ...(status !== undefined ? { status } : {}) }
+        }
+      })
   })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.
