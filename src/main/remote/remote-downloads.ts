@@ -19,11 +19,12 @@
 //    saved file has no exec bit (whatever mode it was written with), so it never runs by a double click
 //    on Linux.
 import { randomBytes } from 'node:crypto'
-import { chmod, link, lstat, open, readdir, unlink } from 'node:fs/promises'
-import { constants as fsConstants, type Stats } from 'node:fs'
+import { chmod, link, lstat, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DESKTOP_DOWNLOAD_MAX_BYTES, downloadSizeText } from '../../shared/downloads'
 import { codeOf, errorText } from '../../shared/error-text'
+// The link-then-copy placement is one with uploads' commit (design-upload.md §2.4).
+import { copyExclusive, NO_HARD_LINKS, remove, removeIfOwn } from '../files/copy-exclusive'
 // One numbering rule with uploads' Keep both (design-upload.md §2.3), not two.
 import { MAX_NAME_NUMBER, numberedName } from '../../shared/numbered-name'
 
@@ -56,23 +57,6 @@ export const DOWNLOAD_TEMP_PREFIX = '.cc-download-'
 /** A refusal of our own, whose text the notice shows as is (a system error's would name the temp path). */
 class PlaceError extends Error {}
 
-/** Remove `path`, quietly: gone already is fine, and a cleanup must never throw over the real outcome. */
-async function remove(path: string): Promise<void> {
-  await unlink(path).catch(() => undefined)
-}
-
-/**
- * Remove `path` only while it is still the entry `own` names (same dev and inode): what this placement
- * linked or created there, never a file another process put at the name meanwhile. Never throws.
- */
-async function removeIfOwn(path: string, own: Pick<Stats, 'dev' | 'ino'>): Promise<void> {
-  const now = await lstat(path).catch(() => undefined)
-  if (now && now.dev === own.dev && now.ino === own.ino) await remove(path)
-}
-
-/** Link errors of a filesystem with no hard links (exFAT, FAT32, some SMB, NFS and FUSE mounts). */
-const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'])
-
 /** Why a macOS save to a Downloads folder with no hard links is refused (the notice's words). */
 export const NO_QUARANTINE_TEXT = "the Downloads folder is on a drive with no hard links, and a copy there would lose macOS's download warning"
 
@@ -95,57 +79,6 @@ export async function sweepDownloadTemps(dir: string, now: number = Date.now()):
         if (st?.isFile() && now - st.mtimeMs > STALE_TEMP_MS) await remove(path)
       })
   )
-}
-
-/** The copy's chunk: one read and one write at a time, so a file of gigabytes never sits in memory. */
-const COPY_CHUNK_BYTES = 1024 * 1024
-
-/**
- * `temp` copied to a new `final`: created with O_CREAT|O_EXCL|O_NOFOLLOW first (EEXIST on any entry, a
- * dangling link included, and never followed), then filled. A copy that fails after the create (the
- * temp unreadable, ENOSPC, EIO) removes `final` only while it is still the file this call created (same
- * dev and inode). `copyFile` could not promise that: its error does not say whether it got as far as
- * creating the destination (it can fail opening the source), so a file another process put at the name
- * after the failed link would have been deleted by the cleanup.
- */
-async function copyExclusive(temp: string, final: string, mode: number, signal: AbortSignal | undefined): Promise<void> {
-  const out = await open(final, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, mode)
-  let made: Stats | undefined
-  // Every await below is followed by a look at the signal (the loop's top one follows the read and
-  // the writes; nothing they make needs more than the catch's removal): a cancel that came while one
-  // ran sends the copy to the catch, which removes it.
-  try {
-    made = await out.stat()
-    // A cancel while the destination was made (the create on a slow mount): it is ours and goes.
-    signal?.throwIfAborted()
-    const src = await open(temp, 'r')
-    try {
-      signal?.throwIfAborted()
-      const buf = Buffer.allocUnsafe(COPY_CHUNK_BYTES)
-      for (;;) {
-        // A cancel (the window closed, the server forgotten) between chunks: a copy of gigabytes on a
-        // slow mount must not finish into a saved file after it.
-        signal?.throwIfAborted()
-        const { bytesRead } = await src.read(buf, 0, buf.length, null)
-        if (bytesRead === 0) break
-        for (let at = 0; at < bytesRead; ) at += (await out.write(buf, at, bytesRead - at)).bytesWritten
-      }
-    } finally {
-      await src.close().catch(() => undefined)
-    }
-    // The last chunk written and then a cancel: still not placed, so removed like a partial.
-    signal?.throwIfAborted()
-    await out.close()
-    // A cancel while the close ran (it flushes, and on a network mount that can take a while): the
-    // file is whole but the save was cancelled before it was placed, so it goes like a partial too.
-    // A second close in the catch below is a no-op on a closed handle.
-    signal?.throwIfAborted()
-  } catch (err) {
-    await out.close().catch(() => undefined)
-    // An fstat that failed leaves no identity to check against: the file stays rather than risk another's.
-    if (made) await removeIfOwn(final, made)
-    throw err
-  }
 }
 
 export interface PlaceOptions {

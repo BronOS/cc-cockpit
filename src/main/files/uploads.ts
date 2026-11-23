@@ -116,7 +116,7 @@ export interface UploadGrant {
 /** A file's end, from the writer (or the route): committed under `name` at `path`, or failed. */
 export type UploadFileOutcome = { ok: true; name: string; path: string } | { ok: false; reason: string }
 
-/** What this needs of the writer (Task 4's `upload-writer.ts`). */
+/** What this needs of the writer (`upload-writer.ts`, whose `UploadWriter` implements it). */
 export interface UploadWriterPort {
   /** Every temp of the upload closed and deleted, a write in flight ended; resolves once done. */
   abortUpload(uploadId: string): Promise<void>
