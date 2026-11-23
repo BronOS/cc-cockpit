@@ -217,20 +217,21 @@ export function attachTerminalEntry(container: DropContainer, entry: TerminalEnt
     handler(entry.tabId, files, {})
   }
   const onDragEnd = (): void => highlight(false)
-  container.addEventListener('dragenter', onDragOver, true)
-  container.addEventListener('dragover', onDragOver, true)
-  container.addEventListener('dragleave', onDragLeave, true)
-  container.addEventListener('drop', onDrop, true)
-  container.addEventListener('dragend', onDragEnd, true)
-  container.addEventListener('paste', onPaste, true)
+  // Removed through one signal, not six `removeEventListener(..., true)` calls: on CI's Node 26.8.1 the
+  // matching removals left these capture listeners on the unit tests' container (a Node `EventTarget`), so a
+  // detached terminal still took pastes (v0.26.0's first release run; Node 26.13.1 passed). An abort removes
+  // every listener it registered with no matching of type, listener and capture, in Chromium as in Node.
+  const listening = new AbortController()
+  const opts = { capture: true, signal: listening.signal }
+  container.addEventListener('dragenter', onDragOver, opts)
+  container.addEventListener('dragover', onDragOver, opts)
+  container.addEventListener('dragleave', onDragLeave, opts)
+  container.addEventListener('drop', onDrop, opts)
+  container.addEventListener('dragend', onDragEnd, opts)
+  container.addEventListener('paste', onPaste, opts)
   return () => {
     highlight(false)
-    container.removeEventListener('dragenter', onDragOver, true)
-    container.removeEventListener('dragover', onDragOver, true)
-    container.removeEventListener('dragleave', onDragLeave, true)
-    container.removeEventListener('drop', onDrop, true)
-    container.removeEventListener('dragend', onDragEnd, true)
-    container.removeEventListener('paste', onPaste, true)
+    listening.abort()
   }
 }
 
