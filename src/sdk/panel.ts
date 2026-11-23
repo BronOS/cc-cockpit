@@ -26,6 +26,10 @@
 //   ccPanel.view.access                  who is behind this view: 'owner', or a guest's 'read' / 'write'
 //                                        (the shell says so with the port; 'owner' until then). A UI
 //                                        hint only: the plugin's host gets the access from main
+//   ccPanel.upload                       web shell, not a read guest, once connected (else undefined):
+//                                        { pick({folder}), files(source, {folder}) } hand files from the
+//                                        person's device to core's upload flow (design-upload.md §5.2);
+//                                        pick inside a click, files inside `drop`; a panel page's only
 //
 // Built to out/sdk/panel.js by a build of its own, IIFE output (panelSdk in electron.vite.config.ts,
 // which fails the build if the file imports or requires anything), and served by the cc-plugin://
@@ -34,7 +38,7 @@
 // A `?raw` import: Vite inlines the file's text as a string literal, so this stays one classic
 // script with no `require` in out/sdk/panel.js.
 import componentsCss from './components.css?raw'
-import { PanelClient, sdkSheetsFirst, type PortLike } from './panel-core'
+import { isFilesDrag, PanelClient, sdkSheetsFirst, type PortLike } from './panel-core'
 import { startScrollEdges, watchClassicBars } from './scroll-edges'
 
 // The SDK's stylesheets are constructable ones: not inline <style>s, and the plugin CSP's
@@ -62,13 +66,46 @@ const client = new PanelClient(
     }
   },
   componentsCss,
-  // Only the shell frames this page, and only the shell hears this: a height, a width or `ready`.
+  // Only the shell frames this page, and only the shell hears this: a height, a width, `ready`, or the
+  // files of an upload (`File`s cross by structured clone).
   (message) => {
     if (window.parent !== window) window.parent.postMessage(message, '*')
   },
   // macOS: this page measures its own bars (classic or overlay) for the scrollbar sheet.
-  (onChange) => watchClassicBars(window, onChange)
+  (onChange) => watchClassicBars(window, onChange),
+  // `ccPanel.upload.pick`: a hidden input, clicked now (the caller's gesture is what lets a browser open a
+  // chooser). In the document while it is open (Safari opens none for a detached input), gone after the
+  // choice or a cancel; an earlier one left by a browser with no `cancel` event goes at the next pick.
+  (onFiles) => {
+    document.querySelectorAll('input[data-cc-upload-picker]').forEach((old) => old.remove())
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.multiple = true
+    input.dataset['ccUploadPicker'] = ''
+    input.style.display = 'none'
+    input.addEventListener('change', () => {
+      const files = Array.from(input.files ?? [])
+      input.remove()
+      onFiles(files)
+    })
+    input.addEventListener('cancel', () => input.remove())
+    ;(document.body ?? document.documentElement).append(input)
+    input.click()
+  }
 )
+
+// A file dropped where the page takes no drop must not open in the frame (design-upload.md §3.6: in a
+// plain browser that replaces the page). Bubble phase on the window, after the page's own handlers: a
+// drag the page already took (`preventDefault` on its dragover / drop) is left alone; any other `Files`
+// drag is refused (`dropEffect` none: no drop, no copy cursor) and its drop cancelled.
+window.addEventListener('dragover', (event: DragEvent) => {
+  if (event.defaultPrevented || !isFilesDrag(event.dataTransfer?.types)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
+})
+window.addEventListener('drop', (event: DragEvent) => {
+  if (!event.defaultPrevented && isFilesDrag(event.dataTransfer?.types)) event.preventDefault()
+})
 
 window.addEventListener('message', (event: MessageEvent) => {
   // Only the shell, which embeds this page, hands out ports and themes. The page's own scripts

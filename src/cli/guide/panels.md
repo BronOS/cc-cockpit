@@ -99,6 +99,23 @@ load, the strip shows the title's first letter.
   (`'owner'` until the page is connected and on the desktop). Use it to leave out what a read-only guest may
   not use (Rename, Delete, Save). Like `view.remote` it is a UI hint only: your host gets the access from the
   app (`from.access`, `ccc guide plugins` "Guests") and must refuse there, whatever the page shows.
+- `ccPanel.upload`: put files from the person's device into the project. Only in a web access browser view
+  (`ccPanel.view.remote`) that is not a read guest's, and only once the page is connected: `undefined` on the
+  desktop, for a read guest and before then, so test for it when you draw the item or on the click
+  (`typeof ccPanel.upload?.pick === 'function'`). Only a panel page's request is taken; the app ignores one from
+  an html overlay, a slot or a page tab. Both members return nothing: the app shows the outcome itself (its
+  clash dialog with Replace / Keep both / Cancel, a progress notice with Cancel, the result), and the files
+  show up in the folder once they are written. The app checks the folder, every name and the viewer's access
+  itself; a page cannot widen any of it.
+  - `ccPanel.upload.pick({ folder })`: opens the device's file chooser (several files) and uploads what the
+    person picks into `folder` (project-relative, `''` the project folder). Call it inside a click or key
+    handler: a browser opens a chooser only on the person's gesture.
+  - `ccPanel.upload.files(source, { folder })`: uploads a drop's `DataTransfer` or a `FileList` / `File[]`
+    into `folder`. Pass `event.dataTransfer` inside the `drop` handler: after the event its items are gone,
+    and only during it can a dropped folder be told from a file. Folders are not uploaded; the app names
+    the ones it skipped. Take a drag only when `event.dataTransfer.types` includes `Files` (call
+    `preventDefault` on its `dragover` and `drop`). The SDK cancels every other `Files` drag over the page, so
+    a drop that misses your target does nothing (a plain browser would open the file in place of the app).
 - `ccPanel.ready()`: in an html overlay opened with `ready: 'manual'`, says the page has drawn
   its content, so the app's loader over it goes (without `ready: 'manual'` the loader goes when the
   page has loaded). Harmless in a panel or a slot.
