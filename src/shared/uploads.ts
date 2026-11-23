@@ -7,7 +7,7 @@
 // Main checks every name and folder itself (design §2: a panel page can build a `File` nobody picked,
 // §6); the shell uses the same functions only to name a pasted file and to show what main will say.
 
-import { CONTROL } from './session-name'
+import { HIDDEN_TEXT } from './session-name'
 import { MAX_NAME_NUMBER, numberedName } from './numbered-name'
 
 // ---------------------------------------------------------------------------------------------------
@@ -150,15 +150,20 @@ export const UPLOAD_NAME_MAX_BYTES = 255
 // A lone surrogate is not text: a filesystem may refuse it and `encodeURIComponent` throws on it.
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
 
+const fitsNameLimit = (name: string): boolean => new TextEncoder().encode(name).length <= UPLOAD_NAME_MAX_BYTES
+
 export type UploadNameCheck = { ok: true } | { ok: false; reason: string }
 
 /**
  * Files' `checkName` rules (`plugins/files/dist/lib/ops.js`: one segment, not empty, not `.` or `..`,
- * no `/`, no NUL, at most 255 bytes) plus `\` on every platform and no control, bidi or invisible
- * format characters and no lone surrogates: the name lands in a terminal paste and in notices, where
- * a U+202E would show it reversed and an ESC would reach the program. Never a changed name: main
- * skips a refused file with its reason rather than renaming it quietly. Dot names (`.env`) are fine,
- * and so is U+202F (macOS's screenshot names): CONTROL holds neither.
+ * no `/`, no NUL, at most 255 bytes) plus `\` on every platform, no lone surrogates and nothing
+ * HIDDEN_TEXT holds (control, bidi and invisible format characters): the name lands in a terminal paste,
+ * where Claude reads it, and in notices, where the person reads it. A U+202E would show it reversed,
+ * an ESC would reach the program, and the tag characters U+E0000-E007F would spell out text Claude reads
+ * and the person never sees (a panel page can build a `File` with any name, design §6). The cost: a
+ * subdivision flag emoji (its tag characters) or a soft hyphen in a name is refused too. Never a changed
+ * name: main skips a refused file with its reason rather than renaming it quietly. Dot names (`.env`) are
+ * fine, and so are U+202F (macOS's screenshot names) and ZWJ emoji: HIDDEN_TEXT holds neither.
  */
 export function checkUploadName(name: unknown): UploadNameCheck {
   if (typeof name !== 'string' || name.trim() === '') return { ok: false, reason: 'the name is empty' }
@@ -166,11 +171,21 @@ export function checkUploadName(name: unknown): UploadNameCheck {
   if (name.includes('/') || name.includes('\\')) return { ok: false, reason: 'a name cannot contain "/" or "\\"' }
   if (name.includes('\0')) return { ok: false, reason: 'a name cannot contain a NUL character' }
   if (LONE_SURROGATE.test(name)) return { ok: false, reason: 'the name is not valid text' }
-  if (CONTROL.test(name)) return { ok: false, reason: 'a name cannot contain control, bidi or invisible characters' }
-  if (new TextEncoder().encode(name).length > UPLOAD_NAME_MAX_BYTES) {
-    return { ok: false, reason: `a name is at most ${UPLOAD_NAME_MAX_BYTES} bytes` }
-  }
+  if (HIDDEN_TEXT.test(name)) return { ok: false, reason: 'a name cannot contain control, bidi or invisible characters' }
+  if (!fitsNameLimit(name)) return { ok: false, reason: `a name is at most ${UPLOAD_NAME_MAX_BYTES} bytes` }
   return { ok: true }
+}
+
+/**
+ * `numberedName` within the name limit: `null` when ` (n)` would take a name that passed
+ * `checkUploadName` at 251-255 bytes past UPLOAD_NAME_MAX_BYTES (the write would fail later with a raw
+ * ENAMETOOLONG instead of a refusal with a reason, §2.2), or when n is past UPLOAD_MAX_NAME_NUMBER. The
+ * in-upload dedupe and Keep both both number through it.
+ */
+export function numberedUploadName(name: string, n: number): string | null {
+  if (n > UPLOAD_MAX_NAME_NUMBER) return null
+  const candidate = numberedName(name, n)
+  return fitsNameLimit(candidate) ? candidate : null
 }
 
 const PASTED_EXTENSIONS: Record<string, string> = {
@@ -208,14 +223,16 @@ function nameKey(name: string): string {
 /**
  * The names of one upload with the repeats numbered (` (1)` and up, the Keep both pattern) without
  * asking: the first keeps its name, a later one takes the first number no earlier name of the
- * upload holds. `null` when every number up to UPLOAD_MAX_NAME_NUMBER is taken (main refuses that
- * file). Clashes with the folder are not decided here: that is begin's `lstat` and the dialog.
+ * upload holds. `null` when every number up to UPLOAD_MAX_NAME_NUMBER is taken, or when numbering
+ * would take the name past UPLOAD_NAME_MAX_BYTES (a longer number only makes it longer): main refuses
+ * that file. Clashes with the folder are not decided here: that is begin's `lstat` and the dialog.
  */
 export function dedupeNames(names: readonly string[]): (string | null)[] {
   const taken = new Set<string>()
   return names.map((name) => {
     for (let n = 0; n <= UPLOAD_MAX_NAME_NUMBER; n++) {
-      const candidate = numberedName(name, n)
+      const candidate = numberedUploadName(name, n)
+      if (candidate === null) return null
       const key = nameKey(candidate)
       if (!taken.has(key)) {
         taken.add(key)
@@ -243,15 +260,25 @@ export function insideGit(relative: string, real: string, darwin: boolean): bool
 // ---------------------------------------------------------------------------------------------------
 // The paste (design §4.3).
 
-// What Terminal.app and iTerm escape in a dropped file's path: ASCII space and tab and the ASCII
-// characters a shell gives meaning to. Nothing else, non-ASCII included (U+202F in a macOS screenshot
-// name, a Cyrillic name): an escape inside it could defeat Claude Code's image detection, and the
-// name stays readable. Control characters never get here (checkUploadName).
-const PASTE_ESCAPED = new Set([' ', '\t', ...'\\\'"`$&*()[]{};|<>?!#~'])
+// What Terminal.app and iTerm escape in a dropped file's path: ASCII space and the ASCII characters a
+// shell gives meaning to. Nothing else, non-ASCII included (U+202F in a macOS screenshot name, a
+// Cyrillic name): an escape inside it could defeat Claude Code's image detection, and the name stays
+// readable. They escape a tab too, but a tab is a control character, so a path with one never gets
+// here (outside bracketed-paste mode a shell would take it as completion, escaped or not).
+const PASTE_ESCAPED = new Set([' ', ...'\\\'"`$&*()[]{};|<>?!#~'])
 
-/** The paths as one paste: each escaped, separated by a space, one trailing space ('' for none). */
-export function pasteText(paths: readonly string[]): string {
+/**
+ * The paths as one paste: each escaped, separated by a space, one trailing space ('' for none).
+ * `null` when a path holds a lone surrogate or anything HIDDEN_TEXT holds: `checkUploadName` covers
+ * only the file name, and the path is the whole of it, the project root and every folder segment
+ * (a cloned repo's folder can be named anything). xterm's `paste` only normalises newlines and wraps
+ * the text in `ESC [200~ ... ESC [201~`, so an `ESC [201~` in a folder would end the bracketed paste
+ * early and a later CR would submit a line; a U+202E would show the path reversed. The caller holds
+ * the paste then: nothing in such a path is escaped into safety.
+ */
+export function pasteText(paths: readonly string[]): string | null {
   if (paths.length === 0) return ''
+  if (paths.some((path) => LONE_SURROGATE.test(path) || HIDDEN_TEXT.test(path))) return null
   const escape = (path: string): string => [...path].map((ch) => (PASTE_ESCAPED.has(ch) ? `\\${ch}` : ch)).join('')
   return `${paths.map(escape).join(' ')} `
 }

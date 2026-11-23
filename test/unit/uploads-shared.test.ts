@@ -5,6 +5,7 @@ import {
   checkUploadName,
   dedupeNames,
   insideGit,
+  numberedUploadName,
   pasteText,
   pastedName,
 } from '../../src/shared/uploads'
@@ -29,6 +30,19 @@ describe('checkUploadName', () => {
     ['BEL', 'a\u0007b'],
     ['ESC', 'a\u001b[31m'],
     ['newline', 'a\nb'],
+    ['DEL', 'a\u007fb'],
+    ['the C1 CSI', 'a\u009b31m'],
+    ['ARABIC LETTER MARK', 'a\u061cb'],
+    ['LEFT-TO-RIGHT MARK', 'a\u200eb'],
+    ['RIGHT-TO-LEFT MARK', 'a\u200fb'],
+    ['LINE SEPARATOR', 'a\u2028b'],
+    ['a bidi isolate', 'a\u2066b\u2069'],
+    ['FIRST STRONG ISOLATE', 'a\u2068b'],
+    ['a zero-width space', 'a\u200bb'],
+    ['a soft hyphen', 'a\u00adb'],
+    ['MONGOLIAN VOWEL SEPARATOR', 'a\u180eb'],
+    ['an interlinear annotation mark', 'a\ufff9b'],
+    ['tag characters (ASCII smuggling)', 'a\u{e0069}\u{e0067}b.png'],
     ['a lone high surrogate', 'a\ud800b'],
     ['a lone low surrogate', 'a\udc00b'],
   ])('refuses %s', (_, name) => {
@@ -47,6 +61,8 @@ describe('checkUploadName', () => {
     ['a macOS screenshot name with U+202F', 'Screenshot 2026-11-22 at 10.15.03 AM.png'],
     ['a Cyrillic name', 'Снимок экрана.png'],
     ['an emoji (a surrogate pair)', 'photo 😀.jpg'],
+    ['a ZWJ emoji', 'family \u{1f468}\u200d\u{1f469}\u200d\u{1f467}.jpg'],
+    ['a Persian word with ZWNJ', 'می\u200cخواهم.txt'],
     ['shell characters', "it's $(x) & [y].txt"],
   ])('allows %s', (_, name) => {
     expect(checkUploadName(name)).toEqual({ ok: true })
@@ -96,6 +112,26 @@ describe('dedupeNames', () => {
     expect(out[100]).toBeNull()
     expect(new Set(out.slice(0, 100)).size).toBe(100)
   })
+
+  it('gives null rather than a name past 255 bytes', () => {
+    const long = `${'a'.repeat(248)}.png`
+    expect(checkUploadName(long)).toEqual({ ok: true })
+    expect(dedupeNames([long, long, long])).toEqual([long, null, null])
+    const fits = `${'a'.repeat(247)}.png`
+    expect(dedupeNames([fits, fits])).toEqual([fits, `${'a'.repeat(247)} (1).png`])
+  })
+})
+
+describe('numberedUploadName (Keep both)', () => {
+  it('numbers like numberedName within 255 bytes and up to 99', () => {
+    expect(numberedUploadName('report.pdf', 0)).toBe('report.pdf')
+    expect(numberedUploadName('report.pdf', 3)).toBe('report (3).pdf')
+    expect(numberedUploadName('report.pdf', 99)).toBe('report (99).pdf')
+    expect(numberedUploadName('report.pdf', 100)).toBeNull()
+    expect(numberedUploadName('a'.repeat(251), 1)).toBe(`${'a'.repeat(251)} (1)`)
+    expect(numberedUploadName('a'.repeat(251), 10)).toBeNull()
+    expect(numberedUploadName('ж'.repeat(126), 1)).toBeNull()
+  })
 })
 
 describe('numberedName (shared with the remote window)', () => {
@@ -121,6 +157,13 @@ describe('insideGit', () => {
     expect(insideGit('.GIT/hooks', '.GIT/hooks', false)).toBe(false)
   })
 
+  it('folds case on the real path and the named path separately', () => {
+    expect(insideGit('link', '.GIT/hooks', true)).toBe(true)
+    expect(insideGit('link', '.GIT/hooks', false)).toBe(false)
+    expect(insideGit('.Git/hooks', 'elsewhere', true)).toBe(true)
+    expect(insideGit('.Git/hooks', 'elsewhere', false)).toBe(false)
+  })
+
   it('allows the project folder and names that only start with .git', () => {
     expect(insideGit('', '', true)).toBe(false)
     expect(insideGit('.github/workflows', '.github/workflows', true)).toBe(false)
@@ -130,8 +173,8 @@ describe('insideGit', () => {
 })
 
 describe('pasteText', () => {
-  it('escapes ASCII space, tab and every shell-special ASCII character', () => {
-    for (const ch of [' ', '\t', ...'\\\'"`$&*()[]{};|<>?!#~']) {
+  it('escapes ASCII space and every shell-special ASCII character', () => {
+    for (const ch of [' ', ...'\\\'"`$&*()[]{};|<>?!#~']) {
       expect(pasteText([`a${ch}b`])).toBe(`a\\${ch}b `)
     }
   })
@@ -149,5 +192,18 @@ describe('pasteText', () => {
   it('separates paths by a space with one trailing space', () => {
     expect(pasteText(['/a/x.png', '../b/y z.pdf'])).toBe('/a/x.png ../b/y\\ z.pdf ')
     expect(pasteText([])).toBe('')
+  })
+
+  it.each([
+    ['ESC (an early end of the bracketed paste)', '/p/a\u001b[201~b/x.png'],
+    ['a newline', '/p/a\nb/x.png'],
+    ['a carriage return', '/p/a\rb/x.png'],
+    ['a tab', '/p/a\tb/x.png'],
+    ['RIGHT-TO-LEFT OVERRIDE', '/p/a\u202eb/x.png'],
+    ['tag characters', '/p/a\u{e0069}b/x.png'],
+    ['a lone surrogate', '/p/a\ud800b/x.png'],
+  ])('gives null for a folder segment with %s', (_, path) => {
+    expect(pasteText([path])).toBeNull()
+    expect(pasteText(['/p/ok.png', path])).toBeNull()
   })
 })

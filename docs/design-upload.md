@@ -67,8 +67,10 @@ folder), as the outside rule does for `Library/Keychains` (`design-download.md` 
 
 From each `File`, checked by main, never trusted from the page:
 - Files' `checkName` rules (`plugins/files/dist/lib/ops.js`): one segment, not empty, not `.` or `..`, no `/`, `\` or
-  NUL, at most 255 bytes of UTF-8; plus no control or bidi characters and no lone surrogates (the name lands in a terminal
-  paste and in notices). A refused name skips that file, with its reason in the result; main never renames it quietly.
+  NUL, at most 255 bytes of UTF-8; plus no control, bidi or invisible format characters (`HIDDEN_TEXT`, so the tag
+  characters cannot hide text Claude reads) and no lone surrogates (the name lands in a terminal paste and in notices). A
+  numbered name (dedupe, Keep both) that would pass 255 bytes is never used: that file is refused with a reason. A
+  refused name skips that file, with its reason in the result; main never renames it quietly.
 - Dot names are allowed (`.env` is a fair upload; Files' New file allows them too).
 - A file from a **clipboard paste** (`pasted: true`) is named `pasted-YYYYMMDD-HHMMSS.<ext>` from the device's clock and
   the `File`'s type (`png`, `jpg`, `gif`, `webp`, `pdf`, else `bin`): browsers call every clipboard image `image.png`, so
@@ -256,11 +258,13 @@ again, the shell checks keys-off again.
 
 **The text:** absolute paths for the owner; for a guest (D-33: guest-visible text never carries a host path) the path
 relative to the tab's starting folder (main's tab record), `./name` or `../other/name`, so it is right whatever folder of
-the project the tab began in. Escaped with a backslash: ASCII space and tab and the ASCII characters a shell gives meaning
+the project the tab began in. Escaped with a backslash: ASCII space and the ASCII characters a shell gives meaning
 to (`` \ ' " ` $ & * ( ) [ ] { } ; | < > ? ! # ~ ``), as Terminal.app and iTerm quote a dropped file; every other character,
 non-ASCII letters and spaces included (a macOS screenshot name's U+202F), is kept as it is (a Cyrillic screenshot name
-stays readable, and an escape inside it could defeat Claude Code's image detection). Control characters never get here
-(§2.2). Paths separated by a space, one trailing space.
+stays readable, and an escape inside it could defeat Claude Code's image detection). The file name was checked (§2.2),
+but the project root and the folders were not: a path with a control, bidi or invisible format character or a lone
+surrogate anywhere in it is never pasted (a tab is one; xterm's `paste` keeps an ESC, so an `ESC [201~` in a folder
+name would end the bracketed paste early), it is held with that reason. Paths separated by a space, one trailing space.
 
 Whether Claude Code attaches an image from both forms is checked by hand after the build (Post-Completion), not before it:
 the escaping follows what Terminal.app and iTerm already paste for a drop, which Claude Code attaches in a local terminal,
