@@ -777,6 +777,20 @@ describe('the temps record and the sweep', () => {
     expect(readFileSync(join(proj, 'a.txt'), 'utf8')).toBe('abcdefgh')
   })
 
+  it('an entry kept by a refused delete while a sweep runs is still on the record when the sweep ends', async () => {
+    const left = Array.from({ length: 400 }, (_, i) => ({ path: join(proj, `.cc-upload-${i.toString(16).padStart(16, '0')}`), root: proj }))
+    writeRecord(left)
+    const r = rig(refusedTempUnlink({ on: true }))
+    const sweep = r.writer.sweepTemps()
+    const { token, uploadId } = await tokenFor(r, '', 'a.txt', 8)
+    expect(await put(r, token, 0, 'abcd')).toMatchObject({ status: 200 })
+    const [temp] = tempsIn(proj)
+    await r.uploads.cancel(A, uploadId)
+    await sweep
+    await settleRecord()
+    expect(recorded()).toEqual([join(proj, temp!)])
+  })
+
   it('a record that is not a list is read as empty', async () => {
     writeRecord([])
     writeFileSync(tempsFile, JSON.stringify({ schemaVersion: 1, temps: 'x' }))

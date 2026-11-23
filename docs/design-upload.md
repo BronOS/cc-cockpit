@@ -285,7 +285,8 @@ cancels. Then `uploads.begin`, the clash dialog when needed, the progress notice
 
 After the last file committed, the shell calls `uploads.paste {uploadId, bracketed}`: only for an upload whose `source`
 was that tab, begun by this device, finished. `bracketed` is the view's terminal's bracketed-paste mode (xterm's
-`modes.bracketedPasteMode`), the page's word about its own terminal. Main checks the rule below and, in the same synchronous
+`modes.bracketedPasteMode`), the page's word about its own terminal; absent when the view shows no terminal of the tab
+(another tab selected there), which main holds as not selected, with the paths, writing nothing. Main checks the rule below and, in the same synchronous
 step, writes the text into the tab as that view's own input (the path its keys take, `tabs.input`'s handler: the owner's
 `viewInputHandler`, a write guest's `guestViewInputHandler`, so `TabManager.viewInput` runs and the tab becomes `typed`; it
 was the person's drop), wrapped in `ESC [200~` / `ESC [201~` when `bracketed` (as xterm's own `paste` wraps it), and answers
@@ -299,8 +300,8 @@ check, read live (`IpcRouter.writesTabNow`: the owner, or a write guest with the
 - *checked by main:* the tab is alive; it is the view's selected tab (`ViewSelections.selectionOf`); for a Claude tab, its
   status is `waiting` (the send gate's "at the prompt": `idle` is not established relative to the prompt,
   `status-reducer.ts`; `working` lags a dialog). A shell tab needs only the first two.
-- *checked by the shell, before it calls:* the view is not keys-off for that pane, and the tab is the one shown in it
-  (its terminal mounted; otherwise held "the path could not be pasted", main not asked). Keys-off lives only in the renderer
+- *checked by the shell, before it calls:* the view is not keys-off for that pane; and whether the tab is the one shown
+  in it (its terminal mounted: otherwise no `bracketed`, and main holds). Keys-off lives only in the renderer
   (`state/tabs-store.ts`); this check is the person's own view guarding its own terminal, not a boundary (a view that lied
   would type into a terminal it can type into anyway), so no channel reports it to main.
 
@@ -535,7 +536,8 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
   saved fails the file before any temp. A temp whose folder was swapped away is truncated to 0 through the descriptor and
   left, its record entry dropped. A temp whose delete is refused (anything but ENOENT: `removeIfOwn` answers `removed`,
   `absent`, `other` or `failed`) is truncated the same way and keeps its record entry for the next start's sweep, at an
-  abort and after a commit alike (a hard link's second name, or the copy fallback's whole source).
+  abort and after a commit alike (a hard link's second name, or the copy fallback's whole source). A start sweep still
+  running replaces only the entries it walked, so one kept meanwhile stays.
 - Every delete is checked against the written file's identity (the descriptor's `fstat`, or the copy's own), never against a
   later `lstat` of the name: a name the link made that does not hold the written file (the temp swapped for a link) is
   left and logged, and the file fails. An `lstat` taken after the link names whatever is there now, so a delete checked

@@ -143,7 +143,8 @@ export interface UploadCancelRequest {
 /**
  * The terminal entry's paste (design §4.3); `manual` is the held notice's Paste path. `bracketed`: the view's
  * terminal is in bracketed-paste mode (xterm's `modes.bracketedPasteMode`), so main wraps the text it writes
- * as xterm's own `paste` would.
+ * as xterm's own `paste` would. Absent: the view shows no terminal of the tab (another tab selected there),
+ * and main holds it as not selected, writing nothing; a payload without it never makes main write.
  */
 export interface UploadPasteRequest {
   uploadId: string

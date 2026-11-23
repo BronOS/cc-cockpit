@@ -73,7 +73,7 @@ export interface UploadControllerDeps {
    * The terminal entry's seams (tabs/terminal-drop.ts, wired in web/main.tsx): whether this view is keys-off for that pane (the renderer's
    * own guard, design §4.3; keys-off counts as held), and the tab's terminal shown here, about to take the
    * paste main writes (the person's act on it, and whether it is in bracketed-paste mode; undefined when
-   * it is not the tab shown here). Unwired, every terminal paste is held: the result keeps Paste path.
+   * it is not the tab shown here, and main holds). Unwired, every terminal paste is held: the result keeps Paste path.
    */
   keysOff?: (tabId: string) => boolean
   pasteMode?: (tabId: string) => { bracketed: boolean } | undefined
@@ -81,8 +81,6 @@ export interface UploadControllerDeps {
 
 /** The hold the shell itself decides (design §4.3: keys-off is the person's own view guarding its terminal). */
 export const KEYS_OFF_HELD = 'the keys are off in this view'
-/** A paste the shell could not ask for: the tab is not the one shown here (another selected, or its terminal gone). */
-export const PASTE_FAILED_HELD = 'the path could not be pasted'
 /** A run that rejected (it never should: runUpload settles every file) is said as this. */
 const RUN_FAILED = 'the upload stopped unexpectedly'
 
@@ -326,12 +324,16 @@ export class UploadController {
   private async paste(uploadId: string, tab: string, manual: boolean): Promise<HeldPaste | undefined> {
     // Checked before the call (design §4.3): keys-off is held, and main is not asked at all.
     if (this.deps.keysOff?.(tab) === true) return { reason: KEYS_OFF_HELD, text: '' }
-    // The tab's terminal shown here: none (another tab selected here), and main is not asked either.
+    // The tab's terminal shown here, and its mode. None (another tab selected here, its terminal gone): main
+    // is still asked, with no mode, and holds with the paths (Copy) and writes nothing.
     const mode = this.deps.pasteMode?.(tab)
-    if (mode === undefined) return { reason: PASTE_FAILED_HELD, text: '' }
     let reply: UploadPasteReply
     try {
-      reply = await this.deps.invoke('uploads.paste', { uploadId, ...(manual ? { manual: true } : {}), ...(mode.bracketed ? { bracketed: true } : {}) })
+      reply = await this.deps.invoke('uploads.paste', {
+        uploadId,
+        ...(manual ? { manual: true } : {}),
+        ...(mode !== undefined ? { bracketed: mode.bracketed } : {})
+      })
     } catch (err) {
       return { reason: reasonOf(err), text: '' }
     }

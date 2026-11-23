@@ -89,7 +89,7 @@ function facts(
     tab: (id) => (id === 't1' ? tab : undefined),
     selected: 'selected' in over ? over.selected : 't1',
     guest: over.guest ?? false,
-    bracketed: over.bracketed ?? false,
+    bracketed: 'bracketed' in over ? over.bracketed : false,
     input:
       over.input ??
       ((tabId, data) => {
@@ -275,6 +275,18 @@ describe('Uploads.paste: the write, in the same step as the checks (design §4.3
     expect(written).toEqual([])
     expect(uploads.paste(A, id, true, facts({ written }))).toEqual({ text: expect.any(String) })
     expect(written).toHaveLength(1)
+  })
+
+  it('holds as not selected, writing nothing, when the page shows no terminal of the tab (no mode sent)', async () => {
+    const uploads = make()
+    const id = await finished(uploads, ['a.png'])
+    const written: Array<[string, string]> = []
+    expect(uploads.paste(A, id, true, facts({ written, bracketed: undefined }))).toEqual({
+      held: UPLOAD_PASTE_NOT_SELECTED_TEXT,
+      text: expect.stringMatching(/a\.png $/)
+    })
+    expect(uploads.paste(A, id, false, facts({ written, bracketed: undefined }))).toMatchObject({ held: UPLOAD_PASTE_NOT_SELECTED_TEXT })
+    expect(written).toEqual([])
   })
 
   it('holds when the view may not type into the tab now, and that takes the automatic call', async () => {

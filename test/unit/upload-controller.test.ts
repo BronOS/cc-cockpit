@@ -7,7 +7,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   KEYS_OFF_HELD,
-  PASTE_FAILED_HELD,
   leaveThenClose,
   UploadController,
   type UploadControllerDeps,
@@ -425,15 +424,20 @@ describe('UploadController: a terminal source', () => {
     expect(lastResult(ui).held).toBeUndefined()
   })
 
-  it('the tab not shown here (another selected, its terminal gone) is held without asking main', async () => {
+  it('the tab not shown here (another selected, its terminal gone) asks main with no mode, which holds with the paths', async () => {
     let shown = false
-    const { ui, calls } = await chooseAndRun({ keysOff: () => false, pasteMode: () => (shown ? { bracketed: false } : undefined) }, { 'uploads.paste': { text: 'x ' } })
-    expect(calls.some((x) => x.channel === 'uploads.paste')).toBe(false)
-    expect(lastResult(ui).held).toEqual({ reason: PASTE_FAILED_HELD, text: '' })
+    const { ui, calls } = await chooseAndRun(
+      { keysOff: () => false, pasteMode: () => (shown ? { bracketed: false } : undefined) },
+      { 'uploads.paste': (p: unknown) => ((p as { bracketed?: boolean }).bracketed === undefined ? { held: 'not selected', text: 'x ' } : { text: 'x ' }) }
+    )
+    expect(lastResult(ui).held).toEqual({ reason: 'not selected', text: 'x ' })
     shown = true
     lastResult(ui).onPaste!()
     await tick()
-    expect(calls.filter((x) => x.channel === 'uploads.paste').map((x) => x.payload)).toEqual([{ uploadId: 'u1', manual: true }])
+    expect(calls.filter((x) => x.channel === 'uploads.paste').map((x) => x.payload)).toEqual([
+      { uploadId: 'u1' },
+      { uploadId: 'u1', manual: true, bracketed: false }
+    ])
   })
 
   it('a chooser Cancel begins nothing', async () => {
@@ -458,7 +462,7 @@ describe('UploadController: a terminal source', () => {
     expect(r).toMatchObject({ sticky: true, held: { reason: 'Claude is busy', text: '/p/docs/n0 ' } })
     r.onPaste!()
     await tick()
-    expect(calls.at(-1)).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1', manual: true } })
+    expect(calls.at(-1)).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1', manual: true, bracketed: false } })
     expect(paste).toBe(2)
   })
 
@@ -474,7 +478,7 @@ describe('UploadController: a terminal source', () => {
     off = false
     lastResult(ui).onPaste!()
     await tick()
-    expect(calls.filter((x) => x.channel === 'uploads.paste').map((x) => x.payload)).toEqual([{ uploadId: 'u1', manual: true }])
+    expect(calls.filter((x) => x.channel === 'uploads.paste').map((x) => x.payload)).toEqual([{ uploadId: 'u1', manual: true, bracketed: false }])
   })
 
   it('a paste call that rejects (not wired yet) keeps the result with a hold', async () => {
@@ -521,13 +525,13 @@ describe('UploadController: a terminal source', () => {
     answerCancel()
     await done
     expect(calls.map((x) => x.channel)).toEqual(['uploads.begin', 'uploads.cancel', 'uploads.paste'])
-    expect(calls[2]?.payload).toEqual({ uploadId: 'u1' })
+    expect(calls[2]?.payload).toEqual({ uploadId: 'u1', bracketed: false })
     const r = lastResult(ui)
     expect(r).toMatchObject({ text: 'Uploaded 1 of 2 to d; not uploaded: n1 (the disk is full)', sticky: true, held: { reason: 'Claude is busy' } })
     r.onPaste!()
     while (paste < 2) await tick()
     expect(calls.slice(3).map((x) => x.channel)).toEqual(['uploads.cancel', 'uploads.paste'])
-    expect(calls.at(-1)).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1', manual: true } })
+    expect(calls.at(-1)).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1', manual: true, bracketed: false } })
   })
 
   it('a link that dropped: Paste path sends the cancel again before the paste, which then finds it finished', async () => {

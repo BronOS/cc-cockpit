@@ -196,9 +196,12 @@ export class UploadWriter {
       if (outcome === 'removed') removed++
       else if (outcome === 'retry') retry.push(entry)
     }
+    // What the sweep went through is replaced by what it kept; an entry recorded while it ran is kept as it
+    // is (live, or kept by an abort whose delete was refused: that one is the next start's to sweep).
+    const walked = new Set<unknown>(listed)
     this.temps.update((d) => {
       const still = live()
-      d.temps = [...(d.temps as unknown[]).filter((e): e is TempEntry => isTempEntry(e) && still.has(e.path)), ...retry]
+      d.temps = [...(d.temps as unknown[]).filter((e): e is TempEntry => isTempEntry(e) && (still.has(e.path) || !walked.has(e))), ...retry]
     })
     this.temps.flush()
     if (removed > 0) this.log(`uploads: deleted ${removed} temp file(s) a previous run left`)

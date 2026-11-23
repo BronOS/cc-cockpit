@@ -143,9 +143,10 @@ export interface UploadPasteFacts {
   guest: boolean
   /**
    * The view's terminal is in bracketed-paste mode (`UploadPasteRequest.bracketed`). A wrong word only
-   * changes how text this view could type anyway arrives.
+   * changes how text this view could type anyway arrives. Undefined: the page shows no terminal of the
+   * tab, held as not selected (nothing is written into a terminal the person does not see).
    */
-  bracketed: boolean
+  bracketed: boolean | undefined
   /**
    * Writes `data` into the tab as the calling view's own keys (the router's `tabs.input` path: the owner's
    * `viewInputHandler`, a write guest's `guestViewInputHandler`), synchronously. False, and nothing
@@ -457,7 +458,7 @@ export class Uploads {
     if (!tab || (tab.kind !== 'claude' && tab.kind !== 'shell') || tab.exited || tab.status === 'ended') {
       return this.held(record, manual, UPLOAD_PASTE_ENDED_TEXT, text)
     }
-    if (facts.selected !== tabId) return this.held(record, manual, UPLOAD_PASTE_NOT_SELECTED_TEXT, text)
+    if (facts.selected !== tabId || facts.bracketed === undefined) return this.held(record, manual, UPLOAD_PASTE_NOT_SELECTED_TEXT, text)
     if (tab.kind === 'claude') {
       // A keystroke could answer a permission prompt: never then, not even on the person's click.
       if (tab.status === 'needs-permission') return this.held(record, manual, UPLOAD_PASTE_PERMISSION_TEXT, text)

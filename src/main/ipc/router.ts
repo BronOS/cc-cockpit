@@ -2460,8 +2460,8 @@ export interface UploadPasteCall {
   guest: boolean
   uploadId: unknown
   manual: boolean
-  /** The page's word that its terminal is in bracketed-paste mode (UploadPasteFacts.bracketed). */
-  bracketed: boolean
+  /** The page's word that its terminal is in bracketed-paste mode, absent when it shows none (UploadPasteFacts.bracketed). */
+  bracketed: boolean | undefined
   /**
    * Whether this view may type into the tab now (IpcRouter.writesTabNow: the owner, or a write guest with the
    * tab in its scope): the paste writes as the view's own `tabs.input` would, so it passes that input's check.
@@ -2573,7 +2573,7 @@ export function registerUploadHandlers(router: IpcRouter, deps: UploadHandlerDep
       guest: !isOwner(view),
       uploadId,
       manual: manual === true,
-      bracketed: bracketed === true,
+      bracketed,
       mayType: (tabId) => router.writesTabNow('uploads.paste', ctx, view, tabId)
     })
   })

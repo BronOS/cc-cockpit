@@ -364,7 +364,7 @@ describe('uploads.paste: the gate only (the rule is Uploads.paste, upload-paste.
     await router.dispatch(web(WRITER, { guest: 'gW' }), 'uploads.paste', { uploadId: 'u2' })
     expect(seen).toEqual([
       { caller: caller('devO'), projectId: A, viewId: OWNER, guest: false, uploadId: 'u1', manual: true, bracketed: true, mayType: expect.any(Function) },
-      { caller: caller('devW'), projectId: A, viewId: WRITER, guest: true, uploadId: 'u2', manual: false, bracketed: false, mayType: expect.any(Function) }
+      { caller: caller('devW'), projectId: A, viewId: WRITER, guest: true, uploadId: 'u2', manual: false, bracketed: undefined, mayType: expect.any(Function) }
     ])
     await expect(router.dispatch(web(OWNER, 'owner'), 'uploads.paste', { uploadId: 'u1', manual: 'yes' })).rejects.toThrow(/manual/)
     await expect(router.dispatch(web(OWNER, 'owner'), 'uploads.paste', { uploadId: 'u1', bracketed: 1 })).rejects.toThrow(/bracketed/)
