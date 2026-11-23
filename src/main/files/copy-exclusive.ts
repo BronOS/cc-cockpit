@@ -32,7 +32,7 @@ export type RemoveOutcome = 'removed' | 'absent' | 'other' | 'failed'
  * A folder that no longer resolves there (an ancestor renamed aside and a link put in its place, external
  * review iteration 3) answers `failed` and nothing is unlinked: the name would lead into another folder,
  * possibly one only the owner can write. A re-check, not a binding: Node has no `unlinkat`, so a swap
- * between the `realpath` and the `unlink` (one syscall apart) is still followed (design-upload.md §13
+ * between the `realpath` and the `unlink` (two awaited calls) is still followed (design-upload.md §13
  * "Name-based deletes"). Never throws. `unlinkPath`: a test seam (an unlink refused), default `unlink`.
  */
 export async function unlinkInDir(
@@ -61,12 +61,14 @@ export async function unlinkInDir(
  * name whatever is there now, another process's file included. The folder's real path is read before the
  * `lstat` and the unlink goes through `unlinkInDir` against it, so an ancestor swapped for a link after
  * the identity check is refused too; one swapped before it is caught by the identity (the name then
- * leads to another entry), and our own file found through a folder moved earlier still goes. Never throws.
+ * leads to another entry), and our own file found through a folder moved earlier still goes. This moves
+ * the gap (from `lstat`..`unlink` to the re-check's `realpath`..`unlink`) rather than shrinking it: the
+ * identity-less deletes (`unlinkInDir` alone) are the ones that gained a check. Never throws.
  *
  * Not atomic, and accepted (design-upload.md §13 "Name-based deletes", which states the threat model):
  * POSIX has no "unlink only if this inode", and Node no `unlinkat` to bind the unlink to a checked folder,
- * so an entry renamed over `path`, or an ancestor swapped for a link, in the one syscall between the
- * folder's re-check and the `unlink` wins. Every caller's name is one this run made a moment before with
+ * so an entry renamed over `path`, or an ancestor swapped for a link, between the folder's re-check and
+ * the `unlink` (two awaited calls) wins. Every caller's name is one this run made a moment before with
  * an exclusive create or link (so it was free then) and goes only on a cancel or a failure, or is a random
  * hidden temp name. The app assumes the project folder and its ancestors are writable by the owner's OS
  * user alone, as every name-based write does (the temp's create, the commit's link and rename, Files and

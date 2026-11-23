@@ -559,19 +559,24 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
   temp (`removeIfOwn`, or `unlinkInDir` when the create's `fstat` failed), the start sweep's `sweepOne` (which has no
   identity at all after a restart: a regular file at a recorded `.cc-upload-<16 hex>` name, inside its recorded root),
   and on the download side `placeDownload`'s removal of a name a cancelled placement made and its `finally`'s
-  `remove(temp)` (`.cc-download-<hex>` in Downloads, with no re-check: a random name).
-  - *Narrowed, not closed:* every one of them but the download temp unlinks through `unlinkInDir(path, dirReal)`, which
-    re-reads the folder's real path just before the `unlink` and refuses (`failed`, so a temp keeps its record entry)
-    when it is no longer `dirReal`, a real path read before the check (never the lexical `dirname`, which on macOS's
+  `remove(temp)` (`.cc-download-<hex>` in Downloads), `startSave`'s removal of a stopped download's temp and its
+  `.crdownload`, and `sweepDownloadTemps`' removal of stale `.cc-download-` temps (these three by plain `remove`, with
+  no re-check: random hidden names in Downloads).
+  - *Re-checked, not closed:* every one of them but the three download-temp removes unlinks through
+    `unlinkInDir(path, dirReal)`, which re-reads the folder's real path just before the `unlink` and refuses (`failed`,
+    so a temp keeps its record entry) when it is no longer `dirReal`, a real path read before the check (never the lexical `dirname`, which on macOS's
     `/var` is not real): `removeIfOwn` reads it itself just before its `lstat`, `discard` with no `fstat` passes begin's
     `folderReal`, and the sweep its own `realpath` of the recorded folder. An ancestor renamed aside and replaced by a
     link between the identity check and that re-check is refused (`name-deletes.test.ts`); one swapped before the
     check fails the identity, except that our own temp reached through a folder moved before it still goes (the
-    identity proves it ours). A swap in the single syscall between the re-check and the `unlink` is still followed, as
-    is an entry renamed over the name there.
+    identity proves it ours). A swap between the re-check's `realpath` and the `unlink` (two awaited calls) is still
+    followed, as is an entry renamed over the name there. For `removeIfOwn` this moves the gap (it was `lstat` to
+    `unlink`, it is now `realpath` to `unlink`) and does not make it smaller, so the external review's scenario is no
+    harder to win there; what gained a check are the identity-less deletes: `discard` with no `fstat` (it had none) and
+    the sweep (its `realpath` came before its `lstat`).
   - *Who can win what is left:* for a temp, only a process aiming at a random hidden name made `O_EXCL` by this run;
     for a final name, only one that renames something over a name this call made a moment before with an exclusive
-    link or create (so it was free), or swaps an ancestor folder for a link, inside that one-syscall gap, on a cancel
+    link or create (so it was free), or swaps an ancestor folder for a link, inside that gap, on a cancel
     or a failed copy. A plain write into the name is not a replacement: it writes into our inode, and that goes.
   - *Threat model.* Covered: processes of the owner's own OS user (CLAUDE.md: a tab's processes are, and that is not a
     boundary), which could delete or overwrite those files directly anyway. Not covered: another OS user who can write
