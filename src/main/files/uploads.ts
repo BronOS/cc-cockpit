@@ -1,0 +1,627 @@
+// Uploads from the person's device (design-upload.md revision 2): begin, resolve, cancel, the per-file
+// tokens the `/u/` route takes, the limits and the folder chooser's listing. The bytes on disk are the
+// writer's (`upload-writer.ts`, behind UploadWriterPort); the gateway routes `/u/` to it and tells this
+// about revokes, disconnects, leaving None mode and its stop (`dropDevice`, `dropAll`), and index.ts
+// about a window closing (`dropWindow`).
+//
+// Main is the authority (CLAUDE.md): the caller's device and window are main's (the connection the
+// router bound; `none` for every None-mode view, as downloads.ts keys it), and the source (a panel of
+// the view's layout, a Claude or shell tab) is resolved by the router before it gets here. The folder
+// and the names come from a page and are checked here (design §2: a panel page can build a `File`
+// nobody picked, §6):
+//   - the folder through `resolveProjectEntry` (lexical, then its real path inside the project), a
+//     folder, never `.git` or below (named or real path, case-insensitive on darwin) and never the
+//     app's data dir (§2.1);
+//   - each name through `checkUploadName`, repeats within the upload numbered (`dedupeNames`); a refused
+//     name skips that file with its reason, never a quiet rename (§2.2);
+//   - the caps (2 GiB a file, 100 files) and the folder's free space (the whole upload plus 1 GiB);
+//   - every target name `lstat`ed: a clash makes the upload wait for the person's answer (`resolve`),
+//     Replace only when every clashing entry is a regular file (§2.3).
+//
+// States: `pending` (clashes asked, no tokens), `resolving` (an answer's `lstat`s in flight), `running`
+// (tokens minted, bytes may come), `finished` (every file committed or failed; kept for the terminal
+// entry's paste, §4.3). Only `resolving` and `running` hold one of the device's 2 and the app's 6 places,
+// plus a begin still in its checks (counted before its first await, so parallel begins cannot all pass
+// the check): an unanswered clash dialog holds none, and `resolve` takes one again or refuses.
+//
+// Ends (§3.4): the idle clock (UPLOAD_IDLE_MS with no body bytes for the whole upload, one clock per
+// upload, `touch` from the writer on bytes read), a cancel, the device's or window's drop and `dropAll`.
+// Each aborts through the writer (every temp of the upload deleted, a write in flight ended). A pending
+// upload nobody answers ends after UPLOAD_PENDING_MS.
+//
+// Refusal texts reach the view (a guest's too, D-33): project-relative names and fixed reasons only,
+// never a host path and never an fs error's own message (ENOENT and EACCES texts carry the absolute
+// path). No Electron (the plan's rule).
+import { randomBytes } from 'node:crypto'
+import type { Dirent } from 'node:fs'
+import { lstat, readdir, realpath, stat, statfs } from 'node:fs/promises'
+import { join, relative, resolve, sep } from 'node:path'
+import { downloadSizeText } from '../../shared/downloads'
+import { dataDirRefused } from '../../shared/outside-paths'
+import {
+  checkUploadName,
+  dedupeNames,
+  insideGit,
+  numberedUploadName,
+  UPLOAD_BEGINS_MAX,
+  UPLOAD_BEGINS_WINDOW_MS,
+  UPLOAD_FOLDER_LIST_MAX,
+  UPLOAD_FREE_MARGIN_BYTES,
+  UPLOAD_IDLE_MS,
+  UPLOAD_MAX_APP,
+  UPLOAD_MAX_FILE_BYTES,
+  UPLOAD_MAX_FILES,
+  UPLOAD_MAX_NAME_NUMBER,
+  UPLOAD_MAX_PER_DEVICE,
+  type UploadBeginReply,
+  type UploadClash,
+  type UploadError,
+  type UploadFileToken,
+  type UploadFoldersReply,
+  type UploadRefusedFile,
+  type UploadResolveReply,
+  type UploadSource,
+} from '../../shared/uploads'
+import { displayPath, displayText } from '../plugins/link-request'
+import { RateWindow } from '../rate-window'
+import { resolveProjectEntry } from './system-files'
+
+/** An upload whose clashes nobody answers ends after this (the dialog is armed and may be read slowly). */
+export const UPLOAD_PENDING_MS = 10 * 60_000
+/** Finished uploads kept per device for the terminal entry's paste (§4.3: Paste path while the notice lives). */
+export const UPLOAD_FINISHED_KEPT = 20
+
+/** The same answer for an unknown id, another device's and one already over (§3.1). */
+export const UPLOAD_UNKNOWN_TEXT = 'no such upload'
+
+/** Who calls: main's own tables (the router's bound view), never a payload. */
+export interface UploadCaller {
+  /** The view's signed-in device; `none` for every None-mode view. */
+  deviceId: string
+  windowId: number
+}
+
+/**
+ * How a file is committed: `new` (an exclusive link, numbered on a name that appeared since begin),
+ * `keep-both` (the same, under the numbered name resolve chose), `replace` (a rename over the regular
+ * file that was there).
+ */
+export type UploadFileChoice = 'new' | 'keep-both' | 'replace'
+
+/** What a token is bound to (design Technical Details): the route and the writer read it, never a request. */
+export interface UploadGrant {
+  token: string
+  uploadId: string
+  deviceId: string
+  windowId: number
+  /** The file's index in the begin request. */
+  index: number
+  /** The target folder's real path at begin; the commit resolves the folder again and compares. */
+  folderReal: string
+  /** The folder as named, project-relative (`''` the project folder): the done answer's `path`. */
+  folderRel: string
+  /** The planned name (after dedupe or Keep both). */
+  name: string
+  choice: UploadFileChoice
+  /** The declared size: no byte past it is written. */
+  size: number
+}
+
+/** A file's end, from the writer (or the route): committed under `name` at `path`, or failed. */
+export type UploadFileOutcome = { ok: true; name: string; path: string } | { ok: false; reason: string }
+
+/** What this needs of the writer (Task 4's `upload-writer.ts`). */
+export interface UploadWriterPort {
+  /** Every temp of the upload closed and deleted, a write in flight ended; resolves once done. */
+  abortUpload(uploadId: string): Promise<void>
+}
+
+/** The fields of `fs.statfs` the free-space check reads. */
+export interface UploadStatFs {
+  bavail: number | bigint
+  bsize: number | bigint
+}
+
+export interface UploadsDeps {
+  /** The project folder of the window's project (the registry's path); undefined when none is open there. */
+  projectRoot(windowId: number): string | undefined
+  /** The app's data dir (CC_COCKPIT_DATA_DIR or `userData`); realpath'd at each check. */
+  dataDir: string
+  writer: UploadWriterPort
+  /** Default process.platform: darwin compares `.git` case-insensitively. */
+  platform?: NodeJS.Platform
+  /** Default `fs.statfs`. */
+  statfs?: (path: string) => Promise<UploadStatFs>
+  /** Default Date.now. */
+  now?: () => number
+  /** Default crypto.randomBytes. */
+  random?: (size: number) => Buffer
+  log?: (line: string) => void
+}
+
+/** A file of the upload that was not refused at begin. */
+interface PlannedFile {
+  index: number
+  name: string
+  size: number
+  /** Set when the folder holds an entry by that name at begin. */
+  clash?: { replaceable: boolean }
+}
+
+interface UploadRecord {
+  uploadId: string
+  deviceId: string
+  windowId: number
+  source: UploadSource
+  folderRel: string
+  folderReal: string
+  state: 'pending' | 'resolving' | 'running' | 'finished'
+  files: PlannedFile[]
+  /** The live tokens (running): removed as each file settles. */
+  tokens: Set<string>
+  /** Each settled file's outcome, by index. */
+  results: Map<number, UploadFileOutcome>
+  /** When body bytes were last read (or the tokens minted): the idle clock's start. */
+  lastBytes: number
+  timer?: ReturnType<typeof setTimeout>
+}
+
+/** A begin past its synchronous checks and not answered yet: holds a place; a drop marks it. */
+interface BeginInFlight {
+  deviceId: string
+  windowId: number
+  dropped: boolean
+}
+
+/** A refusal whose text is safe to show (fixed words and display-safe project-relative names). */
+class UploadRefusal extends Error {}
+
+export class Uploads {
+  private readonly records = new Map<string, UploadRecord>()
+  private readonly grants = new Map<string, UploadGrant>()
+  private readonly beginsInFlight = new Set<BeginInFlight>()
+  private readonly begins = new RateWindow(UPLOAD_BEGINS_MAX, UPLOAD_BEGINS_WINDOW_MS)
+  private readonly platform: NodeJS.Platform
+  private readonly now: () => number
+  private readonly random: (size: number) => Buffer
+
+  constructor(private readonly deps: UploadsDeps) {
+    this.platform = deps.platform ?? process.platform
+    this.now = deps.now ?? Date.now
+    this.random = deps.random ?? randomBytes
+  }
+
+  /**
+   * `uploads.begin`: the folder, the names, the caps and the disk checked, the clashes found. Answers
+   * the tokens when nothing clashes (the upload runs), the clashes otherwise (it waits for `resolve`),
+   * or a refusal of the whole upload. `source` is the router's, already resolved for this view.
+   */
+  async begin(caller: UploadCaller, source: UploadSource, folder: unknown, files: unknown): Promise<UploadBeginReply> {
+    // Counted before any await: a flood of begins is bounded even while each one still checks.
+    if (!this.begins.take(caller.deviceId, this.now())) {
+      return { error: `at most ${UPLOAD_BEGINS_MAX} uploads may start in ${UPLOAD_BEGINS_WINDOW_MS / 60_000} minutes; try again later` }
+    }
+    const full = this.limitProblem(caller.deviceId)
+    if (full) return { error: full }
+    const flight: BeginInFlight = { deviceId: caller.deviceId, windowId: caller.windowId, dropped: false }
+    this.beginsInFlight.add(flight)
+    try {
+      return await this.checkBegin(caller, source, folder, files, flight)
+    } catch (err) {
+      return { error: err instanceof UploadRefusal ? err.message : 'the upload could not be started' }
+    } finally {
+      this.beginsInFlight.delete(flight)
+    }
+  }
+
+  /**
+   * `uploads.resolve`: the person's one answer for every clash of a pending upload. `cancel` ends it;
+   * `replace` only when every clash is a regular file; `keep-both` numbers each clashing name past what
+   * the folder and the upload hold. A refusal (Replace not offered, the limits) leaves it pending.
+   */
+  async resolve(caller: UploadCaller, uploadId: unknown, choice: unknown): Promise<UploadResolveReply> {
+    const record = this.owned(caller, uploadId)
+    if (!record || record.state !== 'pending') return { error: UPLOAD_UNKNOWN_TEXT }
+    if (choice !== 'replace' && choice !== 'keep-both' && choice !== 'cancel') return { error: 'the answer is not valid' }
+    if (choice === 'cancel') {
+      await this.end(record, 'cancelled')
+      return { tokens: [], refused: [] }
+    }
+    const clashing = record.files.filter((f) => f.clash)
+    if (choice === 'replace' && clashing.some((f) => !f.clash?.replaceable)) {
+      return { error: 'Replace is offered only when every name taken is a regular file' }
+    }
+    const full = this.limitProblem(caller.deviceId)
+    if (full) return { error: full }
+    this.clearTimer(record)
+    record.state = 'resolving'
+    const refused: UploadRefusedFile[] = []
+    if (choice === 'keep-both') {
+      const taken = new Set(record.files.filter((f) => !f.clash).map((f) => nameKey(f.name)))
+      for (const file of clashing) {
+        const name = await this.freeNumberedName(record.folderReal, file.name, taken)
+        // A drop while the lstats ran ended it (the record is gone): nothing is minted for it.
+        if (this.records.get(record.uploadId) !== record) return { error: UPLOAD_UNKNOWN_TEXT }
+        if (name === null) {
+          refused.push({ index: file.index, reason: `no free name for ${displayText(file.name)} (up to (${UPLOAD_MAX_NAME_NUMBER}))` })
+          continue
+        }
+        taken.add(nameKey(name))
+        file.name = name
+      }
+    }
+    const refusedIdx = new Set(refused.map((r) => r.index))
+    const go = record.files.filter((f) => !refusedIdx.has(f.index))
+    const tokens = this.run(
+      record,
+      go.map((f) => ({ ...f, choice: f.clash ? (choice === 'replace' ? 'replace' : 'keep-both') : 'new' }))
+    )
+    return { tokens, refused }
+  }
+
+  /** `uploads.cancel`: ends it and deletes its temps. An unknown or foreign id does nothing, the same answer. */
+  async cancel(caller: UploadCaller, uploadId: unknown): Promise<void> {
+    const record = this.owned(caller, uploadId)
+    if (!record || record.state === 'finished') return
+    await this.end(record, 'cancelled')
+  }
+
+  /** The route's lookup: the binding of a live token, or undefined (unknown, settled, ended). */
+  grant(token: string): UploadGrant | undefined {
+    return this.grants.get(token)
+  }
+
+  /** The writer, on body bytes read off the socket: the upload's idle clock starts again. A stamp only. */
+  touch(uploadId: string): void {
+    const record = this.records.get(uploadId)
+    if (record?.state === 'running') record.lastBytes = this.now()
+  }
+
+  /**
+   * A file's end (the writer's commit or failure): its token dies, and once every file of the upload is
+   * settled the upload is finished (its place freed, its clock stopped, its outcomes kept for the paste).
+   */
+  settle(token: string, outcome: UploadFileOutcome): void {
+    const grant = this.grants.get(token)
+    if (!grant) return
+    this.grants.delete(token)
+    const record = this.records.get(grant.uploadId)
+    if (!record || record.state !== 'running') return
+    record.tokens.delete(token)
+    record.results.set(grant.index, outcome)
+    if (record.tokens.size === 0) this.finish(record)
+  }
+
+  /** The upload's state and outcomes (the terminal entry's paste, Task 11), when it is the caller's. */
+  outcome(caller: UploadCaller, uploadId: unknown): { state: UploadRecord['state']; source: UploadSource; results: ReadonlyMap<number, UploadFileOutcome> } | undefined {
+    const record = this.owned(caller, uploadId)
+    return record && { state: record.state, source: record.source, results: record.results }
+  }
+
+  /** The device's revoke or disconnect, a guest's end, leaving None mode (`none`): its uploads end. */
+  async dropDevice(deviceId: string): Promise<void> {
+    await this.dropWhere((r) => r.deviceId === deviceId)
+  }
+
+  /** The window (and so its project) closed: its uploads end. */
+  async dropWindow(windowId: number): Promise<void> {
+    await this.dropWhere((r) => r.windowId === windowId)
+  }
+
+  /** The gateway's stop. */
+  async dropAll(): Promise<void> {
+    await this.dropWhere(() => true)
+  }
+
+  /**
+   * The folder chooser's listing (§4.2): the subfolders of `path` (resolved as begin's folder), names only,
+   * sorted, at most UPLOAD_FOLDER_LIST_MAX with `more`; `.git` and the data dir left out (they are refused
+   * as targets anyway), and links too (a listed link would show a folder twice, or one that is not where
+   * it looks; begin still takes a link inside the project by name).
+   */
+  async folders(windowId: number, path: unknown): Promise<UploadFoldersReply | UploadError> {
+    try {
+      const root = this.root(windowId)
+      const folder = await this.resolveFolder(root, path)
+      let entries: Dirent[]
+      try {
+        entries = await readdir(folder.real, { withFileTypes: true })
+      } catch {
+        throw new UploadRefusal(`${folder.shown} cannot be read`)
+      }
+      const dataDir = await this.dataDirReal()
+      const darwin = this.platform === 'darwin'
+      const names = entries
+        .filter((e) => e.isDirectory() && !insideGit(e.name, e.name, darwin))
+        .map((e) => e.name)
+        .filter((name) => !dataDirRefused(join(folder.real, name), dataDir, this.platform))
+        // Code-unit order: the same on every server, whatever its locale (the page may sort for show).
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+      return { folders: names.slice(0, UPLOAD_FOLDER_LIST_MAX), more: names.length > UPLOAD_FOLDER_LIST_MAX }
+    } catch (err) {
+      return { error: err instanceof UploadRefusal ? err.message : 'the folder cannot be listed' }
+    }
+  }
+
+  // -------------------------------------------------------------------------------------------------
+
+  private async checkBegin(
+    caller: UploadCaller,
+    source: UploadSource,
+    folderArg: unknown,
+    filesArg: unknown,
+    flight: BeginInFlight
+  ): Promise<UploadBeginReply> {
+    const specs = this.checkSpecs(filesArg)
+    const root = this.root(caller.windowId)
+    const folder = await this.resolveFolder(root, folderArg)
+
+    const refused: UploadRefusedFile[] = []
+    const okSpecs: Array<{ index: number; name: string; size: number }> = []
+    specs.forEach((spec, index) => {
+      const check = checkUploadName(spec.name)
+      // checkUploadName is ok only for a string.
+      if (check.ok) okSpecs.push({ index, name: spec.name as string, size: spec.size })
+      else refused.push({ index, reason: check.reason })
+    })
+    const deduped = dedupeNames(okSpecs.map((s) => s.name))
+    const planned: PlannedFile[] = []
+    okSpecs.forEach((spec, i) => {
+      const name = deduped[i]
+      if (name === null || name === undefined) {
+        refused.push({ index: spec.index, reason: `no free name for ${displayText(spec.name)} in this upload` })
+      } else {
+        planned.push({ index: spec.index, name, size: spec.size })
+      }
+    })
+
+    if (planned.length > 0) await this.checkFreeSpace(folder.real, planned.reduce((sum, f) => sum + f.size, 0))
+    const files: PlannedFile[] = []
+    for (const file of planned) {
+      try {
+        // lstat: a link at the name is a clash that is not replaceable (Replace never follows one).
+        const st = await lstat(join(folder.real, file.name))
+        file.clash = { replaceable: st.isFile() }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          refused.push({ index: file.index, reason: `${displayText(file.name)} cannot be checked in ${folder.shown}` })
+          continue
+        }
+      }
+      files.push(file)
+    }
+    refused.sort((a, b) => a.index - b.index)
+    // A revoke, a disconnect or the window's close while the checks ran: nothing is kept for it.
+    if (flight.dropped) throw new UploadRefusal('the upload was ended')
+
+    const uploadId = this.random(16).toString('base64url')
+    if (files.length === 0) return { uploadId, refused, clashes: [], tokens: [] }
+    const record: UploadRecord = {
+      uploadId,
+      deviceId: caller.deviceId,
+      windowId: caller.windowId,
+      source,
+      folderRel: folder.rel,
+      folderReal: folder.real,
+      state: 'pending',
+      files,
+      tokens: new Set(),
+      results: new Map(),
+      lastBytes: this.now(),
+    }
+    this.records.set(uploadId, record)
+    const clashes: UploadClash[] = files.filter((f) => f.clash).map((f) => ({ index: f.index, name: f.name, replaceable: f.clash?.replaceable === true }))
+    if (clashes.length > 0) {
+      record.timer = setTimeout(() => void this.end(record, 'unanswered'), UPLOAD_PENDING_MS)
+      record.timer.unref?.()
+      return { uploadId, refused, clashes }
+    }
+    return { uploadId, refused, clashes, tokens: this.run(record, files.map((f) => ({ ...f, choice: 'new' as const }))) }
+  }
+
+  /** The request's file list: 1 to UPLOAD_MAX_FILES of `{name, size}`, each size within the cap. */
+  private checkSpecs(files: unknown): Array<{ name: unknown; size: number }> {
+    if (!Array.isArray(files)) throw new UploadRefusal('the request is not valid')
+    if (files.length === 0) throw new UploadRefusal('no files to upload')
+    if (files.length > UPLOAD_MAX_FILES) throw new UploadRefusal(`at most ${UPLOAD_MAX_FILES} files per upload`)
+    return files.map((f: unknown) => {
+      if (typeof f !== 'object' || f === null) throw new UploadRefusal('the request is not valid')
+      const { name, size } = f as { name?: unknown; size?: unknown }
+      if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0) throw new UploadRefusal('the request is not valid')
+      // The whole upload (design §3.1 lists the caps there): the person picks again without it.
+      if (size > UPLOAD_MAX_FILE_BYTES) {
+        throw new UploadRefusal(`${typeof name === 'string' ? displayText(name) : 'a file'} is larger than ${downloadSizeText(UPLOAD_MAX_FILE_BYTES)}`)
+      }
+      return { name, size }
+    })
+  }
+
+  /** A begin, or a resolve's mint, would pass the device's or the app's places: why, or null. */
+  private limitProblem(deviceId: string): string | null {
+    let device = 0
+    let app = 0
+    for (const r of this.records.values()) {
+      if (r.state !== 'resolving' && r.state !== 'running') continue
+      app++
+      if (r.deviceId === deviceId) device++
+    }
+    for (const b of this.beginsInFlight) {
+      app++
+      if (b.deviceId === deviceId) device++
+    }
+    if (device >= UPLOAD_MAX_PER_DEVICE) return `${UPLOAD_MAX_PER_DEVICE} uploads are already running from this device; wait for one to finish`
+    if (app >= UPLOAD_MAX_APP) return `the server is already running ${UPLOAD_MAX_APP} uploads; try again shortly`
+    return null
+  }
+
+  private root(windowId: number): string {
+    const root = this.deps.projectRoot(windowId)
+    if (!root) throw new UploadRefusal('the project is not open')
+    return root
+  }
+
+  /**
+   * A page's folder resolved inside the project (§2.1): a folder, not `.git` or below (the named and the
+   * real path, case-insensitive on darwin), not the data dir. `shown` is display-safe and project-relative.
+   */
+  private async resolveFolder(root: string, path: unknown): Promise<{ rel: string; real: string; shown: string }> {
+    let entry: Awaited<ReturnType<typeof resolveProjectEntry>>
+    try {
+      entry = await resolveProjectEntry(root, path, true)
+    } catch (err) {
+      // resolveProjectEntry's own texts name the relative path only (it catches the fs errors itself).
+      throw new UploadRefusal(displayText(err instanceof Error ? err.message : 'the folder cannot be used'))
+    }
+    const shown = entry.rel === '' ? 'the project folder' : displayPath(entry.rel)
+    let isDir: boolean
+    try {
+      isDir = (await stat(entry.real)).isDirectory()
+    } catch {
+      throw new UploadRefusal(`no such folder: ${shown}`)
+    }
+    if (!isDir) throw new UploadRefusal(`${shown} is not a folder`)
+    const realRel = relative(entry.root, entry.real).split(sep).join('/')
+    if (insideGit(entry.rel, realRel, this.platform === 'darwin')) {
+      throw new UploadRefusal(`${shown} is in .git: files there can run code on the next git command`)
+    }
+    const dataDir = await this.dataDirReal()
+    if (dataDirRefused(entry.real, dataDir, this.platform) || dataDirRefused(entry.target, dataDir, this.platform)) {
+      throw new UploadRefusal(`${shown} is in the app's data folder`)
+    }
+    return { rel: entry.rel, real: entry.real, shown }
+  }
+
+  /** The data dir's realpath; its spelling as given when it cannot be resolved (as downloads.ts). */
+  private async dataDirReal(): Promise<string> {
+    try {
+      return await realpath(this.deps.dataDir)
+    } catch {
+      return resolve(this.deps.dataDir)
+    }
+  }
+
+  private async checkFreeSpace(folderReal: string, total: number): Promise<void> {
+    let free: number
+    try {
+      const st = await (this.deps.statfs ?? statfs)(folderReal)
+      free = Number(st.bavail) * Number(st.bsize)
+    } catch {
+      throw new UploadRefusal("the server's free disk space cannot be read")
+    }
+    if (free < total + UPLOAD_FREE_MARGIN_BYTES) {
+      throw new UploadRefusal(
+        `the server's disk has ${downloadSizeText(free)} free; this upload needs ${downloadSizeText(total)} plus ${downloadSizeText(UPLOAD_FREE_MARGIN_BYTES)} to spare`
+      )
+    }
+  }
+
+  /**
+   * Keep both's name for `name`: the first ` (n)` the folder has no entry for (`lstat`, so a dangling
+   * link counts as taken) and no other file of the upload takes; null past 99 or the name limit.
+   */
+  private async freeNumberedName(folderReal: string, name: string, taken: ReadonlySet<string>): Promise<string | null> {
+    for (let n = 1; n <= UPLOAD_MAX_NAME_NUMBER; n++) {
+      const candidate = numberedUploadName(name, n)
+      if (candidate === null) return null
+      if (taken.has(nameKey(candidate))) continue
+      try {
+        await lstat(join(folderReal, candidate))
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return candidate
+      }
+    }
+    return null
+  }
+
+  /** Tokens minted for `files` (32 random bytes each, bound as UploadGrant); the upload runs, its clock starts. */
+  private run(record: UploadRecord, files: Array<PlannedFile & { choice: UploadFileChoice }>): UploadFileToken[] {
+    const tokens = files.map((f) => {
+      const token = this.random(32).toString('base64url')
+      this.grants.set(token, {
+        token,
+        uploadId: record.uploadId,
+        deviceId: record.deviceId,
+        windowId: record.windowId,
+        index: f.index,
+        folderReal: record.folderReal,
+        folderRel: record.folderRel,
+        name: f.name,
+        choice: f.choice,
+        size: f.size,
+      })
+      record.tokens.add(token)
+      return { index: f.index, token, name: f.name }
+    })
+    if (tokens.length === 0) {
+      this.finish(record)
+      return tokens
+    }
+    record.state = 'running'
+    record.lastBytes = this.now()
+    this.armIdle(record, UPLOAD_IDLE_MS)
+    return tokens
+  }
+
+  /**
+   * One lazy timer per upload: `touch` only stamps `lastBytes`, and the timer, when it fires, re-arms for
+   * what is left of the window or ends the upload. So a 100-file upload whose later tokens wait while
+   * earlier files stream is never expired, and silence is.
+   */
+  private armIdle(record: UploadRecord, ms: number): void {
+    this.clearTimer(record)
+    record.timer = setTimeout(() => {
+      record.timer = undefined
+      if (this.records.get(record.uploadId) !== record || record.state !== 'running') return
+      const left = record.lastBytes + UPLOAD_IDLE_MS - this.now()
+      if (left > 0) this.armIdle(record, left)
+      else void this.end(record, 'idle')
+    }, ms)
+    record.timer.unref?.()
+  }
+
+  private clearTimer(record: UploadRecord): void {
+    if (record.timer !== undefined) clearTimeout(record.timer)
+    record.timer = undefined
+  }
+
+  private finish(record: UploadRecord): void {
+    this.clearTimer(record)
+    record.state = 'finished'
+    record.tokens.clear()
+    // The oldest finished uploads of the device go once past UPLOAD_FINISHED_KEPT (Map order is insertion).
+    const finished = [...this.records.values()].filter((r) => r.deviceId === record.deviceId && r.state === 'finished')
+    for (const old of finished.slice(0, Math.max(0, finished.length - UPLOAD_FINISHED_KEPT))) this.records.delete(old.uploadId)
+  }
+
+  /** Ends a live upload: its tokens die at once (no chunk is taken after this), then the writer deletes its temps. */
+  private async end(record: UploadRecord, why: 'cancelled' | 'idle' | 'unanswered' | 'dropped'): Promise<void> {
+    if (this.records.get(record.uploadId) !== record) return
+    this.records.delete(record.uploadId)
+    this.clearTimer(record)
+    for (const token of record.tokens) this.grants.delete(token)
+    record.tokens.clear()
+    // Only a running upload has tokens, and so temps: a pending or finished one has nothing on disk.
+    const hadTokens = record.state === 'running'
+    record.state = 'finished'
+    if (why === 'idle') this.deps.log?.(`upload ${record.uploadId.slice(0, 8)}: no bytes for ${UPLOAD_IDLE_MS / 1000} s, ended`)
+    if (hadTokens) await this.deps.writer.abortUpload(record.uploadId)
+  }
+
+  private async dropWhere(match: (r: { deviceId: string; windowId: number }) => boolean): Promise<void> {
+    for (const b of this.beginsInFlight) if (match(b)) b.dropped = true
+    const ends = [...this.records.values()].filter(match).map((r) => this.end(r, 'dropped'))
+    await Promise.all(ends)
+  }
+
+  /** The record when it exists and the caller's device began it; otherwise undefined, the same for both. */
+  private owned(caller: UploadCaller, uploadId: unknown): UploadRecord | undefined {
+    if (typeof uploadId !== 'string') return undefined
+    const record = this.records.get(uploadId)
+    return record && record.deviceId === caller.deviceId ? record : undefined
+  }
+}
+
+/** The key two names clash under within one upload (as `dedupeNames`: case folded, NFC). */
+function nameKey(name: string): string {
+  return name.normalize('NFC').toLowerCase()
+}

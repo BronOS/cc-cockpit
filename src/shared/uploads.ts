@@ -97,8 +97,13 @@ export interface UploadBegun {
   tokens?: UploadFileToken[]
 }
 
+/** A refusal of the whole call, with the text the notice shows (never a host path, D-33). */
+export interface UploadError {
+  error: string
+}
+
 /** `uploads.begin`'s answer: begun, or the whole upload refused (folder, role, caps, disk, limits). */
-export type UploadBeginReply = UploadBegun | { error: string }
+export type UploadBeginReply = UploadBegun | UploadError
 
 export type UploadChoice = 'replace' | 'keep-both' | 'cancel'
 
@@ -107,10 +112,12 @@ export interface UploadResolveRequest {
   choice: UploadChoice
 }
 
-/** `uploads.resolve`'s answer: the tokens (none for `cancel`). */
-export interface UploadResolveReply {
-  tokens: UploadFileToken[]
-}
+/**
+ * `uploads.resolve`'s answer: the tokens (none for `cancel`), and the files Keep both could not number
+ * (every ` (n)` to 99 taken, or past the name limit), skipped with their reason. A refusal (Replace with a
+ * clash that is not a regular file, the limits) leaves the upload waiting for another answer.
+ */
+export type UploadResolveReply = { tokens: UploadFileToken[]; refused: UploadRefusedFile[] } | UploadError
 
 export interface UploadCancelRequest {
   uploadId: string
