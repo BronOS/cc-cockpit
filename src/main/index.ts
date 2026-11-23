@@ -484,6 +484,9 @@ function start(server: boolean): void {
   // A forgotten project ends its guests and drops its invites (GuestStore.projectRemoved, design-guests §4). Set
   // once the guest store exists (below); a forget before that (none at start) has no guests to end.
   const guestsForget: { project?: (id: string) => void } = {}
+  // The uploads are made after the GuestStore, whose constructor already ends the guests that lapsed while the app
+  // was off: that early `end()` must find nothing to drop (no upload can exist yet), not a `const` in its dead zone.
+  const uploadsRef: { current?: Uploads } = {}
   const registry = new ProjectRegistry({
     dataDir,
     onForget: (id) => {
@@ -2518,7 +2521,7 @@ function start(server: boolean): void {
     // Created further down (it needs the gateway's view lookups); only called once guests act, long after.
     dropDownloads: (deviceId) => downloads.dropDevice(deviceId),
     // The same for uploads (design-upload.md §3.4); never a rejection in main.
-    dropUploads: (deviceId) => void uploads.dropDevice(deviceId).catch((err: unknown) => warnLog(`guests: ending uploads failed: ${errorText(err)}`)),
+    dropUploads: (deviceId) => void uploadsRef.current?.dropDevice(deviceId).catch((err: unknown) => warnLog(`guests: ending uploads failed: ${errorText(err)}`)),
     pluginShown: (projectId, pluginId) => pluginGuestAccess.visible(projectId, pluginId),
     // A role downgrade warns about the guest's own unsaved pages only.
     unsavedOf: guestUnsavedOf((viewId) => views.whoOf(viewId), { access: (who) => guestStore.access(who) }, (projectId, inView) =>
@@ -2673,6 +2676,7 @@ function start(server: boolean): void {
     log: warnLog
   })
   const uploads: Uploads = new Uploads({ projectRoot: uploadProjectRoot, dataDir, writer: uploadWriter, log: warnLog })
+  uploadsRef.current = uploads
   const webGateway = new WebGateway({
     log: warnLog,
     auth: webAuth,
@@ -4482,7 +4486,19 @@ function start(server: boolean): void {
       // The temps a crash left mid-upload go before the gateway can take a `/u/` PUT (design-upload.md §2.4):
       // on the desktop `runStartOrder` does not await the gateway, so the sweep is awaited here, first. Never a
       // reason not to start (the writer logs what it could not delete and keeps it for the next sweep).
-      await uploadWriter.sweepTemps().catch((err: unknown) => warnLog(`uploads: the temps sweep failed: ${errorText(err)}`))
+      // A deadline (5 s): a stale temp under an unreachable network share must not hold the start. The sweep goes on
+      // after it (its final update keeps entries live by then), and the gateway starts anyway.
+      let sweepTimer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        uploadWriter.sweepTemps().catch((err: unknown) => warnLog(`uploads: the temps sweep failed: ${errorText(err)}`)),
+        new Promise<void>((resolve) => {
+          sweepTimer = setTimeout(() => {
+            warnLog('uploads: the temps sweep is still running after 5 s; starting anyway')
+            resolve()
+          }, 5000)
+        })
+      ])
+      clearTimeout(sweepTimer)
       // server-start.ts has the order. The socket first, so the first Claude tab already has a live
       // socket to report to (milliseconds; the stale probe is capped at 500 ms; on the desktop false
       // only logs and its tabs get no CC_COCKPIT_SOCK, see the TabManager `sock` above). In server

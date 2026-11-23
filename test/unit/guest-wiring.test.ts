@@ -48,7 +48,7 @@ describe("index.ts wires 02's guest deps", () => {
   })
 
   it("a guest's end, a downgrade and a narrowing end its uploads; the gateway, the router and a window's close reach them (design-upload.md §3.4)", () => {
-    expect(depsOf('GuestStore')).toContain('dropUploads: (deviceId) => void uploads.dropDevice(deviceId).catch(')
+    expect(depsOf('GuestStore')).toContain('dropUploads: (deviceId) => void uploadsRef.current?.dropDevice(deviceId).catch(')
     const route = depsOf('WebGateway')
     expect(route).toContain('dropDevice: (deviceId) => uploads.dropDevice(deviceId)')
     expect(route).toContain('dropAll: () => uploads.dropAll()')
@@ -58,8 +58,8 @@ describe("index.ts wires 02's guest deps", () => {
     expect(closed.slice(0, closed.indexOf('onReopenFailed'))).toContain('void uploads.dropWindow(windowId).catch(')
     // The crash temps go before the start order lets the gateway listen.
     const ready = INDEX.slice(INDEX.indexOf('.whenReady()'))
-    expect(ready.indexOf('await uploadWriter.sweepTemps()')).toBeGreaterThan(0)
-    expect(ready.indexOf('await uploadWriter.sweepTemps()')).toBeLessThan(ready.indexOf('await runStartOrder('))
+    expect(ready.indexOf('uploadWriter.sweepTemps()')).toBeGreaterThan(0)
+    expect(ready.indexOf('uploadWriter.sweepTemps()')).toBeLessThan(ready.indexOf('await runStartOrder('))
   })
 
   it("the owner's guest list follows the store: guests.changed on every change (05's chip and list read it)", () => {

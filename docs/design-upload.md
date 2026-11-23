@@ -110,7 +110,8 @@ extension kept), **Cancel** (nothing written). One answer covers the whole uploa
   it creates it and drops it at commit or deletion. At start, main deletes every temp listed (none can be live after a
   restart): only a regular file named as a temp whose folder's real path is inside its recorded project folder. An entry
   it could not reach (the project folder missing, a volume not mounted yet, an lstat or unlink refused) stays for the next
-  start; the rest of the record is emptied. Every abort (§3.4) deletes its temp at once. The Files tree hides
+  start; the rest of the record is emptied. The start waits for the sweep at most 5 s (a stale temp under an unreachable
+  network share must not hold the gateway); a late finish keeps the entries live by then. Every abort (§3.4) deletes its temp at once. The Files tree hides
   `.cc-upload-*` (§5.1).
 
 ### 2.5 Caps and limits
@@ -219,8 +220,10 @@ The commit; a cancel; 60 s with no bytes received for the **upload** (one clock 
 each body chunk read off the socket, not by a finished PUT: the tokens of a 100-file upload are minted together and used
 one after another, and a slow link may send a chunk for most of the 30 s request bound); the device's revoke or
 disconnect; a guest's end (through `GuestStore`'s one path: a `dropUploads` dep beside its `dropDownloads`, also called on
-a downgrade to read); leaving None mode; gateway stop; the window or the project closing. Each aborts the live request and deletes the
-temp. A reconnect does not end it (the token is bound to the device, not to the view id, which a reconnect replaces), so a
+a downgrade to read, and any other narrowing of the guest's access: a tab unshared, a narrower scope, or a plugin switched on or off
+in the project, whose direction `pluginAccessChanged` does not know, so an unrelated plugin's switch also ends a running
+upload, an accepted cost: the client begins again); leaving None mode; gateway stop; the window or the project closing. Each aborts the live request and deletes the
+temp. A reconnect on its own does not end it (the token is bound to the device, not to the view id, which a reconnect replaces), so a
 phone that slept for a few seconds resumes at `expected`.
 
 ### 3.5 The remote window
