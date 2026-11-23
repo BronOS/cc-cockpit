@@ -140,7 +140,7 @@ export class UploadController {
     this.left = true
     for (const entry of this.live) {
       entry.abort.abort()
-      if (entry.uploadId !== undefined) this.cancelOnMain(entry.uploadId)
+      if (entry.uploadId !== undefined) void this.cancelOnMain(entry.uploadId)
       this.endDialog(entry)
     }
     this.live.clear()
@@ -203,12 +203,17 @@ export class UploadController {
     const cancelled = entry.abort.signal.aborted || results.some((r) => r.outcome === 'cancelled')
     const done = results.filter((r) => r.outcome === 'done')
     const notDone = results.length > done.length
+    // A file the client gave up on (the link lost, a file no longer readable) leaves its token live on
+    // main, so the upload stays running: cancel it now, so the device's place frees and the temp goes
+    // rather than after the idle minute. Before the paste and awaited: main finishes a partly settled
+    // upload on that cancel, keeping its outcomes (design §3.4), and the paste needs it finished. A
+    // finished upload ignores the cancel.
+    if (notDone && !cancelled) await this.cancelOnMain(begun.uploadId)
+    if (this.left) return
     let held: HeldPaste | undefined
     if (tab !== undefined && done.length > 0 && !cancelled) held = await this.paste(entry.uploadId, tab, false)
-    // A file the client gave up on leaves its token live on main (no chunk will come): end it now so
-    // the device's place frees and the temp goes, rather than after the idle minute. After the paste,
-    // which needs the upload's record. A finished upload ignores it.
-    if (notDone && !cancelled) this.cancelOnMain(begun.uploadId)
+    // A pagehide while the paste was in flight (the bridge's close rejects it): nothing more to show.
+    if (this.left) return
     this.result(entry, request, folder, results, refused, cancelled, held, tab)
   }
 
@@ -264,13 +269,16 @@ export class UploadController {
     }
     try {
       const reply = await this.deps.invoke('uploads.resolve', { uploadId: begun.uploadId, choice })
+      // A pagehide while the resolve was in flight: leave() has already sent the cancel.
+      if (this.left) return { cancelled: true }
       if ('error' in reply) {
-        this.cancelOnMain(begun.uploadId)
+        void this.cancelOnMain(begun.uploadId)
         return reply
       }
       return reply
     } catch (err) {
-      this.cancelOnMain(begun.uploadId)
+      if (this.left) return { cancelled: true }
+      void this.cancelOnMain(begun.uploadId)
       return { error: reasonOf(err) }
     }
   }
@@ -282,7 +290,7 @@ export class UploadController {
     const onCancel = (): void => {
       if (entry.abort.signal.aborted) return
       entry.abort.abort()
-      if (entry.uploadId !== undefined) this.cancelOnMain(entry.uploadId)
+      if (entry.uploadId !== undefined) void this.cancelOnMain(entry.uploadId)
     }
     const progress = (fileNo: number, sent: number): void =>
       this.notice(entry, { kind: 'progress', id: entry.noticeId, folder, fileNo, fileCount, sent, total, onCancel })
@@ -343,6 +351,9 @@ export class UploadController {
     const id = entry.noticeId
     const uploadId = entry.uploadId
     const show = (h: HeldPaste | undefined): void => {
+      // Not through notice(): a Paste path click comes after the upload left `live`. The page leaving
+      // still ends every later answer here (a manual paste in flight at pagehide).
+      if (this.left) return
       if (h === undefined || tab === undefined) {
         this.deps.ui.putNotice({ kind: 'result', id, text, sticky })
         return
@@ -385,8 +396,17 @@ export class UploadController {
     else this.deps.ui.endClash(dialog.id)
   }
 
-  /** Best-effort: main's idle clock ends what a lost cancel leaves. */
-  private cancelOnMain(uploadId: string): void {
-    this.deps.invoke('uploads.cancel', { uploadId }).catch(() => undefined)
+  /** Best-effort: main's idle clock ends what a lost cancel leaves. Never rejects; most callers do not await it. */
+  private cancelOnMain(uploadId: string): Promise<void> {
+    return this.deps.invoke('uploads.cancel', { uploadId }).catch(() => undefined)
   }
+}
+
+/**
+ * The page's `pagehide` (web/main.tsx): the uploads are left first, so their cancels are on the socket
+ * before it closes. The other order sends nothing: a closed bridge refuses every invoke at once.
+ */
+export function leaveThenClose(uploads: Pick<UploadController, 'leave'>, close: () => void): void {
+  uploads.leave()
+  close()
 }

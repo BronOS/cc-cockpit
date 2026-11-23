@@ -231,7 +231,10 @@ disconnect; a guest's end (through `GuestStore`'s one path: a `dropUploads` dep 
 a downgrade to read, and any other narrowing of the guest's access: a tab unshared, a narrower scope, or a plugin switched on or off
 in the project, whose direction `pluginAccessChanged` does not know, so an unrelated plugin's switch also ends a running
 upload, an accepted cost: the client begins again); leaving None mode; gateway stop; the window or the project closing. Each aborts the live request and deletes the
-temp. A reconnect on its own does not end it (the token is bound to the device, not to the view id, which a reconnect replaces), so a
+temp. A cancel of a running upload some of whose files have already settled (committed or failed) finishes the upload
+instead of removing it: its live tokens end and their files settle as cancelled, and the record keeps every outcome, so
+a partial result still pastes (§4.3, §5.3). The shell sends that cancel itself when its client gave up on files (a lost
+link, a file no longer readable), and sends it before the paste, which needs a finished upload. A reconnect on its own does not end it (the token is bound to the device, not to the view id, which a reconnect replaces), so a
 phone that slept for a few seconds resumes at `expected`.
 
 ### 3.5 The remote window

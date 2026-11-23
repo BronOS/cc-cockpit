@@ -21,6 +21,7 @@ import {
   type UploadSource,
 } from '../../src/shared/uploads'
 import {
+  UPLOAD_CANCELLED_TEXT,
   UPLOAD_FINISHED_KEPT,
   UPLOAD_GIT_NAME_TEXT,
   UPLOAD_PENDING_MS,
@@ -453,6 +454,50 @@ describe('ownership', () => {
     await up.cancel(A, running.uploadId)
     expect(up.grant(running.tokens![0]!.token)).toBeUndefined()
     expect(aborted).toEqual([running.uploadId])
+  })
+})
+
+describe('cancel of a partly settled upload', () => {
+  it('finishes it: live tokens settle as cancelled, outcomes kept for the paste, place freed, temps deleted', async () => {
+    const up = make()
+    const reply = await begun(up, A, '', files('a', 'b', 'c'))
+    const [a, b, c] = reply.tokens!
+    up.settle(a!.token, { ok: true, name: 'a', path: 'a' })
+    up.settle(b!.token, { ok: false, reason: 'the disk is full' })
+    const cancelling = up.cancel(A, reply.uploadId)
+    // Finished in the cancel's synchronous step: a paste sent right after finds it so.
+    expect(up.outcome(A, reply.uploadId)?.state).toBe('finished')
+    await cancelling
+    expect(up.grant(c!.token)).toBeUndefined()
+    expect(aborted).toEqual([reply.uploadId])
+    const outcome = up.outcome(A, reply.uploadId)
+    expect(outcome?.state).toBe('finished')
+    expect([...outcome!.results.entries()]).toEqual([
+      [a!.index, { ok: true, name: 'a', path: 'a' }],
+      [b!.index, { ok: false, reason: 'the disk is full' }],
+      [c!.index, { ok: false, reason: UPLOAD_CANCELLED_TEXT }],
+    ])
+    // A late settle of the cancelled token changes nothing; a second cancel is a no-op.
+    up.settle(c!.token, { ok: true, name: 'c', path: 'c' })
+    expect(up.outcome(A, reply.uploadId)?.results.get(c!.index)).toEqual({ ok: false, reason: UPLOAD_CANCELLED_TEXT })
+    await up.cancel(A, reply.uploadId)
+    expect(aborted).toEqual([reply.uploadId])
+    // Its place is free: two more begin.
+    await begun(up, A, '', files('d'))
+    await begun(up, A, '', files('e'))
+  })
+
+  it('a running upload with nothing settled is removed, as before; another device cannot finish it', async () => {
+    const up = make()
+    const reply = await begun(up, A, '', files('a', 'b'))
+    up.settle(reply.tokens![0]!.token, { ok: true, name: 'a', path: 'a' })
+    await up.cancel(B, reply.uploadId)
+    expect(up.outcome(A, reply.uploadId)?.state).toBe('running')
+    expect(aborted).toEqual([])
+    const none = await begun(up, A, '', files('c'))
+    await up.cancel(A, none.uploadId)
+    expect(up.outcome(A, none.uploadId)).toBeUndefined()
+    expect(aborted).toEqual([none.uploadId])
   })
 })
 

@@ -1,11 +1,13 @@
 // The web shell's upload controller (src/renderer/web/upload-controller.ts, design-upload.md §3.1,
 // §4.3, §5.3) with fakes for the invoke, the run and the dialogs: a clean upload, a clash answered each
-// way, a cancel mid-run, a refusal at begin, a partial result, `pagehide` aborting two runs, and a
-// terminal source reaching the chooser and `uploads.paste`.
+// way, a cancel mid-run, a refusal at begin, a partial result (a terminal one cancelled on main before
+// its paste), `pagehide` at each step (chooser, begin, clash, resolve, run, paste) and its order against
+// the bridge's close, and a terminal source reaching the chooser and `uploads.paste`.
 
 import { describe, expect, it } from 'vitest'
 import {
   KEYS_OFF_HELD,
+  leaveThenClose,
   UploadController,
   type UploadControllerDeps,
   type UploadFile
@@ -31,7 +33,36 @@ function fakeInvoke(answers: Record<string, unknown>): { invoke: UploadControlle
   return { invoke, calls }
 }
 
-const tokensFor = (...indices: number[]): UploadFileToken[] => indices.map((index) => ({ index, token: `t${index}`, name: `n${index}` }))
+/**
+ * A bridge as web/bridge.ts behaves around `close`: an invoke before it is sent (recorded) and answered
+ * from `answers`; `close` rejects every pending call; an invoke after it is refused at once, unsent.
+ */
+function closingBridge(answers: Record<string, unknown>): { invoke: UploadControllerDeps['invoke']; close: () => void; sent: string[] } {
+  const sent: string[] = []
+  const pending = new Set<(err: Error) => void>()
+  let closed = false
+  const invoke = ((channel: string, payload?: unknown) => {
+    if (closed) return Promise.reject(new Error('the bridge is closed'))
+    sent.push(channel)
+    return new Promise<unknown>((resolve, reject) => {
+      pending.add(reject)
+      const a = answers[channel]
+      Promise.resolve(typeof a === 'function' ? (a as (p: unknown) => unknown)(payload) : a).then(
+        (v) => (pending.delete(reject), v instanceof Error ? reject(v) : resolve(v)),
+        (e: unknown) => (pending.delete(reject), reject(e))
+      )
+    })
+  }) as UploadControllerDeps['invoke']
+  const close = (): void => {
+    closed = true
+    sent.push('close')
+    for (const reject of pending) reject(new Error('the bridge is closed'))
+    pending.clear()
+  }
+  return { invoke, close, sent }
+}
+
+const tokensFor =(...indices: number[]): UploadFileToken[] => indices.map((index) => ({ index, token: `t${index}`, name: `n${index}` }))
 
 /** A run that settles every token as `done` (or per `outcome`), reporting progress once per file. */
 function fakeRun(outcome: (t: UploadFileToken) => UploadFileResult['outcome'] = () => 'done') {
@@ -268,7 +299,10 @@ describe('UploadController: cancel and leaving', () => {
     expect(calls.filter((x) => x.channel === 'uploads.begin')).toHaveLength(2)
   })
 
-  it('pagehide during a begin cancels the upload once begin answers, and closes an open clash dialog', async () => {
+  // Not reachable through the real pagehide: leaveThenClose closes the bridge right after leave(), which
+  // rejects the begin in flight (next test), so that case is left to main's idle clock. This pins the
+  // controller's own rule for a begin answered after leave(), and the clash dialog's end.
+  it('a begin answered after leave() is cancelled, and leave() closes an open clash dialog', async () => {
     const ui = new UploadUi()
     let answerBegin: (v: unknown) => void = () => undefined
     const { invoke, calls } = fakeInvoke({
@@ -295,6 +329,62 @@ describe('UploadController: cancel and leaving', () => {
     expect(ui2.get().clashes).toHaveLength(0)
     expect(f2.calls.map((x) => x.channel)).toEqual(['uploads.begin', 'uploads.cancel'])
   })
+
+  it('the real pagehide during a begin: the closed bridge rejects it, no cancel is sent and no notice shows', async () => {
+    const ui = new UploadUi()
+    const bridge = closingBridge({ 'uploads.begin': () => new Promise(() => undefined) })
+    const c = new UploadController({ invoke: bridge.invoke, ui, projectId: 'p', run: fakeRun().run })
+    const one = c.start({ source: { panel: 'k' }, folder: '', files: [file('a')] })
+    await tick()
+    leaveThenClose(c, bridge.close)
+    await one
+    expect(bridge.sent).toEqual(['uploads.begin', 'close'])
+    expect(ui.get().notices).toHaveLength(0)
+  })
+
+  it('pagehide with the folder chooser open ends it; nothing begins and nothing shows', async () => {
+    const ui = new UploadUi()
+    const { invoke, calls } = fakeInvoke({})
+    const c = new UploadController({ invoke, ui, projectId: 'p', run: fakeRun().run })
+    const done = c.startForTab('t', [file('a')])
+    await tick()
+    expect(ui.get().choosers).toHaveLength(1)
+    c.leave()
+    await done
+    expect(ui.get().choosers).toHaveLength(0)
+    expect(calls).toHaveLength(0)
+    expect(ui.get().notices).toHaveLength(0)
+  })
+
+  it('pagehide while uploads.resolve is in flight still cancels on main, once', async () => {
+    const ui = new UploadUi()
+    const bridge = closingBridge({
+      'uploads.begin': { uploadId: 'u1', refused: [], clashes: [{ index: 0, name: 'a', replaceable: true }] },
+      'uploads.resolve': () => new Promise(() => undefined),
+      'uploads.cancel': undefined
+    })
+    const c = new UploadController({ invoke: bridge.invoke, ui, projectId: 'p', run: fakeRun().run })
+    const done = c.start({ source: { panel: 'k' }, folder: '', files: [file('a')] })
+    await tick()
+    ui.get().clashes[0]!.onAnswer('replace')
+    await tick()
+    leaveThenClose(c, bridge.close)
+    await done
+    expect(bridge.sent).toEqual(['uploads.begin', 'uploads.resolve', 'uploads.cancel', 'close'])
+    expect(ui.get().notices).toHaveLength(0)
+  })
+
+  it('leaveThenClose sends the cancels before the bridge closes', async () => {
+    const ui = new UploadUi()
+    const bridge = closingBridge({ 'uploads.begin': { uploadId: 'u1', refused: [], clashes: [], tokens: tokensFor(0) }, 'uploads.cancel': undefined })
+    const h = hangingRun()
+    const c = new UploadController({ invoke: bridge.invoke, ui, projectId: 'p', run: h.run })
+    const done = c.start({ source: { panel: 'k' }, folder: '', files: [file('a')] })
+    await h.running()
+    leaveThenClose(c, bridge.close)
+    await done
+    expect(bridge.sent).toEqual(['uploads.begin', 'uploads.cancel', 'close'])
+  })
 })
 
 describe('UploadController: a terminal source', () => {
@@ -311,7 +401,7 @@ describe('UploadController: a terminal source', () => {
     chooser!.onAnswer('docs')
     expect(ui.get().choosers).toHaveLength(0)
     await done
-    return { ui, calls, storage, chooser: chooser! }
+    return { ui, calls, storage, chooser: chooser!, c }
   }
 
   it('opens the chooser at the preset, writes it after begin and pastes the text', async () => {
@@ -391,6 +481,76 @@ describe('UploadController: a terminal source', () => {
       await done
       expect(calls.some((x) => x.channel === 'uploads.paste')).toBe(false)
     }
+  })
+
+  it('a partial result cancels on main first (awaited), then pastes; a later Paste path is still answered', async () => {
+    const ui = new UploadUi()
+    // Main's side as uploads.ts now has it: the cancel finishes the partly settled upload, so the paste
+    // (auto and manual) finds it; before the cancel answers, a paste would find it running.
+    let finished = false
+    let answerCancel: () => void = () => undefined
+    let paste = 0
+    const { invoke, calls } = fakeInvoke({
+      'uploads.begin': { uploadId: 'u1', refused: [], clashes: [], tokens: tokensFor(0, 1) },
+      'uploads.cancel': () => new Promise<void>((r) => (answerCancel = () => ((finished = true), r()))),
+      'uploads.paste': () =>
+        !finished ? { held: 'the upload is still running', text: '' } : ++paste === 1 ? { held: 'Claude is busy', text: '/p/d/n0 ' } : { text: '/p/d/n0 ' }
+    })
+    const pasted: string[] = []
+    const run = fakeRun((t) => (t.index === 1 ? 'failed' : 'done')).run
+    const c = new UploadController({ invoke, ui, projectId: 'p', run, keysOff: () => false, pasteInto: (_t, text) => (pasted.push(text), true) })
+    const done = c.startForTab('t', [file('a'), file('b')])
+    await tick()
+    ui.get().choosers[0]!.onAnswer('d')
+    while (!calls.some((x) => x.channel === 'uploads.cancel')) await tick()
+    await tick()
+    // The paste waits for the cancel's answer.
+    expect(calls.map((x) => x.channel)).toEqual(['uploads.begin', 'uploads.cancel'])
+    answerCancel()
+    await done
+    expect(calls.map((x) => x.channel)).toEqual(['uploads.begin', 'uploads.cancel', 'uploads.paste'])
+    expect(calls[2]?.payload).toEqual({ uploadId: 'u1' })
+    const r = lastResult(ui)
+    expect(r).toMatchObject({ text: 'Uploaded 1 of 2 to d; not uploaded: n1 (the disk is full)', sticky: true, held: { reason: 'Claude is busy' } })
+    r.onPaste!()
+    await tick()
+    expect(calls.at(-1)).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1', manual: true } })
+    expect(pasted).toEqual(['/p/d/n0 '])
+  })
+
+  it('a pagehide while the automatic paste is in flight shows no result notice', async () => {
+    const ui = new UploadUi()
+    const bridge = closingBridge({
+      'uploads.begin': begin,
+      'uploads.paste': () => new Promise(() => undefined)
+    })
+    const c = new UploadController({ invoke: bridge.invoke, ui, projectId: 'p', run: fakeRun().run, keysOff: () => false, pasteInto: () => true })
+    const done = c.startForTab('t', [file('a')])
+    await tick()
+    ui.get().choosers[0]!.onAnswer('')
+    while (!bridge.sent.includes('uploads.paste')) await tick()
+    const before = ui.get().notices
+    leaveThenClose(c, bridge.close)
+    await done
+    expect(ui.get().notices).toBe(before)
+    expect(ui.get().notices.some((n) => n.kind === 'result')).toBe(false)
+  })
+
+  it('a manual paste in flight at pagehide shows nothing when it answers', async () => {
+    let answer: (v: unknown) => void = () => undefined
+    let paste = 0
+    const { ui, c } = await chooseAndRun(
+      { keysOff: () => false, pasteInto: () => true },
+      { 'uploads.paste': () => (++paste === 1 ? { held: 'Claude is busy', text: 'x ' } : new Promise((r) => (answer = r))) }
+    )
+    lastResult(ui).onPaste!()
+    await tick()
+    const before = ui.get()
+    c.leave()
+    answer({ held: 'still busy', text: 'x ' })
+    await tick()
+    expect(ui.get()).toBe(before)
+    expect(lastResult(ui).held?.reason).toBe('Claude is busy')
   })
 
   it('a drop of folders only says so without a chooser', async () => {

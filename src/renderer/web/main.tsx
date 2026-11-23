@@ -51,7 +51,7 @@ import '../assets/fonts/fonts.css'
 import '../styles.css'
 import './web.css'
 import { setWebviewFrameSource } from './webview-stream'
-import { UploadController } from './upload-controller'
+import { leaveThenClose, UploadController } from './upload-controller'
 import { onUploadRequest } from './upload-request'
 import { uploadUi, type PresetStorage } from '../notices/upload-model'
 import { startShellScrolling } from '../../sdk/scroll-edges'
@@ -331,10 +331,7 @@ function startShell(reactRoot: ReturnType<typeof createRoot>, guest: SessionGues
   onUploadRequest((request) => void uploads.start(request))
   // Leaving the page cancels its uploads, before the socket closes (a closed bridge refuses the
   // cancel at once); no beforeunload prompt for them (§5.3: the remote window's close would hang).
-  window.addEventListener('pagehide', () => {
-    uploads.leave()
-    bridge.close()
-  })
+  window.addEventListener('pagehide', () => leaveThenClose(uploads, () => bridge.close()))
   // Closing the socket on pagehide makes the page eligible for the back/forward cache; a page
   // restored from it has a closed bridge that still says `ready`. Start over from a fresh load.
   window.addEventListener('pageshow', (ev) => {

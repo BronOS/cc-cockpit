@@ -29,7 +29,9 @@
 // Ends (§3.4): the idle clock (UPLOAD_IDLE_MS with no body bytes for the whole upload, one clock per
 // upload, `touch` from the writer on bytes read), a cancel, the device's or window's drop and `dropAll`.
 // Each aborts through the writer (every temp of the upload deleted, a write in flight ended). A pending
-// upload nobody answers ends after UPLOAD_PENDING_MS.
+// upload nobody answers ends after UPLOAD_PENDING_MS. A cancel of a running upload with files already
+// settled finishes it rather than removing it (the rest settle as cancelled), so its partial result
+// still pastes.
 //
 // Refusal texts reach the view (a guest's too, D-33): project-relative names and fixed reasons only,
 // never a host path and never an fs error's own message (ENOENT and EACCES texts carry the absolute
@@ -79,6 +81,9 @@ export const UPLOAD_GIT_NAME_TEXT = 'a file cannot be named .git: git would read
 
 /** The same answer for an unknown id, another device's and one already over (§3.1). */
 export const UPLOAD_UNKNOWN_TEXT = 'no such upload'
+
+/** A file still live when a partly settled upload is cancelled (`cancel`, §3.4): its outcome. */
+export const UPLOAD_CANCELLED_TEXT = 'cancelled'
 
 /** Who calls: main's own tables (the router's bound view), never a payload. */
 export interface UploadCaller {
@@ -297,10 +302,16 @@ export class Uploads {
     return { tokens, refused }
   }
 
-  /** `uploads.cancel`: ends it and deletes its temps. An unknown or foreign id does nothing, the same answer. */
+  /**
+   * `uploads.cancel`: ends it and deletes its temps. An unknown or foreign id does nothing, the same answer.
+   * A running upload with files already settled is finished instead of removed: its live tokens settle as
+   * cancelled and the record keeps its outcomes, so a partial result still pastes (§3.4, §5.3: the shell
+   * cancels a run whose client gave up on some files, a dropped link above all, before it asks to paste).
+   */
   async cancel(caller: UploadCaller, uploadId: unknown): Promise<void> {
     const record = this.owned(caller, uploadId)
     if (!record || record.state === 'finished') return
+    if (record.state === 'running' && record.results.size > 0) return this.finishCancelled(record)
     await this.end(record, 'cancelled')
   }
 
@@ -673,9 +684,31 @@ export class Uploads {
     record.state = 'finished'
     if (why === 'idle') this.deps.log?.(`upload ${record.uploadId.slice(0, 8)}: no bytes for ${UPLOAD_IDLE_MS / 1000} s, ended`)
     if (!hadTokens) return
-    // Never rejects: the idle and pending timers call this with `void` (main has no unhandledRejection
+    await this.abortTemps(record)
+  }
+
+  /**
+   * A cancel of a running upload with some files settled: every live token dies and its file settles as
+   * cancelled, and the upload is finished (place freed, clock stopped, outcomes kept), all in this one
+   * synchronous step, so a paste that follows finds it finished; then the writer deletes the live temps.
+   * A commit the abort comes too late for still places its file (the writer's rule), but its settle finds
+   * no grant, so its outcome stays cancelled, as the person's own view says.
+   */
+  private async finishCancelled(record: UploadRecord): Promise<void> {
+    for (const token of record.tokens) {
+      const grant = this.grants.get(token)
+      this.grants.delete(token)
+      if (grant) record.results.set(grant.index, { ok: false, reason: UPLOAD_CANCELLED_TEXT })
+    }
+    this.finish(record)
+    await this.abortTemps(record)
+  }
+
+  /** The writer deletes the upload's temps (`end`, `finishCancelled`). */
+  private async abortTemps(record: UploadRecord): Promise<void> {
+    // Never rejects: the idle and pending timers reach this with `void` (main has no unhandledRejection
     // handler), and one failed abort must not reject a drop's Promise.all (the gateway's revoke or stop).
-    // The record is already gone, so a log line is all that is left to do.
+    // The record is already gone or finished, so a log line is all that is left to do.
     try {
       await this.deps.writer.abortUpload(record.uploadId)
     } catch (err) {
