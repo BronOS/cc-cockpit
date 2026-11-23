@@ -194,8 +194,16 @@ line).
 
 The web shell's upload client (`src/renderer/web/upload-client.ts`): files one at a time, chunks one at a time, each a
 `fetch` PUT through `keyedFetch` with the body `file.slice(o, o + chunk)` and an `AbortController` (Cancel aborts it and
-posts `uploads.cancel`). A failed chunk is retried 3 times with backoff; a 409 resumes at `expected`. Progress counts
-acknowledged bytes. A network error or a 408 on a chunk followed by a 404 on its retry may be a file the server failed
+posts `uploads.cancel`). A failed chunk (a network error, a proxy's 502-504, a 408 cut, the writer's 400 with `expected`
+for a body that ended short) is retried 3 times, after 1, 5 and 20 s: an offline browser rejects a fetch at once, so those
+26 s are the whole budget for a reconnect, kept well under the upload's 60 s idle clock (§3.4). A 409 resumes at
+`expected` when it lies ahead of the acknowledged offset and short of the size; any other 409 ends the file. A file whose
+network retries run out ends as "connection lost"; when its slice can no longer be read (a `File` changed or removed
+since it was picked, which Chromium rejects like a link failure) it ends as unreadable at once, with no retries. The next
+file gets one attempt with no retries, and when that too fails on the network the rest of the run fails untried (a dead
+link would otherwise spend the backoff on up to 100 files). Each chunk has a 45 s client deadline past the gateway's cut
+(counted as a cut); the last chunk's grows with the file's size (4 MiB/s), since its answer waits for the commit, a
+whole copy on a mount with no hard links. Progress counts acknowledged bytes. A network error or a 408 on a chunk followed by a 404 on its retry may be a file the server failed
 whose answer a link dropped (§3.2): the file ends as failed with a generic reason, never retried past the 404 and never
 shown as completed; a 404 is told by its status, never its body.
 

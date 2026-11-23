@@ -7,12 +7,16 @@ import {
   UPLOAD_CHUNK_MAX_BYTES,
   UPLOAD_CHUNK_MIN_BYTES,
   UPLOAD_CHUNK_START_BYTES,
+  UPLOAD_IDLE_MS,
+  UPLOAD_MAX_FILE_BYTES,
   type UploadFileToken
 } from '../../src/shared/uploads'
 import {
   runUpload,
   UPLOAD_CHUNK_RETRIES,
   UPLOAD_CHUNK_TIMEOUT_MS,
+  UPLOAD_RETRY_BACKOFF_MS,
+  uploadChunkDeadlineMs,
   type UploadFetch,
   type UploadProgress,
   type UploadSource
@@ -147,7 +151,7 @@ describe('runUpload', () => {
       [0, MIB],
       [0, MIB / 2]
     ])
-    expect(r.sleeps).toEqual([500])
+    expect(r.sleeps).toEqual([1_000])
     expect(results[0]?.outcome).toBe('done')
   })
 
@@ -160,6 +164,42 @@ describe('runUpload', () => {
     const results = await run
     expect(r.calls[1]).toMatchObject({ offset: 0, length: MIB / 2 })
     expect(results[0]?.outcome).toBe('done')
+  })
+
+  it('sets the client deadline past the gateway cut (30 s bound, checked every 5 s)', () => {
+    expect(UPLOAD_CHUNK_TIMEOUT_MS).toBeGreaterThan(35_000)
+    expect(uploadChunkDeadlineMs(0, MIB, 3 * MIB)).toBe(UPLOAD_CHUNK_TIMEOUT_MS)
+    // The last chunk's answer waits for the commit, a whole copy on a mount with no hard links.
+    expect(uploadChunkDeadlineMs(2 * MIB, MIB, 3 * MIB)).toBeGreaterThan(UPLOAD_CHUNK_TIMEOUT_MS)
+    expect(uploadChunkDeadlineMs(UPLOAD_MAX_FILE_BYTES - MIB, MIB, UPLOAD_MAX_FILE_BYTES)).toBeGreaterThanOrEqual(
+      UPLOAD_CHUNK_TIMEOUT_MS + 500_000
+    )
+  })
+
+  it('waits past 45 s for the last chunk of a large file while the server commits it', async () => {
+    vi.useFakeTimers()
+    const size = 400 * MIB
+    // A stand-in that allocates nothing: the rig reads only the slice's size.
+    const big: UploadSource = { size, slice: (start, end) => ({ size: end - start }) as unknown as Blob }
+    const calls: number[] = []
+    const fetch: UploadFetch = (url, init) => {
+      const offset = Number(/offset=(\d+)$/.exec(url)![1])
+      calls.push(offset)
+      // The first PUT finds the server further on, at the last chunk, which commits for 2 minutes.
+      if (offset === 0) return Promise.resolve(json(409, { expected: size - MIB }))
+      return new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(json(200, { done: true, name: 'big', path: 'big' })), 120_000)
+        init?.signal?.addEventListener('abort', () => {
+          clearTimeout(timer)
+          reject(new DOMException('aborted', 'AbortError'))
+        })
+      })
+    }
+    const run = runUpload([big], [tokenOf(0)], { fetch, now: () => 0 })
+    await vi.advanceTimersByTimeAsync(121_000)
+    const results = await run
+    expect(calls).toEqual([0, size - MIB])
+    expect(results[0]).toMatchObject({ outcome: 'done', path: 'big' })
   })
 
   it('retries after a network error at the same offset and size', async () => {
@@ -179,17 +219,77 @@ describe('runUpload', () => {
     const r = rig((c, n) => (n < 3 ? new Response('bad gateway', { status: [502, 503, 504][n]! }) : honest(100)(c)))
     const results = await runUpload([fileOf(100)], [tokenOf(0)], r)
     expect(r.calls).toHaveLength(4)
-    expect(r.sleeps).toEqual([500, 1_500, 4_000])
+    expect(r.sleeps).toEqual([...UPLOAD_RETRY_BACKOFF_MS])
     expect(results[0]?.outcome).toBe('done')
   })
 
-  it('gives up after the retries on a dead link and fails the rest of the files without trying them', async () => {
+  it('gives up after the retries on a dead link, tries the next file once, then fails the rest untried', async () => {
     const r = rig(() => new TypeError('Failed to fetch'))
-    const results = await runUpload([fileOf(10), fileOf(10)], [tokenOf(0), tokenOf(1)], r)
-    expect(r.calls).toHaveLength(1 + UPLOAD_CHUNK_RETRIES)
-    expect(results.map((x) => x.outcome)).toEqual(['failed', 'failed'])
+    const results = await runUpload([fileOf(10), fileOf(10), fileOf(10)], [tokenOf(0), tokenOf(1), tokenOf(2)], r)
+    expect(r.calls.map((c) => c.token)).toEqual([...Array<string>(1 + UPLOAD_CHUNK_RETRIES).fill('tok-0'), 'tok-1'])
+    expect(results.map((x) => x.outcome)).toEqual(['failed', 'failed', 'failed'])
+    for (const x of results) expect(x.reason).toMatch(/connection was lost/)
+  })
+
+  it('goes on to the next file when one file alone keeps failing, and gives the one after full retries again', async () => {
+    // Whatever makes one file's fetch reject (here a readable file): the run does not end with it.
+    const r = rig((c, n) => {
+      if (c.token === 'tok-0') return new TypeError('Failed to fetch')
+      if (c.token === 'tok-2' && n < 7) return new TypeError('Failed to fetch')
+      return committed()
+    })
+    const results = await runUpload([fileOf(10), fileOf(10), fileOf(10)], [tokenOf(0), tokenOf(1), tokenOf(2)], r)
+    expect(results.map((x) => x.outcome)).toEqual(['failed', 'done', 'done'])
     expect(results[0]?.reason).toMatch(/connection was lost/)
-    expect(results[1]?.reason).toMatch(/connection was lost/)
+    // tok-1's acknowledged chunk cleared the doubt: tok-2 failed twice and was retried, not ended.
+    expect(r.calls.map((c) => c.token)).toEqual(['tok-0', 'tok-0', 'tok-0', 'tok-0', 'tok-1', 'tok-2', 'tok-2', 'tok-2'])
+  })
+
+  it('ends a file that can no longer be read at once, without retries, and goes on', async () => {
+    // Chromium rejects the fetch of a File changed or removed since it was picked; its slice cannot be read.
+    const gone: UploadSource = {
+      size: 10,
+      slice: (start, end) =>
+        ({ size: end - start, arrayBuffer: () => Promise.reject(new DOMException('changed', 'NotReadableError')) }) as unknown as Blob
+    }
+    const r = rig((c) => (c.token === 'tok-0' ? new TypeError('Failed to fetch') : committed()))
+    const results = await runUpload([gone, fileOf(10)], [tokenOf(0), tokenOf(1)], r)
+    expect(r.calls.map((c) => c.token)).toEqual(['tok-0', 'tok-1'])
+    expect(r.sleeps).toEqual([])
+    expect(results[0]).toMatchObject({ outcome: 'failed', reason: 'the file could not be read' })
+    expect(results[1]?.outcome).toBe('done')
+  })
+
+  it('keeps the retry budget well under the idle clock and long enough for a short reconnect', () => {
+    expect(UPLOAD_RETRY_BACKOFF_MS).toHaveLength(UPLOAD_CHUNK_RETRIES)
+    const sum = UPLOAD_RETRY_BACKOFF_MS.reduce((a, b) => a + b, 0)
+    expect(sum).toBeGreaterThanOrEqual(20_000)
+    expect(sum).toBeLessThanOrEqual(UPLOAD_IDLE_MS / 2)
+  })
+
+  it('retries the writer 400 for a body that ended short at the same offset, and refuses any other 400', async () => {
+    const short = (): Response => json(400, { error: 'the body ended before its length', expected: 0 })
+    const r = rig((c, n) => (n === 0 ? short() : honest(10)(c)))
+    const results = await runUpload([fileOf(10)], [tokenOf(0)], r)
+    expect(r.calls.map((c) => c.offset)).toEqual([0, 0])
+    expect(r.sleeps).toEqual([1_000])
+    expect(results[0]?.outcome).toBe('done')
+
+    const always = rig(short)
+    const ended = await runUpload([fileOf(10)], [tokenOf(0)], always)
+    expect(always.calls).toHaveLength(1 + UPLOAD_CHUNK_RETRIES)
+    expect(ended[0]).toMatchObject({ outcome: 'failed', reason: 'the body ended before its length' })
+
+    const shape = rig(() => json(400, { error: 'bad offset' }))
+    const refused = await runUpload([fileOf(10)], [tokenOf(0)], shape)
+    expect(shape.calls).toHaveLength(1)
+    expect(refused[0]).toMatchObject({ outcome: 'failed', reason: 'bad offset' })
+  })
+
+  it('reads a 404 after a short body as an ended upload, not a lost answer', async () => {
+    const r = rig((_c, n) => (n === 0 ? json(400, { error: 'short', expected: 0 }) : new Response('not found', { status: 404 })))
+    const results = await runUpload([fileOf(10)], [tokenOf(0)], r)
+    expect(results[0]?.reason).toBe('the upload was ended')
   })
 
   it('ends a file whose cut chunks never fit as too slow, and goes on to the next', async () => {
@@ -220,6 +320,30 @@ describe('runUpload', () => {
     expect(results[0]?.outcome).toBe('failed')
   })
 
+  it('ends the file on a 409 that points behind the acknowledged offset, and progress never goes back', async () => {
+    const size = 3 * MIB
+    const seen: number[] = []
+    const r = rig((c, n) => (n === 0 ? honest(size)(c) : json(409, { expected: 0 })))
+    const results = await runUpload([fileOf(size)], [tokenOf(0)], { ...r, onProgress: (p) => seen.push(p.fileSent) })
+    expect(r.calls).toHaveLength(2)
+    expect(seen).toEqual([MIB])
+    expect(results[0]).toMatchObject({ outcome: 'failed', reason: 'the server gave an unexpected answer' })
+  })
+
+  it('ends the file on a 409 that points at the size, never sending an empty chunk there', async () => {
+    const r = rig(() => json(409, { expected: 10 }))
+    const results = await runUpload([fileOf(10)], [tokenOf(0)], r)
+    expect(r.calls).toHaveLength(1)
+    expect(results[0]).toMatchObject({ outcome: 'failed', reason: 'the server gave an unexpected answer' })
+  })
+
+  it('ends the file when every byte is acknowledged with no commit answer', async () => {
+    const r = rig((c) => json(200, { received: c.offset + c.length }))
+    const results = await runUpload([fileOf(10)], [tokenOf(0)], r)
+    expect(r.calls).toHaveLength(1)
+    expect(results[0]).toMatchObject({ outcome: 'failed', reason: 'the server gave an unexpected answer' })
+  })
+
   it('ends one file on a 507 with the server reason, never retried, while the next continues', async () => {
     const r = rig((c) => (c.token === 'tok-0' ? json(507, { error: 'the disk is full' }) : committed()))
     const results = await runUpload([fileOf(10), fileOf(10)], [tokenOf(0), tokenOf(1)], r)
@@ -231,12 +355,14 @@ describe('runUpload', () => {
   it('shows a status line for a refusal that is not JSON', async () => {
     const r = rig(() => new Response('<html>', { status: 413 }))
     const results = await runUpload([fileOf(10)], [tokenOf(0)], r)
+    expect(r.calls).toHaveLength(1)
     expect(results[0]).toMatchObject({ outcome: 'failed', reason: 'the server answered 413' })
   })
 
-  it('caps a long server reason', async () => {
+  it('caps a long server reason, never retrying a 500', async () => {
     const r = rig(() => json(500, { error: 'x'.repeat(5000) }))
     const results = await runUpload([fileOf(10)], [tokenOf(0)], r)
+    expect(r.calls).toHaveLength(1)
     expect(results[0]?.reason).toHaveLength(200)
   })
 
@@ -254,6 +380,24 @@ describe('runUpload', () => {
       const r = rig((_c, n) => (n === 0 ? json(408, {}) : json(404, { error: 'something else' })))
       const results = await runUpload([fileOf(10)], [tokenOf(0)], r)
       expect(results[0]?.outcome).toBe('failed')
+      expect(results[0]?.reason).toMatch(/server ended the upload/)
+    })
+
+    it('reads a chunk past the client deadline followed by a 404 the same way', async () => {
+      vi.useFakeTimers()
+      const r = rig((_c, n) => (n === 0 ? 'hang' : new Response('not found', { status: 404 })))
+      const run = runUpload([fileOf(2 * MIB)], [tokenOf(0)], r)
+      await vi.advanceTimersByTimeAsync(UPLOAD_CHUNK_TIMEOUT_MS + 1)
+      const results = await run
+      expect(r.calls).toHaveLength(2)
+      expect(results[0]).toMatchObject({ outcome: 'failed' })
+      expect(results[0]?.reason).toMatch(/server ended the upload/)
+    })
+
+    it('reads a proxy 502 followed by a 404 the same way', async () => {
+      const r = rig((_c, n) => (n === 0 ? new Response('bad gateway', { status: 502 }) : new Response('nf', { status: 404 })))
+      const results = await runUpload([fileOf(10)], [tokenOf(0)], r)
+      expect(r.calls).toHaveLength(2)
       expect(results[0]?.reason).toMatch(/server ended the upload/)
     })
 
@@ -309,6 +453,67 @@ describe('runUpload', () => {
     })
     expect(results[0]?.outcome).toBe('cancelled')
     expect(r.calls).toHaveLength(1)
+  })
+
+  it('stops the default backoff wait on abort without waiting it out', async () => {
+    vi.useFakeTimers()
+    const ac = new AbortController()
+    // A source whose probe read settles at once (no real Blob under fake timers).
+    const src: UploadSource = { size: 10, slice: (s, e) => ({ size: e - s, arrayBuffer: async () => new ArrayBuffer(0) }) as unknown as Blob }
+    const r = rig(() => new TypeError('Failed to fetch'))
+    let settled = false
+    const run = runUpload([src], [tokenOf(0)], { fetch: r.fetch, now: r.now, signal: ac.signal }).then((x) => {
+      settled = true
+      return x
+    })
+    await vi.advanceTimersByTimeAsync(10)
+    expect(r.calls).toHaveLength(1)
+    expect(settled).toBe(false)
+    ac.abort()
+    // Far less than the first backoff step: only an abort-aware wait has ended by now.
+    await vi.advanceTimersByTimeAsync(10)
+    expect(settled).toBe(true)
+    expect((await run)[0]?.outcome).toBe('cancelled')
+    expect(r.calls).toHaveLength(1)
+  })
+
+  it('ends a file cancelled, not failed, when the abort lands while an answer is read', async () => {
+    const ac = new AbortController()
+    // A 409 whose body errors as the abort tears it down: the parse fails, yet the person cancelled.
+    const fetch: UploadFetch = async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(c) {
+          ac.abort()
+          c.error(new DOMException('aborted', 'AbortError'))
+        }
+      })
+      return new Response(body, { status: 409 })
+    }
+    const results = await runUpload([fileOf(10)], [tokenOf(0)], { fetch, signal: ac.signal })
+    expect(results[0]?.outcome).toBe('cancelled')
+  })
+
+  it('ends a file cancelled when the cancel itself ends the token (a 404), and keeps a commit read whole', async () => {
+    const ac = new AbortController()
+    const ended = await runUpload([fileOf(10)], [tokenOf(0)], {
+      fetch: async () => {
+        ac.abort()
+        return new Response('not found', { status: 404 })
+      },
+      signal: ac.signal
+    })
+    expect(ended[0]?.outcome).toBe('cancelled')
+
+    const late = new AbortController()
+    const done = await runUpload([fileOf(10), fileOf(10)], [tokenOf(0), tokenOf(1)], {
+      fetch: async () => {
+        late.abort()
+        return committed()
+      },
+      signal: late.signal
+    })
+    // The first file is on the server; the abort ends only what comes after.
+    expect(done.map((x) => x.outcome)).toEqual(['done', 'cancelled'])
   })
 
   it('reports acknowledged bytes per file and over the whole run', async () => {

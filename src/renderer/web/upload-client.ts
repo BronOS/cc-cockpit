@@ -64,13 +64,30 @@ export interface UploadRunOptions {
 
 /** A chunk is retried this many times after its first failure. */
 export const UPLOAD_CHUNK_RETRIES = 3
-/** Waits before each retry. */
-export const UPLOAD_RETRY_BACKOFF_MS: readonly number[] = [500, 1_500, 4_000]
+/**
+ * Waits before each retry, 26 s in all: an offline browser rejects a fetch at once, so the waits are the
+ * whole budget, and they cover a Wi-Fi handover or a short screen lock (design §3.3). They stay well
+ * under the upload's idle clock (UPLOAD_IDLE_MS, 60 s): past it the token is gone and the retry's 404
+ * would read as a file the server failed.
+ */
+export const UPLOAD_RETRY_BACKOFF_MS: readonly number[] = [1_000, 5_000, 20_000]
 /**
  * A chunk's own client deadline, past the gateway's cut (30-35 s): Task 1 saw a cut resolve as a 408
  * only after Chromium's resend, up to about 119 s, so the client does not wait for it.
  */
 export const UPLOAD_CHUNK_TIMEOUT_MS = 45_000
+/**
+ * The slowest commit the last chunk's deadline allows for, in bytes per ms (4 MiB/s). On a mount with no
+ * hard links (exFAT, SMB, NFS) the last chunk's answer waits for a copy of the whole temp, up to 2 GiB,
+ * which Node's request bound no longer covers once the body is in: a 45 s deadline would cut a file the
+ * server then places, and its retry's 404 would read as a failure.
+ */
+const UPLOAD_COMMIT_FLOOR_BYTES_PER_MS = (4 * 1024 ** 2) / 1000
+
+/** The client deadline of the chunk at `offset` of `length` bytes: the last one's grows with the file. */
+export function uploadChunkDeadlineMs(offset: number, length: number, size: number): number {
+  return offset + length >= size ? UPLOAD_CHUNK_TIMEOUT_MS + Math.ceil(size / UPLOAD_COMMIT_FLOOR_BYTES_PER_MS) : UPLOAD_CHUNK_TIMEOUT_MS
+}
 /** 409 answers followed without a retry per file; a server that keeps moving the offset is broken. */
 const MAX_RESYNCS = 50
 
@@ -127,7 +144,10 @@ type Attempt =
   | { kind: 'ok'; body: Record<string, unknown> | undefined }
   | { kind: 'resync'; expected: number | undefined }
   | { kind: 'cut' }
-  | { kind: 'network' }
+  // `rejected`: the fetch itself threw (no answer at all), not a proxy's 502-504.
+  | { kind: 'network'; rejected: boolean }
+  // The writer's 400 for a body that ended short or ran long: truncated back, the token live (§3.2).
+  | { kind: 'short'; reason: string }
   | { kind: 'ended' }
   | { kind: 'refused'; reason: string }
   | { kind: 'aborted' }
@@ -135,8 +155,10 @@ type Attempt =
 /**
  * Sends `files[token.index]` for each token, in order, and answers how each ended. Never rejects and
  * never throws: an abort ends the file in flight and every later one as `cancelled`. A connection that
- * keeps failing ends that file and the rest (a dead link would otherwise spend the backoff on every
- * one of up to a hundred files); a refusal of one file (507, 413, a vanished file) lets the next go on.
+ * keeps failing ends that file; the next file then gets one attempt with no retries, and when that too
+ * finds no link the rest fail untried (a dead link would otherwise spend the backoff on every one of up
+ * to a hundred files). A refusal of one file (507, 413, a file that can no longer be read) lets the next
+ * go on.
  */
 export async function runUpload(
   files: readonly UploadSource[],
@@ -155,6 +177,9 @@ export async function runUpload(
   let sentBefore = 0
   // Carried across files: the link's speed is the person's, not the file's.
   let chunk = UPLOAD_CHUNK_START_BYTES
+  // A file ran out of retries on network errors: the next one gets a single attempt, and a second
+  // file failing the same way means the link, not the file (linkDead).
+  let linkSuspect = false
   let linkDead = false
 
   for (const t of tokens) {
@@ -192,16 +217,22 @@ export async function runUpload(
       }
       const length = Math.min(chunk, size - offset)
       const started = now()
-      const attempt = await put(send, `${UPLOAD_PATH_PREFIX}${encodeURIComponent(t.token)}?offset=${offset}`, file, offset, length, signal)
+      const url = `${UPLOAD_PATH_PREFIX}${encodeURIComponent(t.token)}?offset=${offset}`
+      const attempt = await put(send, url, file, offset, length, uploadChunkDeadlineMs(offset, length, size), signal)
       const elapsed = now() - started
 
-      if (attempt.kind === 'aborted') {
+      // An abort that lands while the answer's body is read makes the parse fail, and a cancel's own
+      // end of the tokens answers 404: neither is the file's failure. Only a commit answer read whole
+      // stays `done`, since the file is then on the server.
+      const committedNow = attempt.kind === 'ok' && attempt.body?.['done'] === true
+      if (attempt.kind === 'aborted' || (aborted() && !committedNow)) {
         result.outcome = 'cancelled'
         break
       }
       if (attempt.kind === 'ok') {
         failures = 0
         lost = false
+        linkSuspect = false
         const body = attempt.body
         if (body?.['done'] === true) {
           offset = size
@@ -230,13 +261,16 @@ export async function runUpload(
       }
       if (attempt.kind === 'resync') {
         const expected = attempt.expected
-        // A 409 whose `expected` is a place to go (a resend Chromium made after a cut, an answer lost):
-        // resume there, no retry used. One that points nowhere new is a failed attempt like any other.
-        if (expected !== undefined && expected !== offset && expected <= size && resyncs < MAX_RESYNCS) {
+        // A 409 whose `expected` is ahead (a resend Chromium made after a cut, an answer lost): resume
+        // there, no retry used. The writer never points behind an acknowledged offset (progress would
+        // go back) nor at the size (it commits in the same step the last byte lands, and a PUT at the
+        // size would be an empty chunk it refuses), so either is a broken server and ends the file.
+        if (expected !== undefined && expected > offset && expected < size && resyncs < MAX_RESYNCS) {
           resyncs++
           offset = expected
           failures = 0
           lost = false
+          linkSuspect = false
           progress()
           continue
         }
@@ -251,12 +285,30 @@ export async function runUpload(
         result.reason = attempt.reason
         break
       }
-      // 'cut' and 'network': retried, a cut with a smaller chunk.
-      lost = true
+      // 'cut', 'network' and 'short': retried, a cut with a smaller chunk. A short body was answered,
+      // so its token is live and a 404 after it is no lost answer.
+      if (attempt.kind !== 'short') lost = true
       if (attempt.kind === 'cut') chunk = Math.max(Math.floor(chunk / 2), UPLOAD_CHUNK_MIN_BYTES)
-      if (failures >= UPLOAD_CHUNK_RETRIES) {
-        result.reason = attempt.kind === 'cut' ? REASON_CUT : REASON_LOST
-        if (attempt.kind === 'network') linkDead = true
+      if (attempt.kind === 'network' && attempt.rejected && !(await readable(file, offset))) {
+        // Chromium rejects the fetch of a `File` changed or removed since it was picked (a log still
+        // written, a file gone from a dropped folder) like a link failure: that is this file's end, and
+        // never the run's. Not run in a real browser here; the single attempt below covers it if not.
+        if (aborted()) {
+          result.outcome = 'cancelled'
+          break
+        }
+        result.reason = REASON_GONE
+        break
+      }
+      const budget = attempt.kind === 'network' && linkSuspect ? 0 : UPLOAD_CHUNK_RETRIES
+      if (failures >= budget) {
+        if (attempt.kind === 'cut') result.reason = REASON_CUT
+        else if (attempt.kind === 'short') result.reason = attempt.reason
+        else {
+          result.reason = REASON_LOST
+          if (linkSuspect) linkDead = true
+          linkSuspect = true
+        }
         break
       }
       const wait = UPLOAD_RETRY_BACKOFF_MS[Math.min(failures, UPLOAD_RETRY_BACKOFF_MS.length - 1)] ?? 0
@@ -268,6 +320,16 @@ export async function runUpload(
   return results
 }
 
+/** Whether the file can still be read at `offset`: one byte, to tell a vanished file from a dead link. */
+async function readable(file: UploadSource, offset: number): Promise<boolean> {
+  try {
+    await file.slice(offset, Math.min(offset + 1, file.size)).arrayBuffer()
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** One PUT of `file.slice(offset, offset + length)`, its answer sorted by status. */
 async function put(
   send: UploadFetch,
@@ -275,6 +337,7 @@ async function put(
   file: UploadSource,
   offset: number,
   length: number,
+  deadlineMs: number,
   outer: AbortSignal | undefined
 ): Promise<Attempt> {
   const ac = new AbortController()
@@ -284,14 +347,14 @@ async function put(
   const timer = setTimeout(() => {
     timedOut = true
     ac.abort()
-  }, UPLOAD_CHUNK_TIMEOUT_MS)
+  }, deadlineMs)
   try {
     let res: Response
     try {
       res = await send(url, { method: 'PUT', body: file.slice(offset, offset + length), signal: ac.signal })
     } catch {
       if (outer?.aborted === true) return { kind: 'aborted' }
-      return { kind: timedOut ? 'cut' : 'network' }
+      return timedOut ? { kind: 'cut' } : { kind: 'network', rejected: true }
     }
     if (res.status === 200) return { kind: 'ok', body: await jsonOf(res) }
     if (res.status === 409) {
@@ -304,8 +367,16 @@ async function put(
     // A 404 is told by its status alone: an ended token's body is plain text for a write guest.
     if (res.status === 404) return { kind: 'ended' }
     // A proxy in front dropping the request is a link problem, retried like one.
-    if (res.status === 502 || res.status === 503 || res.status === 504) return { kind: 'network' }
-    // 400, 413, 500, 507 (the writer's own, never retried: a failed file is settled and a retry finds 404
+    if (res.status === 502 || res.status === 503 || res.status === 504) return { kind: 'network', rejected: false }
+    if (res.status === 400) {
+      // The writer's 400 with `expected` is a body that ended short or ran long (a proxy cutting it):
+      // truncated back and the token kept for a retry (§3.2). Any other 400 is a refusal.
+      const body = await jsonOf(res)
+      const error = body?.['error']
+      const reason = typeof error === 'string' && error.length > 0 ? error.slice(0, REASON_MAX_CHARS) : 'the server answered 400'
+      return isCount(body?.['expected']) ? { kind: 'short', reason } : { kind: 'refused', reason }
+    }
+    // 413, 500, 507 (the writer's own, never retried: a failed file is settled and a retry finds 404
     // with the reason gone), 401, 403, anything else.
     return { kind: 'refused', reason: await reasonOf(res) }
   } finally {
