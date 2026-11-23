@@ -145,8 +145,10 @@ guest, decided by main from the connection it bound, never the payload.
   clashes; or a refusal of the whole upload (folder, role, caps, disk, limits).
 - **`uploads.resolve {uploadId, choice}`** (`replace` | `keep-both` | `cancel`): the tokens, or nothing for `cancel`.
 - **`uploads.cancel {uploadId}`**: aborts it and deletes its temps.
-- **`uploads.paste {uploadId, manual?}`**: the terminal entry's paste (§4.3). Answers `{text}` or `{held: reason, text}`
-  (the text also feeds the held notice's paths and its Copy).
+- **`uploads.paste {uploadId, manual?, bracketed?}`**: the terminal entry's paste (§4.3). `bracketed` is the view's
+  terminal's bracketed-paste mode; a request without it (the view shows no terminal of the tab) is held, never written.
+  Answers `{text}` when main has already written the text into the tab as that view's input (the page types nothing),
+  or `{held: reason, text}` with nothing written (the text feeds the held notice's paths and its Copy).
 - **`uploads.folders {tab, path}`**: the folder chooser's listing (§4.2). It names the terminal tab the drop or paste
   landed on, checked as `uploads.begin`'s `{tab}` (a Claude or shell tab of the view's window, in a guest's scope): a write
   guest whose scope holds no tab cannot list the project's folders through it.
@@ -308,7 +310,7 @@ check, read live (`IpcRouter.writesTabNow`: the owner, or a write guest with the
 **Otherwise held:** the result notice keeps the paths as text with **Paste path** and **Copy** (Copy uses `text`, which the
 held answer carries; a keys-off hold never asks main and has no text, so no Copy, and a path with a control, bidi or
 invisible character gets none either). Paste path is the person's click at that moment, as typing would be: `uploads.paste {uploadId,
-manual: true}`, any number of times while the notice lives, in any status but `needs-permission` and `ended`; main checks
+manual: true, bracketed}`, any number of times while the notice lives, in any status but `needs-permission` and `ended`; main checks
 again, the shell checks keys-off again.
 
 **The text:** absolute paths for the owner; for a guest (D-33: guest-visible text never carries a host path) the path
@@ -549,24 +551,41 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
   left and logged, and the file fails. An `lstat` taken after the link names whatever is there now, so a delete checked
   against it could take a file another process put at the name meanwhile (external review); whoever swapped the temp could
   have made that link themselves.
-- Name-based deletes (an accepted limit, external review iteration 2). The identity check and the `unlink` are two
-  syscalls, and POSIX has no "unlink only if this inode", so an entry renamed over the name in the gap between them is
-  deleted. The deletes this applies to: `copyExclusive`'s cleanup of its own partial copy (`removeIfOwn(final, made)`),
-  the commit's removal of a name it placed when a cancel landed during the link or copy, `placeNew`'s two deletes of the
-  temp's name after a placement, `discard`'s delete of the temp (`removeIfOwn`, or `unlinkName` when the create's `fstat`
-  failed), the start sweep's `sweepOne` (which has no identity at all after a restart: a regular file at a recorded
-  `.cc-upload-<16 hex>` name, inside its recorded root), and on the download side `placeDownload`'s removal of a name a
-  cancelled placement made and its `finally`'s `remove(temp)` (`.cc-download-<hex>` in Downloads). Who can win the gap:
-  for a temp, only a process aiming at a random hidden name made `O_EXCL` by this run; for a final name, only one that
-  renames something over a name this call made a moment before with an exclusive link or create (so it was free), in
-  the microseconds between the `lstat` and the `unlink`, on a cancel or a failed copy. Either is a process of the same
-  OS user with write access to the folder (CLAUDE.md: a tab's processes are, and that is not a boundary), which could
-  delete the file itself. A plain write into the name is not a replacement: it writes into our inode, and that goes.
-  Moving the name aside first (a rename to a fresh hidden name, checked there, then unlinked) was weighed and left out: it
-  only moves the gap to the new name, it needs the record to name the new path before every rename (a synchronous flush
-  that can fail on every delete path), and its not-ours restore (an exclusive `link` back) can never work where
-  `copyExclusive` runs (no hard links), so another's file would be stranded under a name the Files tree hides and the
-  sweep deletes.
+- Name-based deletes (an accepted limit, external review iterations 2 and 3). The identity check and the `unlink` are
+  separate syscalls, POSIX has no "unlink only if this inode", and Node has no `unlinkat` to bind an unlink to a checked
+  folder descriptor (a native addon was ruled out). The deletes this applies to: `copyExclusive`'s cleanup of its own
+  partial copy (`removeIfOwn(final, made)`), the commit's removal of a name it placed when a cancel landed
+  during the link or copy, `placeNew`'s two deletes of the temp's name after a placement, `discard`'s delete of the
+  temp (`removeIfOwn`, or `unlinkInDir` when the create's `fstat` failed), the start sweep's `sweepOne` (which has no
+  identity at all after a restart: a regular file at a recorded `.cc-upload-<16 hex>` name, inside its recorded root),
+  and on the download side `placeDownload`'s removal of a name a cancelled placement made and its `finally`'s
+  `remove(temp)` (`.cc-download-<hex>` in Downloads, with no re-check: a random name).
+  - *Narrowed, not closed:* every one of them but the download temp unlinks through `unlinkInDir(path, dirReal)`, which
+    re-reads the folder's real path just before the `unlink` and refuses (`failed`, so a temp keeps its record entry)
+    when it is no longer `dirReal`, a real path read before the check (never the lexical `dirname`, which on macOS's
+    `/var` is not real): `removeIfOwn` reads it itself just before its `lstat`, `discard` with no `fstat` passes begin's
+    `folderReal`, and the sweep its own `realpath` of the recorded folder. An ancestor renamed aside and replaced by a
+    link between the identity check and that re-check is refused (`name-deletes.test.ts`); one swapped before the
+    check fails the identity, except that our own temp reached through a folder moved before it still goes (the
+    identity proves it ours). A swap in the single syscall between the re-check and the `unlink` is still followed, as
+    is an entry renamed over the name there.
+  - *Who can win what is left:* for a temp, only a process aiming at a random hidden name made `O_EXCL` by this run;
+    for a final name, only one that renames something over a name this call made a moment before with an exclusive
+    link or create (so it was free), or swaps an ancestor folder for a link, inside that one-syscall gap, on a cancel
+    or a failed copy. A plain write into the name is not a replacement: it writes into our inode, and that goes.
+  - *Threat model.* Covered: processes of the owner's own OS user (CLAUDE.md: a tab's processes are, and that is not a
+    boundary), which could delete or overwrite those files directly anyway. Not covered: another OS user who can write
+    the project folder or one of its ancestors (a shared, group-writable checkout). Such a user can win the gap above
+    and point a delete at a same-named file in a folder only the owner can write; and the class is app-wide, not only
+    these deletes: every name-based write resolves the same paths again (the temp's `O_EXCL` create after
+    `folderStill`, the commit's `link` and Replace's `rename` into the target folder, `placeDownload`, the Files
+    plugin's rename and trash, the editor's saves). The app assumes the project folder and its ancestors are writable
+    by the owner's OS user alone; a project shared with other OS users needs that guarantee from the system.
+  - Moving the name aside first (a rename to a fresh hidden name, checked there, then unlinked) was weighed and left out:
+    it only moves the gap to the new name, it needs the record to name the new path before every rename (a synchronous
+    flush that can fail on every delete path), and its not-ours restore (an exclusive `link` back) can never work where
+    `copyExclusive` runs (no hard links), so another's file would be stranded under a name the Files tree hides and the
+    sweep deletes.
 - The record's entries are `{path, root}` with no schema bump (new on this branch); a string entry is dropped. The sweep
   keeps an entry whose root cannot be `realpath`ed (an unmounted volume says ENOENT, which "drop on ENOENT" would lose).
   `UploadWriterFs` has `copy` and `unlink` seams for tests. `DataPaths.uploadTempsJson` is `<data>/uploads/temps.json`.

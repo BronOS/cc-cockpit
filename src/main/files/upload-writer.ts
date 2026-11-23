@@ -54,7 +54,7 @@ import { displayText } from '../plugins/link-request'
 import { within } from '../path-within'
 import { JsonFile, type Versioned } from '../store/json-file'
 import { sameFile } from '../verified-read'
-import { copyExclusive, NO_HARD_LINKS, removeIfOwn, type CopyOptions, type RemoveOutcome } from './copy-exclusive'
+import { copyExclusive, NO_HARD_LINKS, removeIfOwn, unlinkInDir, type CopyOptions } from './copy-exclusive'
 import { resolveProjectEntry } from './system-files'
 import { numberingRefusal, type UploadFileOutcome, type UploadGrant } from './uploads'
 
@@ -538,8 +538,12 @@ export class UploadWriter {
     const handle = file.handle
     file.handle = undefined
     if (handle) {
-      // No fstat to check against (it failed right after the O_EXCL create): the name is still ours.
-      const outcome = file.st ? await removeIfOwn(file.temp, file.st, this.fs.unlink) : await unlinkName(file.temp, this.fs.unlink)
+      // No fstat to check against (it failed right after the O_EXCL create): the name is still ours, but
+      // only in begin's real folder (the temp was named there, so its `dirname` is that real path), so a
+      // folder swapped since is refused rather than followed (`unlinkInDir`).
+      const outcome = file.st
+        ? await removeIfOwn(file.temp, file.st, this.fs.unlink)
+        : await unlinkInDir(file.temp, dirname(file.temp), this.fs.unlink)
       if (outcome !== 'removed') await handle.truncate(0).catch(() => undefined)
       await handle.close().catch(() => undefined)
       if (outcome === 'failed') {
@@ -556,16 +560,6 @@ export class UploadWriter {
     this.temps.update((d) => {
       d.temps = d.temps.filter((e) => e.path !== temp)
     })
-  }
-}
-
-/** `path` unlinked, as `removeIfOwn` reports it, for a name known to be ours with no identity to check. */
-async function unlinkName(path: string, unlinkPath: (path: string) => Promise<void>): Promise<RemoveOutcome> {
-  try {
-    await unlinkPath(path)
-    return 'removed'
-  } catch (err) {
-    return codeOf(err) === 'ENOENT' ? 'absent' : 'failed'
   }
 }
 
@@ -607,10 +601,7 @@ async function sweepOne(entry: TempEntry): Promise<'removed' | 'drop' | 'retry'>
     return codeOf(err) === 'ENOENT' ? 'drop' : 'retry'
   }
   if (!st.isFile()) return 'drop'
-  try {
-    await unlink(path)
-  } catch (err) {
-    return codeOf(err) === 'ENOENT' ? 'removed' : 'retry'
-  }
-  return 'removed'
+  // The folder re-checked just before the unlink: an ancestor swapped for a link after the `realpath`
+  // above is refused (kept for the next start, whose `realpath` and `within` drop it if it now leads out).
+  return (await unlinkInDir(path, realDir)) === 'failed' ? 'retry' : 'removed'
 }

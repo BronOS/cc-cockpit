@@ -3,7 +3,8 @@
 // commit (`upload-writer.ts`, design-upload.md §2.4) both link first and copy only when the link is
 // refused for want of hard links. One copy, so a fix to either reaches both. Pure Node, no Electron.
 import { constants as fsConstants, type Stats } from 'node:fs'
-import { lstat, open, unlink } from 'node:fs/promises'
+import { lstat, open, realpath, unlink } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { codeOf } from '../../shared/error-text'
 import { sameFile } from '../verified-read'
 
@@ -16,41 +17,34 @@ export async function remove(path: string): Promise<void> {
 }
 
 /**
- * What `removeIfOwn` did: `removed` (the entry was ours and is gone), `absent` (nothing at the path),
- * `other` (an entry that is not ours: left alone) or `failed` (the lstat or the unlink was refused, for
- * any reason but ENOENT: whatever is there may still be ours). A caller that keeps a record of the
- * path (the upload temps, swept at the next start) keeps it on `failed` only.
+ * What `removeIfOwn` and `unlinkInDir` did: `removed` (the entry was ours and is gone), `absent` (nothing
+ * at the path), `other` (an entry that is not ours: left alone) or `failed` (the lstat or the unlink was
+ * refused for any reason but ENOENT, or the folder no longer resolves to the real path it was checked
+ * in: whatever is there may still be ours). A caller that keeps a record of the path (the upload temps,
+ * swept at the next start) keeps it on `failed` only.
  */
 export type RemoveOutcome = 'removed' | 'absent' | 'other' | 'failed'
 
 /**
- * Remove `path` only while it is still the entry `own` names (same dev and inode): what this placement
- * linked or created there, not a file another process had put at the name before the check. `own` must
- * come from the caller's own descriptor (an `fstat`), never from a later `lstat` of the path: that would
- * name whatever is there now, another process's file included. Never throws.
- * `unlinkPath`: a test seam (an unlink refused), default `unlink`.
- *
- * Not atomic, and accepted (design-upload.md §13 "Name-based deletes"): POSIX has no "unlink only if this
- * inode", so an entry renamed over `path` between the `lstat` and the `unlink` (two syscalls) is deleted.
- * Every caller's name is one this run made a moment before with an exclusive create or link (so it was
- * free then) and goes only on a cancel or a failure, or is a random hidden temp name: winning needs a
- * process of the same OS user (CLAUDE.md: a tab's processes are, and not a boundary) aiming a rename at
- * that name inside that gap, which could unlink the file itself. Moving the name aside first (a rename
- * to a fresh name, then the check) only moves the gap to the new name, and the not-ours restore cannot
- * work where `copyExclusive` runs (no hard links), stranding another's file under a hidden name.
+ * Unlink `path` only while its folder still resolves to `dirReal`, a real path read before the caller's
+ * check (an upload's `folderReal`, the sweep's `realpath`, `removeIfOwn`'s own read): never a lexical
+ * `dirname`, which on macOS's `/var` and `/tmp` differs from the real one and would refuse every delete.
+ * A folder that no longer resolves there (an ancestor renamed aside and a link put in its place, external
+ * review iteration 3) answers `failed` and nothing is unlinked: the name would lead into another folder,
+ * possibly one only the owner can write. A re-check, not a binding: Node has no `unlinkat`, so a swap
+ * between the `realpath` and the `unlink` (one syscall apart) is still followed (design-upload.md §13
+ * "Name-based deletes"). Never throws. `unlinkPath`: a test seam (an unlink refused), default `unlink`.
  */
-export async function removeIfOwn(
+export async function unlinkInDir(
   path: string,
-  own: Pick<Stats, 'dev' | 'ino'>,
+  dirReal: string,
   unlinkPath: (path: string) => Promise<void> = unlink
 ): Promise<RemoveOutcome> {
-  let now: Stats
   try {
-    now = await lstat(path)
+    if ((await realpath(dirname(path))) !== dirReal) return 'failed'
   } catch (err) {
     return codeOf(err) === 'ENOENT' ? 'absent' : 'failed'
   }
-  if (now.dev !== own.dev || now.ino !== own.ino) return 'other'
   try {
     await unlinkPath(path)
   } catch (err) {
@@ -58,6 +52,43 @@ export async function removeIfOwn(
     return codeOf(err) === 'ENOENT' ? 'absent' : 'failed'
   }
   return 'removed'
+}
+
+/**
+ * Remove `path` only while it is still the entry `own` names (same dev and inode): what this placement
+ * linked or created there, not a file another process had put at the name before the check. `own` must
+ * come from the caller's own descriptor (an `fstat`), never from a later `lstat` of the path: that would
+ * name whatever is there now, another process's file included. The folder's real path is read before the
+ * `lstat` and the unlink goes through `unlinkInDir` against it, so an ancestor swapped for a link after
+ * the identity check is refused too; one swapped before it is caught by the identity (the name then
+ * leads to another entry), and our own file found through a folder moved earlier still goes. Never throws.
+ *
+ * Not atomic, and accepted (design-upload.md §13 "Name-based deletes", which states the threat model):
+ * POSIX has no "unlink only if this inode", and Node no `unlinkat` to bind the unlink to a checked folder,
+ * so an entry renamed over `path`, or an ancestor swapped for a link, in the one syscall between the
+ * folder's re-check and the `unlink` wins. Every caller's name is one this run made a moment before with
+ * an exclusive create or link (so it was free then) and goes only on a cancel or a failure, or is a random
+ * hidden temp name. The app assumes the project folder and its ancestors are writable by the owner's OS
+ * user alone, as every name-based write does (the temp's create, the commit's link and rename, Files and
+ * the editor); the same OS user is no boundary (CLAUDE.md). Moving the name aside first (a rename to a
+ * fresh name, then the check) only moves the gap to the new name, and the not-ours restore cannot work
+ * where `copyExclusive` runs (no hard links), stranding another's file under a hidden name.
+ */
+export async function removeIfOwn(
+  path: string,
+  own: Pick<Stats, 'dev' | 'ino'>,
+  unlinkPath: (path: string) => Promise<void> = unlink
+): Promise<RemoveOutcome> {
+  let dirReal: string
+  let now: Stats
+  try {
+    dirReal = await realpath(dirname(path))
+    now = await lstat(path)
+  } catch (err) {
+    return codeOf(err) === 'ENOENT' ? 'absent' : 'failed'
+  }
+  if (now.dev !== own.dev || now.ino !== own.ino) return 'other'
+  return unlinkInDir(path, dirReal, unlinkPath)
 }
 
 /** The copy's chunk: one read and one write at a time, so a file of gigabytes never sits in memory. */
