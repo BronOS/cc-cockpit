@@ -65,7 +65,7 @@ the guest e2e (`guest-overlay-views.spec.ts`) has run on macOS only.
 Uploads from the person's device (Files' Upload here and drops, a drop or paste of files onto a Claude or shell tab with the
 paths pasted into the prompt; owner and write guests, browser views and the desktop's remote window: `main/files/uploads.ts`,
 `upload-writer.ts`, the gateway's `/u/<token>`, `renderer/web/upload-*.ts`, `ccPanel.upload`) are implemented; design in
-`docs/design-upload.md` (§13 "As built"), plan in `docs/plans/20261122-upload.md`, user docs in `docs/features.md`
+`docs/design-upload.md` (§13 "As built"), plan in `docs/plans/completed/20261122-upload.md`, user docs in `docs/features.md`
 ("Web access" › "Uploads", "Remote servers" › "Uploads"). Run: unit tests (Node, vitest), e2e in Electron's Chromium on macOS only (browser views, guests, server mode through darwin's
 `--server` start, never Linux; the remote window one case, Upload here over Direct, no drop or tab paste) and the bench's 1 GiB phase
 through the real writer; Firefox and WebKit ran only the spike harness, never the app. Not run: the app on Firefox, Safari and iOS, a real

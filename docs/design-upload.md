@@ -1,6 +1,6 @@
 # Uploads from the person's device — design
 
-Status: designed (2026-11-22, with the owner, section by section; revision 2 after a review pass, its eleven fixes applied); implemented (2026-11-23, plan `docs/plans/20261122-upload.md`; §13 lists where the build differs). The reverse of
+Status: designed (2026-11-22, with the owner, section by section; revision 2 after a review pass, its eleven fixes applied); implemented (2026-11-23, plan `docs/plans/completed/20261122-upload.md`; §13 lists where the build differs). The reverse of
 `docs/design-download.md`, which it reuses where the same rule fits and departs from where it does not (§3, §10). Extends
 `docs/design-web.md` (web access, §9 server mode), `docs/design-remote-desktop.md` (remote windows) and
 `docs/design-guests.md`; read `design-download.md` first.
