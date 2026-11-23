@@ -512,19 +512,15 @@ list.addEventListener('scroll', () => closeMenu(false))
 
 // ---- drops of files from the device (browser views only: ccPanel.upload) ----
 
-/** The project-relative folder a drop over `el` goes to: a folder row itself, a file row's folder, else the project folder. */
+/** The project-relative folder a drop over `el` goes to (the rule: dist/lib/drop.js). */
 function dropFolder(el) {
   const rowEl = el instanceof Element ? el.closest('.row') : null
-  const row = rowEl ? rows.find((r) => r.el === rowEl) : null
-  if (!row) return ''
-  if (row.kind === 'dir') return row.rel
-  const i = row.rel.lastIndexOf('/')
-  return i < 0 ? '' : row.rel.slice(0, i)
+  return ccFilesDrop.dropFolder(rowEl ? rows.find((r) => r.el === rowEl) : null)
 }
 
 /** A drag that carries device files; the page takes only those (the SDK cancels the rest). */
 function takesDrag(ev) {
-  return typeof ccPanel.upload?.files === 'function' && ccPanel.view?.access !== 'read' && Array.from(ev.dataTransfer?.types || []).includes('Files')
+  return ccFilesDrop.takesDrag({ types: ev.dataTransfer?.types, upload: typeof ccPanel.upload?.files === 'function', access: ccPanel.view?.access })
 }
 
 let dropMark = null // the row or the list showing where a drop would go
