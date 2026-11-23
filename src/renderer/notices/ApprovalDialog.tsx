@@ -41,6 +41,12 @@ export interface ApprovalDialogProps {
    */
   denyOnly?: boolean
   note?: string
+  /**
+   * A second consequential answer beside Allow (the upload clash's Keep both): armed, disarmed and
+   * click-guarded exactly as Allow is, so a click already on its way can answer neither. Shown with
+   * `denyOnly` too (Replace may be off while Keep both is not).
+   */
+  alsoAllow?: { label: string; testId?: string; onClick(): void }
   /** `data-testid`s for e2e specs: the dialog box and its two buttons. */
   testIds?: { dialog?: string; allow?: string; deny?: string }
   onAnswer(allow: boolean): void
@@ -138,6 +144,23 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
           <button type="button" ref={deny} data-testid={props.testIds?.deny} onClick={() => answer(false)}>
             {props.denyLabel ?? 'Deny'}
           </button>
+          {props.alsoAllow !== undefined && (
+            <button
+              type="button"
+              data-testid={props.alsoAllow.testId}
+              disabled={!armed}
+              onClick={() => {
+                const counts = allowClickCounts(armed, pressArmed.current)
+                pressArmed.current = undefined
+                if (counts && !answered.current) {
+                  answered.current = true
+                  props.alsoAllow?.onClick()
+                }
+              }}
+            >
+              {props.alsoAllow.label}
+            </button>
+          )}
           {props.denyOnly !== true && <button
             type="button"
             className="confirm-danger"

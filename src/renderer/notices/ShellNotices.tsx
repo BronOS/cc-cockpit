@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { currentGuest, isGuestView, isServerView, isWebShell } from '../shell-kind'
 import { DEFAULT_OWNER_NAME, GUEST_CLOSE_ASK_TEXT, guestCloseAskTitle } from '../tabs/guest-close'
@@ -40,6 +40,9 @@ import {
 import { DownloadDialog } from './DownloadDialog'
 import { AcceptedOffers, downloadOfferOf, offerAcceptPayload } from './download-dialog-model'
 import type { DownloadOffer } from '../../shared/downloads'
+import { UploadDialog } from './UploadDialog'
+import { UploadClashDialog } from './UploadClashDialog'
+import { heldButtons, heldText, progressFraction, progressText, RESULT_NOTICE_MS, uploadUi, type UploadNotice } from './upload-model'
 
 /**
  * What the shell shows for things only the desktop can do, or that need the person's own screen
@@ -57,6 +60,7 @@ export function ShellNotices(): React.JSX.Element {
       <GuestCloseConfirm />
       <DownloadOffers />
       <DownloadNotices />
+      <UploadUiLayer />
       <RoomRemoveConfirm />
       <PageNotices />
     </>
@@ -685,5 +689,85 @@ function LinkDialog(props: { ask: LinkAsk; canAllow: boolean; onAnswer: (allow: 
       </div>
     </div>,
     document.body
+  )
+}
+
+/**
+ * The upload UI (design-upload.md §4.2, §5.3), driven by the page's upload controller through `uploadUi`
+ * (upload-model.ts): the folder chooser, then the clash dialog, one of each at a time (oldest first),
+ * and a notice per upload. Only the uploading view has any (nothing is broadcast), so the other views
+ * of the owner see the files appear through the Files watcher.
+ */
+function UploadUiLayer(): React.JSX.Element | null {
+  const state = useSyncExternalStore(uploadUi.subscribe, uploadUi.get)
+  const chooser = state.choosers[0]
+  const clash = state.clashes[0]
+  return (
+    <>
+      {chooser !== undefined ? <UploadDialog key={chooser.id} request={chooser} /> : null}
+      {clash !== undefined ? <UploadClashDialog key={clash.id} request={clash} /> : null}
+      {state.notices.length > 0 ? (
+        <section className="download-notices upload-notices" aria-label="Uploads">
+          {state.notices.map((n) => (
+            <UploadNoticeRow key={n.id} notice={n} />
+          ))}
+        </section>
+      ) : null}
+    </>
+  )
+}
+
+function UploadNoticeRow(props: { notice: UploadNotice }): React.JSX.Element {
+  const { notice } = props
+  // A clean result hides itself; a partial one or a held paste stays until dismissed.
+  const hides = notice.kind === 'result' && !notice.sticky
+  useEffect(() => {
+    if (!hides) return
+    const timer = setTimeout(() => uploadUi.dropNotice(notice.id), RESULT_NOTICE_MS)
+    return () => clearTimeout(timer)
+  }, [hides, notice.id])
+  if (notice.kind === 'progress') {
+    return (
+      <div className="download-notice upload-notice" role="status" data-testid="upload-progress">
+        <div className="upload-notice-body">
+          <span className="link-notice-text">{progressText(notice)}</span>
+          <progress className="upload-bar" max={1} value={progressFraction(notice)} />
+        </div>
+        <button type="button" data-testid="upload-progress-cancel" onClick={notice.onCancel}>
+          Cancel
+        </button>
+      </div>
+    )
+  }
+  const buttons = heldButtons(notice)
+  return (
+    <div className="download-notice upload-notice" role="status" data-testid="upload-result">
+      <div className="upload-notice-body">
+        <span className="link-notice-text">{notice.text}</span>
+        {notice.held !== undefined ? <span className="link-notice-text upload-held">{heldText(notice.held)}</span> : null}
+      </div>
+      {buttons !== undefined && notice.held !== undefined ? (
+        <>
+          {notice.onPaste !== undefined ? (
+            <button type="button" data-testid="upload-paste" onClick={notice.onPaste}>
+              {buttons.paste}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            data-testid="upload-copy"
+            onClick={() => {
+              // The held answer's own text; a browser without the async clipboard (or a refusal) copies nothing.
+              navigator.clipboard?.writeText(notice.held?.text ?? '').catch(() => {})
+            }}
+          >
+            {buttons.copy}
+          </button>
+        </>
+      ) : null}
+      <button type="button" className="link-notice-close" aria-label="Dismiss" onClick={() => uploadUi.dropNotice(notice.id)}>
+        ×
+      </button>
+    </div>
   )
 }
