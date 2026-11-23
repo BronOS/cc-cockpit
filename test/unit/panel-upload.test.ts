@@ -1,11 +1,12 @@
 // Upload plan, Task 8: `ccPanel.upload` in the panel SDK (src/sdk/panel-core.ts, wired by src/sdk/panel.ts)
 // and the shell's filter of a frame's upload message (src/renderer/web/upload-request.ts). The DOM parts
-// (the hidden input, a real drop) are fakes here; the e2e drives them (Tasks 12 and 13).
+// (the hidden input, a real drop) are fakes here; the e2e drives them (Task 14, web-upload.spec.ts).
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   isFilesDrag,
+  cancelsFilesDrag,
   MAX_UPLOAD_FOLDER_LENGTH,
   PanelClient,
   PORT_MESSAGE,
@@ -79,6 +80,18 @@ describe('ccPanel.upload: where it exists', () => {
     // A later port that narrows the view takes it away again.
     connect(c, true, 'read')
     expect(c.api.upload).toBeUndefined()
+  })
+
+  it('is not offered in a slot or a page tab', () => {
+    const slot = sdk()
+    connect(slot.c, true)
+    expect(slot.c.api.upload).toBeDefined()
+    slot.c.receive({ type: 'cc-plugin.slot', slot: { type: 'sessions-strip' } }, [])
+    expect(slot.c.api.upload).toBeUndefined()
+    const tab = sdk()
+    connect(tab.c, true)
+    tab.c.receive({ type: 'cc-plugin.tab', tab: { type: 'file' } }, [])
+    expect(tab.c.api.upload).toBeUndefined()
   })
 
   it('cannot be replaced or widened by the page', () => {
@@ -165,6 +178,24 @@ describe('ccPanel.upload.files', () => {
   })
 })
 
+describe('the window-level cancel (cancelsFilesDrag)', () => {
+  const drag = (target: unknown, over: Partial<{ defaultPrevented: boolean; types: string[] }> = {}) => ({
+    defaultPrevented: over.defaultPrevented ?? false,
+    target,
+    dataTransfer: { types: over.types ?? ['Files'] }
+  })
+  const el = (matches: boolean) => ({ closest: () => (matches ? {} : null) })
+  it('cancels a Files drag nobody took, and leaves the rest alone', () => {
+    expect(cancelsFilesDrag(drag(el(false)))).toBe(true)
+    expect(cancelsFilesDrag(drag(null))).toBe(true)
+    expect(cancelsFilesDrag(drag(el(false), { defaultPrevented: true }))).toBe(false)
+    expect(cancelsFilesDrag(drag(el(false), { types: ['text/plain'] }))).toBe(false)
+  })
+  it('skips an input, a text field and a contenteditable', () => {
+    expect(cancelsFilesDrag(drag(el(true)))).toBe(false)
+  })
+})
+
 describe('splitTransfer and isFilesDrag', () => {
   it('counts an item with no entry API, or no entry, as a file', () => {
     const noApi = item('file', 'old.txt', false)
@@ -226,6 +257,19 @@ describe('the shell filter (upload-request.ts)', () => {
     expect(of(message({ files: [{ name: 'a', size: 1 }] }))).toBeNull()
     expect(of(message({ files: 'a' }))).toBeNull()
     expect(of(message({ files: [], folders: [] }))).toBeNull()
+    // A sparse list (holes survive structured clone) and an oversized one are refused, not walked.
+    const sparse: unknown[] = []
+    sparse[3] = realFile('a.txt')
+    expect(of(message({ files: sparse }))).toBeNull()
+    const huge: unknown[] = []
+    huge[5e7] = realFile('a.txt')
+    expect(of(message({ files: huge }))).toBeNull()
+    const sparseFolders: unknown[] = []
+    sparseFolders[5e7] = 'x'
+    expect(of(message({ folders: sparseFolders }))?.folders).toEqual([])
+    // Folder names face the file-name rules, and a total cap.
+    expect(of(message({ folders: ['a\nb', 'ev\u202eil', 'ok'] }))?.folders).toEqual(['ok'])
+    expect(of(message({ folders: Array.from({ length: 100 }, (_, i) => `${'n'.repeat(200)}${i}`) }))?.folders.length).toBeLessThan(25)
     expect(of(null)).toBeNull()
     // Bad folder names are dropped from the notice, not the upload.
     expect(of(message({ folders: [3, '', 'x'.repeat(300), 'ok'] }))?.folders).toEqual(['ok'])

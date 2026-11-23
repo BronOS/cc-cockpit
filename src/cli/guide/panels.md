@@ -115,7 +115,10 @@ load, the strip shows the title's first letter.
     and only during it can a dropped folder be told from a file. Folders are not uploaded; the app names
     the ones it skipped. Take a drag only when `event.dataTransfer.types` includes `Files` (call
     `preventDefault` on its `dragover` and `drop`). The SDK cancels every other `Files` drag over the page, so
-    a drop that misses your target does nothing (a plain browser would open the file in place of the app).
+    a drop that misses your target does nothing (a plain browser would open the file in place of the app). The cancel
+    skips a file input, a text field and a contenteditable (they take a drop themselves). It runs before your own
+    window-level listeners, so a handler on `window` must also set `event.dataTransfer.dropEffect = 'copy'`.
+    `ccPanel.upload` exists in a panel only, not in a slot or a page tab.
 - `ccPanel.ready()`: in an html overlay opened with `ready: 'manual'`, says the page has drawn
   its content, so the app's loader over it goes (without `ready: 'manual'` the loader goes when the
   page has loaded). Harmless in a panel or a slot.

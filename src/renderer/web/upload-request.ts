@@ -12,7 +12,7 @@
 // DOM-free (the frame's window and `File` are compared, never touched) so unit tests run it in Node.
 
 import { MAX_UPLOAD_FOLDER_LENGTH, UPLOAD_MESSAGE } from '../../sdk/panel-core'
-import type { UploadSource } from '../../shared/uploads'
+import { checkUploadName, type UploadSource } from '../../shared/uploads'
 import { isWebShell, viewAccessHint } from '../shell-kind'
 
 /** What the controller starts an upload from: the source main resolves, the folder, the files. */
@@ -29,6 +29,11 @@ export interface UploadRequest {
 const MAX_FOLDER_NAMES = 100
 /** A folder name longer than a file system's name limit is no name (dropped from the notice). */
 const MAX_FOLDER_NAME_LENGTH = 255
+
+/** Entries read from a posted list: a sparse `a[5e7] = file` clones almost for free, so the length is bounded first. */
+const MAX_POSTED_ENTRIES = 10_000
+/** Characters of folder names kept in all (they land in core's result notice). */
+const MAX_FOLDER_NAMES_TOTAL = 4096
 
 /** Whether a posted entry is a real `File` (structured clone makes one in this window's realm). */
 const isFile = (value: unknown): value is File => typeof File === 'function' && value instanceof File
@@ -51,16 +56,23 @@ export function uploadRequestOf(
   if (typeof data !== 'object' || data === null || (data as { type?: unknown }).type !== UPLOAD_MESSAGE) return null
   const { folder, files, folders } = data as { folder?: unknown; files?: unknown; folders?: unknown }
   if (typeof folder !== 'string' || folder.length > MAX_UPLOAD_FOLDER_LENGTH) return null
-  if (!Array.isArray(files) || !files.every(isFile)) return null
+  if (!Array.isArray(files) || files.length > MAX_POSTED_ENTRIES) return null
+  // An indexed loop: `every` and `for of` skip or walk holes of a sparse array a forged post can carry.
+  for (let i = 0; i < files.length; i++) if (!isFile(files[i])) return null
   const names: string[] = []
-  if (Array.isArray(folders)) {
-    for (const name of folders) {
-      if (names.length >= MAX_FOLDER_NAMES) break
-      if (typeof name === 'string' && name.length > 0 && name.length <= MAX_FOLDER_NAME_LENGTH) names.push(name)
+  if (Array.isArray(folders) && folders.length <= MAX_POSTED_ENTRIES) {
+    let total = 0
+    for (let i = 0; i < folders.length && names.length < MAX_FOLDER_NAMES; i++) {
+      const name: unknown = folders[i]
+      // Page text that lands in core's notice: the same name rules as a file's (no control, bidi or invisible characters).
+      if (typeof name !== 'string' || name.length > MAX_FOLDER_NAME_LENGTH || !checkUploadName(name).ok) continue
+      if (total + name.length > MAX_FOLDER_NAMES_TOTAL) break
+      total += name.length
+      names.push(name)
     }
   }
   if (files.length === 0 && names.length === 0) return null
-  return { source: { panel: panelKey }, folder, files: [...files], folders: names }
+  return { source: { panel: panelKey }, folder, files: files as File[], folders: names }
 }
 
 let handler: ((request: UploadRequest) => void) | undefined

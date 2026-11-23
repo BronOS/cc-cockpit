@@ -260,6 +260,20 @@ export function isFilesDrag(types: ArrayLike<string> | null | undefined): boolea
   return false
 }
 
+/**
+ * Whether the SDK's window-level cancel applies to a drag: a `Files` drag no handler took, whose target
+ * is not an element that takes a drop by the browser's own default action (a file input, a text field,
+ * a contenteditable: none of them cancels `dragover`, and `dropEffect = 'none'` would kill their drop).
+ */
+export function cancelsFilesDrag(
+  event: { defaultPrevented: boolean; target: unknown; dataTransfer?: { types?: ArrayLike<string> } | null }
+): boolean {
+  if (event.defaultPrevented || !isFilesDrag(event.dataTransfer?.types)) return false
+  const closest = (event.target as { closest?: (selector: string) => unknown } | null)?.closest
+  if (typeof closest !== 'function') return true
+  return !closest.call(event.target, 'input, textarea, [contenteditable]:not([contenteditable="false"])')
+}
+
 // A DataTransfer by its shape, not `instanceof` (unit tests run without a DOM): it has `items`, a
 // FileList and an array do not.
 const isTransfer = (source: unknown): source is UploadTransferLike =>
@@ -516,7 +530,9 @@ export class PanelClient {
     // refuses by the view it bound anyway).
     Object.defineProperty(api, 'upload', {
       enumerable: true,
-      get: (): PanelUploadApi | undefined => (this.remote && this.access !== 'read' ? this.uploadApi : undefined)
+      get: (): PanelUploadApi | undefined =>
+        // Not in a slot or a page tab: the shell takes a panel frame's upload only (a post from those is dropped).
+        this.remote && this.access !== 'read' && !this.slotApi && !this.tabApi ? this.uploadApi : undefined
     })
     this.api = Object.freeze(api) as PanelApi
   }
@@ -647,6 +663,9 @@ export class PanelClient {
       this.warn('upload.pick: no file chooser in this page')
       return
     }
+    // The browser enforces the gesture either way; the warning is for the page's author.
+    const activation = (globalThis as { navigator?: { userActivation?: { isActive?: boolean } } }).navigator?.userActivation
+    if (activation?.isActive === false) this.warn('upload.pick: no user activation, so the browser opens no chooser (call it inside a click or key handler)')
     this.chooseFiles((files) => {
       if (files.length > 0) this.postUpload(folder, files, [])
     })

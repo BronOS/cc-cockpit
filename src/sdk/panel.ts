@@ -38,7 +38,7 @@
 // A `?raw` import: Vite inlines the file's text as a string literal, so this stays one classic
 // script with no `require` in out/sdk/panel.js.
 import componentsCss from './components.css?raw'
-import { isFilesDrag, PanelClient, sdkSheetsFirst, type PortLike } from './panel-core'
+import { cancelsFilesDrag, PanelClient, sdkSheetsFirst, type PortLike } from './panel-core'
 import { startScrollEdges, watchClassicBars } from './scroll-edges'
 
 // The SDK's stylesheets are constructable ones: not inline <style>s, and the plugin CSP's
@@ -96,15 +96,18 @@ const client = new PanelClient(
 
 // A file dropped where the page takes no drop must not open in the frame (design-upload.md §3.6: in a
 // plain browser that replaces the page). Bubble phase on the window, after the page's own handlers: a
-// drag the page already took (`preventDefault` on its dragover / drop) is left alone; any other `Files`
-// drag is refused (`dropEffect` none: no drop, no copy cursor) and its drop cancelled.
+// drag the page already took (`preventDefault` on its dragover / drop) is left alone, and so is one over a
+// file input, a text field or a contenteditable (they take a drop by the browser's default, never
+// cancelling dragover); any other `Files` drag is refused (`dropEffect` none: no drop, no copy cursor)
+// and its drop cancelled. These listeners run before the page's own window-level ones (added first), so a
+// window-level dragover handler must set `dropEffect` itself (the guide says so).
 window.addEventListener('dragover', (event: DragEvent) => {
-  if (event.defaultPrevented || !isFilesDrag(event.dataTransfer?.types)) return
+  if (!cancelsFilesDrag(event)) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
 })
 window.addEventListener('drop', (event: DragEvent) => {
-  if (!event.defaultPrevented && isFilesDrag(event.dataTransfer?.types)) event.preventDefault()
+  if (cancelsFilesDrag(event)) event.preventDefault()
 })
 
 window.addEventListener('message', (event: MessageEvent) => {
