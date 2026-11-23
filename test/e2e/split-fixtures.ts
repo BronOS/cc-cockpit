@@ -154,3 +154,24 @@ export async function roomyDesktop(cockpit: Cockpit): Promise<void> {
   })
   await expect.poll(() => cockpit.page.evaluate(() => innerWidth)).toBeGreaterThan(1500)
 }
+
+/**
+ * Move every window off the real OS cursor right before a synthetic mouse drag (zones.spec.ts
+ * keepOsCursorOff). A cursor over the window, above all one the person at the Mac is moving, sends
+ * buttonless moves (trusted, at fractional coordinates the test never used) between Playwright's
+ * pressed ones; Chromium then drops the divider's pointer capture and the Splitter ends the drag
+ * there (its `onLostPointerCapture`, kept for a real lost capture), sending a `groups.resize`
+ * mid-drag. Seen on master and on branches alike, whenever the desk was in use. Test code only:
+ * layout and the test's viewport coordinates do not depend on where the window sits.
+ */
+export async function keepOsCursorOff(cockpit: Cockpit): Promise<void> {
+  await cockpit.app.evaluate(({ BrowserWindow, screen }) => {
+    const p = screen.getCursorScreenPoint()
+    for (const w of BrowserWindow.getAllWindows()) {
+      const b = w.getBounds()
+      const over = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height
+      // Partly off screen is fine: layout and the test's coordinates do not depend on it.
+      if (over) w.setPosition(p.x + 20, b.y)
+    }
+  })
+}

@@ -5,7 +5,7 @@
 // SIGWINCH is counted by a `trap` in each shell: the trap's line contains `winch-$((1+1))`, so the
 // text `winch-2` appears only when the trap ran, once per resize of that pty.
 import { expect, test } from './fixtures'
-import { dividers, groupOfShells, groupsOf, paneShowing, paneText, recordGroupEvents, typeInPane, visiblePanes } from './split-fixtures'
+import { dividers, groupOfShells, groupsOf, keepOsCursorOff, paneShowing, paneText, recordGroupEvents, typeInPane, visiblePanes } from './split-fixtures'
 
 function count(text: string, marker: string): number {
   return text.replaceAll('\n', '').split(marker).length - 1
@@ -27,7 +27,9 @@ test('a divider drag sends one resize on release, resizes each pty once, and sto
   const y = box.y + box.height / 2
   const x0 = box.x + box.width / 2
 
-  // Mid-drag: nothing is sent and no pty is resized yet.
+  // Mid-drag: nothing is sent and no pty is resized yet. The real OS cursor is kept off the window
+  // first: its buttonless moves would drop the divider's capture and end the drag early.
+  await keepOsCursorOff(cockpit)
   await page.mouse.move(x0, y)
   await page.mouse.down()
   const start = (await groupsOf(page)).groups[0]!.root.sizes
@@ -53,6 +55,7 @@ test('a divider drag sends one resize on release, resizes each pty once, and sto
 
   // Past the minimum: a drag far beyond the window's edge stops at the smallest allowed pane: the
   // share stays at or above the clamp (10%) and the pane keeps at least 20x5 cells (D5).
+  await keepOsCursorOff(cockpit)
   const box2 = (await divider.boundingBox())!
   await page.mouse.move(box2.x + box2.width / 2, y)
   await page.mouse.down()
