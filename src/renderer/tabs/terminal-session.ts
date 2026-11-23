@@ -470,10 +470,13 @@ export class TerminalSession {
   /**
    * The upload's paths, pasted with xterm's own `paste` (design-upload.md §4.3): the program's
    * bracketed-paste mode holds, and the text goes the person's own input path (`onData`, `tabs.input`,
-   * main's `viewInput`: the tab becomes typed). Never an Enter. False once disposed.
+   * main's `viewInput`: the tab becomes typed). Never an Enter. False once disposed. It is the person's
+   * act here, as their key would be (their drop or file paste, then the notice or the upload's end): a
+   * write guest's held size goes first (terminal-access.ts), so main's take on typing has it.
    */
   paste(text: string): boolean {
     if (this.disposed) return false
+    this.io.act?.()
     this.term.paste(text)
     return true
   }

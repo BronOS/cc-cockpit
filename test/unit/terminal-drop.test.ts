@@ -220,6 +220,14 @@ describe('cancelUnhandledFileDrops: a Files drop nobody took does nothing (desig
     const text = event('dragover', { dataTransfer: { types: ['text/plain'] } })
     win.dispatchEvent(text)
     expect(text.defaultPrevented).toBe(false)
+    // A text field of the shell is no exception (unlike the SDK's rule in a panel page): a file dropped
+    // on it would open in the tab too.
+    // (The SDK's rule would see `closest('input, textarea, ...')` match here and leave it.)
+    const input = Object.assign(new EventTarget(), { closest: () => ({}) })
+    offs.push(cancelUnhandledFileDrops(input))
+    const field = event('drop', { dataTransfer: filesDrag() })
+    input.dispatchEvent(field)
+    expect(field.defaultPrevented).toBe(true)
     // A target that took it first (a terminal's drop, a Files row) keeps its dropEffect.
     const handled = new EventTarget()
     handled.addEventListener('dragover', (e) => {

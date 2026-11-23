@@ -24,7 +24,7 @@
 // DOM-light: the container is an EventTarget plus `classList`, the events are read by their fields, so
 // unit tests run it in plain Node.
 
-import { cancelsFilesDrag, isFilesDrag, splitTransfer, type UploadTransferLike } from '../../sdk/panel-core'
+import { isFilesDrag, splitTransfer, type UploadTransferLike } from '../../sdk/panel-core'
 import type { TabKind } from '../../shared/types'
 import { checkUploadName, pastedName } from '../../shared/uploads'
 import type { ViewAccess } from '../../shared/views'
@@ -218,13 +218,16 @@ export function attachTerminalEntry(container: DropContainer, entry: TerminalEnt
 /**
  * The web shell's default for a `Files` drag nobody took (§3.6): in a plain browser a file dropped where
  * no handler takes it opens in the tab, which replaces the shell and kills its running uploads. Bubble
- * phase on the window, so a terminal's or a field's own handling comes first (`cancelsFilesDrag` leaves
- * a drag already cancelled, and a file input, text field or contenteditable, alone). Returns the removal.
+ * phase on the window, so a terminal's own handling comes first (a drag it cancelled is left alone).
+ * Every other `Files` drag, whatever its target: the SDK's rule (`cancelsFilesDrag`) spares a file input,
+ * a text field and a contenteditable, which suits a panel page with its own file input, but the shell
+ * has no file input, and a file dropped on one of its text fields (settings, the palette, xterm's
+ * helper textarea in a tab that takes no uploads) would open in the tab too. Returns the removal.
  */
 export function cancelUnhandledFileDrops(target: EventTarget): () => void {
   const cancel = (event: Event): void => {
     const e = event as DragLike
-    if (!cancelsFilesDrag(e)) return
+    if (e.defaultPrevented || !isFilesDrag(e.dataTransfer?.types)) return
     e.preventDefault()
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'none'
   }

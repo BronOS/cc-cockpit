@@ -767,6 +767,20 @@ describe('the uploads entry on a terminal', () => {
     expect(calls).toEqual(['upload'])
   })
 
+  it("a write guest's pasted paths are its act: its held size goes first, as before a key", () => {
+    guestKind.markWebShell()
+    guestKind.setGuestHint({ id: 'g1', name: 'Ana', role: 'write', ownerName: 'Host' })
+    const calls: string[] = []
+    const io = gateTerminalIo({ input: (d) => void calls.push(`input ${d}`), ack: () => undefined, resize: (c, r) => void calls.push(`resize ${c}x${r}`) }, 'write')
+    const s = new TerminalSession('t1', io) as unknown as EntrySession
+    made.push(s)
+    s.attach(laidOutPane())
+    expect(calls).toEqual([])
+    expect(s.paste('./a.png ')).toBe(true)
+    expect(calls).toEqual(['resize 120x40'])
+    expect((s.term as { pasted: string[] }).pasted).toEqual(['./a.png '])
+  })
+
   it("pastes with xterm's own paste; the registry pastes only into a terminal it holds", () => {
     const { s, term } = session()
     expect((s as unknown as EntrySession).paste('/p/a\\ b.png ')).toBe(true)
