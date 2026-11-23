@@ -61,7 +61,10 @@ rule: uploads never leave it); `.git` and every folder below it, at any depth (a
 runs code on the next git command, and a page can build a `File` that nobody picked, §6); the app's data dir when it lies
 inside the project (as downloads). The `.git` check runs on the named path and on its real path (a `hooks-link` to
 `.git/hooks` is refused by its target), and on darwin it compares case-insensitively (APFS is: `.GIT/hooks` names the same
-folder), as the outside rule does for `Library/Keychains` (`design-download.md` §1.2).
+folder), as the outside rule does for `Library/Keychains` (`design-download.md` §1.2). A file named `.git` (`.GIT` too
+on darwin) is refused the same way (§2.2): in a folder with no `.git` it would be a gitfile, `gitdir: <path>`, sending
+every git command there and below to a gitdir the uploader names. The rule goes by name only: a gitdir under another
+name (`git init --separate-git-dir=gitdata`, a bare repo or fixture repo in the project) is an ordinary folder to it.
 
 ### 2.2 Names
 
@@ -71,7 +74,8 @@ From each `File`, checked by main, never trusted from the page:
   characters cannot hide text Claude reads) and no lone surrogates (the name lands in a terminal paste and in notices). A
   numbered name (dedupe, Keep both) that would pass 255 bytes is never used: that file is refused with a reason. A
   refused name skips that file, with its reason in the result; main never renames it quietly.
-- Dot names are allowed (`.env` is a fair upload; Files' New file allows them too).
+- Dot names are allowed (`.env` is a fair upload; Files' New file allows them too), but not `.git` (§2.1).
+- A null from the numbering says why: "too long to number" when ` (99)` would pass 255 bytes, else "no free name".
 - A file from a **clipboard paste** (`pasted: true`) is named `pasted-YYYYMMDD-HHMMSS.<ext>` from the device's clock and
   the `File`'s type (`png`, `jpg`, `gif`, `webp`, `pdf`, else `bin`): browsers call every clipboard image `image.png`, so
   the original name would clash on every paste.
@@ -111,9 +115,12 @@ extension kept), **Cancel** (nothing written). One answer covers the whole uploa
 `src/shared/uploads.ts`:
 - `UPLOAD_MAX_FILE_BYTES` 2 GiB per file (the declared `size`; bytes past it are refused, §3.2), `UPLOAD_MAX_FILES` 100 per
   upload.
-- Free disk: at begin `fs.statfs(folder)` must leave the whole upload plus 1 GiB free; `ENOSPC` while writing fails that
-  file (temp deleted, "the server's disk is full").
-- 2 uploads at once per device, 6 app-wide; 20 begins per 10 min per device (a `RateWindow`).
+- Free disk: at begin `fs.statfs(folder)` must leave the whole upload plus 1 GiB free, less the declared sizes of the
+  running uploads' files not yet settled (counted as written, so 6 at once cannot each pass against the same free space),
+  and again at `resolve` (an answer may come 10 min later); `ENOSPC` while writing fails that file (temp deleted, "the
+  server's disk is full").
+- 2 uploads at once per device, 6 app-wide; 20 begins per 10 min per device (a `RateWindow`; a begin refused because the
+  device or the app is full gives its begin back).
 - **None mode** has no signed-in device: as `downloads.ts` does, every None-mode view is the device `none`, so these limits,
   `uploadId` ownership (§3.1) and the token's device (§3.2) key on `none` there (every None-mode view is the owner), and
   leaving None mode ends the `none` device's uploads (§3.4).

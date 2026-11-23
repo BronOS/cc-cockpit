@@ -12,15 +12,17 @@
 //   - the folder through `resolveProjectEntry` (lexical, then its real path inside the project), a
 //     folder, never `.git` or below (named or real path, case-insensitive on darwin) and never the
 //     app's data dir (§2.1);
-//   - each name through `checkUploadName`, repeats within the upload numbered (`dedupeNames`); a refused
-//     name skips that file with its reason, never a quiet rename (§2.2);
-//   - the caps (2 GiB a file, 100 files) and the folder's free space (the whole upload plus 1 GiB);
+//   - each name through `checkUploadName`, never `.git` (a gitfile would send git to a gitdir the
+//     uploader names), repeats within the upload numbered (`dedupeNames`); a refused name skips that file
+//     with its reason, never a quiet rename (§2.2);
+//   - the caps (2 GiB a file, 100 files) and the folder's free space (the whole upload plus 1 GiB, less
+//     what running uploads have yet to write; again at `resolve`, which may come 10 min later);
 //   - every target name `lstat`ed: a clash makes the upload wait for the person's answer (`resolve`),
 //     Replace only when every clashing entry is a regular file (§2.3).
 //
-// States: `pending` (clashes asked, no tokens), `resolving` (an answer's `lstat`s in flight), `running`
-// (tokens minted, bytes may come), `finished` (every file committed or failed; kept for the terminal
-// entry's paste, §4.3). Only `resolving` and `running` hold one of the device's 2 and the app's 6 places,
+// States: `pending` (clashes asked, no tokens), `resolving` (an answer's `lstat`s and `statfs` in
+// flight), `running` (tokens minted, bytes may come), `finished` (every file committed or failed; kept
+// for the terminal entry's paste, §4.3). Only `resolving` and `running` hold one of the device's 2 and the app's 6 places,
 // plus a begin still in its checks (counted before its first await, so parallel begins cannot all pass
 // the check): an unanswered clash dialog holds none, and `resolve` takes one again or refuses.
 //
@@ -53,6 +55,7 @@ import {
   UPLOAD_MAX_FILES,
   UPLOAD_MAX_NAME_NUMBER,
   UPLOAD_MAX_PER_DEVICE,
+  UPLOAD_NAME_MAX_BYTES,
   type UploadBeginReply,
   type UploadClash,
   type UploadError,
@@ -70,6 +73,9 @@ import { resolveProjectEntry } from './system-files'
 export const UPLOAD_PENDING_MS = 10 * 60_000
 /** Finished uploads kept per device for the terminal entry's paste (§4.3: Paste path while the notice lives). */
 export const UPLOAD_FINISHED_KEPT = 20
+
+/** Why a file named `.git` is refused (a gitfile, `checkBegin`). */
+export const UPLOAD_GIT_NAME_TEXT = 'a file cannot be named .git: git would read it as a pointer to another repository'
 
 /** The same answer for an unknown id, another device's and one already over (§3.1). */
 export const UPLOAD_UNKNOWN_TEXT = 'no such upload'
@@ -202,7 +208,12 @@ export class Uploads {
       return { error: `at most ${UPLOAD_BEGINS_MAX} uploads may start in ${UPLOAD_BEGINS_WINDOW_MS / 60_000} minutes; try again later` }
     }
     const full = this.limitProblem(caller.deviceId)
-    if (full) return { error: full }
+    if (full) {
+      // Refused before it did anything: a person retrying a drop while two long uploads run must not
+      // spend the device's begins and lock it out for the window.
+      this.begins.refund(caller.deviceId)
+      return { error: full }
+    }
     const flight: BeginInFlight = { deviceId: caller.deviceId, windowId: caller.windowId, dropped: false }
     this.beginsInFlight.add(flight)
     try {
@@ -233,28 +244,55 @@ export class Uploads {
     }
     const full = this.limitProblem(caller.deviceId)
     if (full) return { error: full }
-    this.clearTimer(record)
+    // Holds a place from here, and a second answer finds it not pending. The pending timer runs on: a
+    // refusal below puts the upload back to pending with its deadline, and `run` replaces the timer.
     record.state = 'resolving'
+    // A drop (or the pending deadline) while an await ran ended it (the record is gone): nothing is minted.
+    const live = (): boolean => this.records.get(record.uploadId) === record
     const refused: UploadRefusedFile[] = []
+    // Keep both's names, applied only when the upload runs: a refusal below leaves the record as the
+    // clash dialog showed it (a later Replace must target the names that were asked about).
+    const numbered = new Map<number, string>()
     if (choice === 'keep-both') {
       const taken = new Set(record.files.filter((f) => !f.clash).map((f) => nameKey(f.name)))
       for (const file of clashing) {
         const name = await this.freeNumberedName(record.folderReal, file.name, taken)
-        // A drop while the lstats ran ended it (the record is gone): nothing is minted for it.
-        if (this.records.get(record.uploadId) !== record) return { error: UPLOAD_UNKNOWN_TEXT }
+        if (!live()) return { error: UPLOAD_UNKNOWN_TEXT }
         if (name === null) {
-          refused.push({ index: file.index, reason: `no free name for ${displayText(file.name)} (up to (${UPLOAD_MAX_NAME_NUMBER}))` })
+          refused.push({ index: file.index, reason: numberingRefusal(file.name, 'in this folder') })
           continue
         }
         taken.add(nameKey(name))
-        file.name = name
+        numbered.set(file.index, name)
       }
     }
     const refusedIdx = new Set(refused.map((r) => r.index))
     const go = record.files.filter((f) => !refusedIdx.has(f.index))
+    if (go.length > 0) {
+      // The disk again (§2.5): the answer may come 10 min after begin, and other uploads ran meanwhile.
+      // The last await, so the check and the mint below are one synchronous step.
+      let free: number
+      try {
+        free = await this.readFree(record.folderReal)
+      } catch (err) {
+        if (!live()) return { error: UPLOAD_UNKNOWN_TEXT }
+        record.state = 'pending'
+        return { error: err instanceof UploadRefusal ? err.message : 'the upload could not be started' }
+      }
+      if (!live()) return { error: UPLOAD_UNKNOWN_TEXT }
+      const problem = this.spaceProblem(free, go.reduce((sum, f) => sum + f.size, 0))
+      if (problem) {
+        record.state = 'pending'
+        return { error: problem }
+      }
+    }
     const tokens = this.run(
       record,
-      go.map((f) => ({ ...f, choice: f.clash ? (choice === 'replace' ? 'replace' : 'keep-both') : 'new' }))
+      go.map((f) => ({
+        ...f,
+        name: numbered.get(f.index) ?? f.name,
+        choice: f.clash ? (choice === 'replace' ? 'replace' : 'keep-both') : 'new',
+      }))
     )
     return { tokens, refused }
   }
@@ -358,24 +396,32 @@ export class Uploads {
 
     const refused: UploadRefusedFile[] = []
     const okSpecs: Array<{ index: number; name: string; size: number }> = []
+    const darwin = this.platform === 'darwin'
     specs.forEach((spec, index) => {
       const check = checkUploadName(spec.name)
+      if (!check.ok) {
+        refused.push({ index, reason: check.reason })
+        return
+      }
       // checkUploadName is ok only for a string.
-      if (check.ok) okSpecs.push({ index, name: spec.name as string, size: spec.size })
-      else refused.push({ index, reason: check.reason })
+      const name = spec.name as string
+      // A file named `.git` (`.GIT` too on darwin, whose disk ignores case) is a gitfile: `gitdir: <path>`
+      // sends every git command in that folder and below to a gitdir the uploader names, whose `config`
+      // (`core.fsmonitor`, `core.hooksPath`) runs code: the reason `.git` is refused as a folder (§2.1).
+      if (insideGit(name, name, darwin)) refused.push({ index, reason: UPLOAD_GIT_NAME_TEXT })
+      else okSpecs.push({ index, name, size: spec.size })
     })
     const deduped = dedupeNames(okSpecs.map((s) => s.name))
     const planned: PlannedFile[] = []
     okSpecs.forEach((spec, i) => {
       const name = deduped[i]
       if (name === null || name === undefined) {
-        refused.push({ index: spec.index, reason: `no free name for ${displayText(spec.name)} in this upload` })
+        refused.push({ index: spec.index, reason: numberingRefusal(spec.name, 'in this upload') })
       } else {
         planned.push({ index: spec.index, name, size: spec.size })
       }
     })
 
-    if (planned.length > 0) await this.checkFreeSpace(folder.real, planned.reduce((sum, f) => sum + f.size, 0))
     const files: PlannedFile[] = []
     for (const file of planned) {
       try {
@@ -390,9 +436,16 @@ export class Uploads {
       }
       files.push(file)
     }
+    // The disk last: its check and the mint below are one synchronous step, so parallel begins cannot
+    // both pass against the same free space (each sees what the other's tokens have yet to write).
+    const free = files.length > 0 ? await this.readFree(folder.real) : 0
     refused.sort((a, b) => a.index - b.index)
     // A revoke, a disconnect or the window's close while the checks ran: nothing is kept for it.
     if (flight.dropped) throw new UploadRefusal('the upload was ended')
+    if (files.length > 0) {
+      const problem = this.spaceProblem(free, files.reduce((sum, f) => sum + f.size, 0))
+      if (problem) throw new UploadRefusal(problem)
+    }
 
     const uploadId = this.random(16).toString('base64url')
     if (files.length === 0) return { uploadId, refused, clashes: [], tokens: [] }
@@ -500,19 +553,34 @@ export class Uploads {
     }
   }
 
-  private async checkFreeSpace(folderReal: string, total: number): Promise<void> {
-    let free: number
+  /** The folder's free bytes (`statfs`); a fixed refusal when they cannot be read (its error names the path). */
+  private async readFree(folderReal: string): Promise<number> {
     try {
       const st = await (this.deps.statfs ?? statfs)(folderReal)
-      free = Number(st.bavail) * Number(st.bsize)
+      return Number(st.bavail) * Number(st.bsize)
     } catch {
       throw new UploadRefusal("the server's free disk space cannot be read")
     }
-    if (free < total + UPLOAD_FREE_MARGIN_BYTES) {
-      throw new UploadRefusal(
-        `the server's disk has ${downloadSizeText(free)} free; this upload needs ${downloadSizeText(total)} plus ${downloadSizeText(UPLOAD_FREE_MARGIN_BYTES)} to spare`
-      )
+  }
+
+  /**
+   * Why `total` more bytes would take the disk under the margin, or null. The declared sizes of the
+   * running uploads' live files count as written already (§2.5: "disk fill is bounded" must hold for 6
+   * at once, not for each alone); the bytes such a file has written count twice (once in `free`), an
+   * overestimate, never an under. Every running upload counts, whatever disk it writes to: a project
+   * spread over two devices is rare, and erring this way only refuses early. A pending upload holds no
+   * bytes, as it holds no place: `resolve` checks again.
+   */
+  private spaceProblem(free: number, total: number): string | null {
+    let unwritten = 0
+    for (const r of this.records.values()) {
+      if (r.state !== 'running') continue
+      for (const token of r.tokens) unwritten += this.grants.get(token)?.size ?? 0
     }
+    const available = Math.max(0, free - unwritten)
+    if (available >= total + UPLOAD_FREE_MARGIN_BYTES) return null
+    const beside = unwritten > 0 ? ' beside the uploads running' : ''
+    return `the server's disk has ${downloadSizeText(available)} free${beside}; this upload needs ${downloadSizeText(total)} plus ${downloadSizeText(UPLOAD_FREE_MARGIN_BYTES)} to spare`
   }
 
   /**
@@ -604,7 +672,15 @@ export class Uploads {
     const hadTokens = record.state === 'running'
     record.state = 'finished'
     if (why === 'idle') this.deps.log?.(`upload ${record.uploadId.slice(0, 8)}: no bytes for ${UPLOAD_IDLE_MS / 1000} s, ended`)
-    if (hadTokens) await this.deps.writer.abortUpload(record.uploadId)
+    if (!hadTokens) return
+    // Never rejects: the idle and pending timers call this with `void` (main has no unhandledRejection
+    // handler), and one failed abort must not reject a drop's Promise.all (the gateway's revoke or stop).
+    // The record is already gone, so a log line is all that is left to do.
+    try {
+      await this.deps.writer.abortUpload(record.uploadId)
+    } catch (err) {
+      this.deps.log?.(`upload ${record.uploadId.slice(0, 8)}: its temps could not all be deleted: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   private async dropWhere(match: (r: { deviceId: string; windowId: number }) => boolean): Promise<void> {
@@ -619,6 +695,17 @@ export class Uploads {
     const record = this.records.get(uploadId)
     return record && record.deviceId === caller.deviceId ? record : undefined
   }
+}
+
+/**
+ * Why a name got no number (a `null` from `dedupeNames`, Keep both or the commit's numbering, which all
+ * stop at the first candidate `numberedUploadName` refuses): the name limit when ` (99)` does not fit
+ * (a 251-byte name fits ` (1)` to ` (9)`, not ` (10)`), else every number to 99 is taken `where`.
+ */
+export function numberingRefusal(name: string, where: string): string {
+  return numberedUploadName(name, UPLOAD_MAX_NAME_NUMBER) === null
+    ? `${displayText(name)} is too long to number (a name is at most ${UPLOAD_NAME_MAX_BYTES} bytes)`
+    : `no free name for ${displayText(name)} ${where} (up to (${UPLOAD_MAX_NAME_NUMBER}))`
 }
 
 /** The key two names clash under within one upload (as `dedupeNames`: case folded, NFC). */

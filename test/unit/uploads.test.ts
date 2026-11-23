@@ -2,7 +2,7 @@
 // ownership, the limits (None mode's `none` device included), the idle clock, the drops and the folder
 // chooser's listing. Real trees in a temp dir; a recording writer stands in for upload-writer.ts and a
 // fake statfs for the disk.
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -14,6 +14,7 @@ import {
   UPLOAD_IDLE_MS,
   UPLOAD_MAX_FILE_BYTES,
   UPLOAD_MAX_FILES,
+  UPLOAD_MAX_PER_DEVICE,
   type UploadBeginReply,
   type UploadBegun,
   type UploadResolveReply,
@@ -21,6 +22,7 @@ import {
 } from '../../src/shared/uploads'
 import {
   UPLOAD_FINISHED_KEPT,
+  UPLOAD_GIT_NAME_TEXT,
   UPLOAD_PENDING_MS,
   UPLOAD_UNKNOWN_TEXT,
   Uploads,
@@ -163,6 +165,15 @@ describe('begin: the folder', () => {
     expect('tokens' in seen(await linux.begin(B, SRC, '.GIT/hooks', files('x')))).toBe(true)
   })
 
+  it('refuses .git by its name alone: a .git link to a folder under another name', async () => {
+    // `git init --separate-git-dir` style: the real path (`gitdata/hooks`) has no `.git` in it.
+    const named = join(tmp, 'named-proj')
+    mkdirSync(join(named, 'gitdata', 'hooks'), { recursive: true })
+    symlinkSync(join(named, 'gitdata'), join(named, '.git'))
+    const up = make({ projectRoot: () => named })
+    expect(seen(await up.begin(A, SRC, '.git/hooks', files('x')))).toEqual({ error: expect.stringMatching(/is in \.git/) })
+  })
+
   it('refuses the data dir inside the project, and a file named as the folder', async () => {
     const inner = join(proj, 'appdata')
     mkdirSync(join(inner, 'sub'), { recursive: true })
@@ -171,6 +182,33 @@ describe('begin: the folder', () => {
     expect(await refusal(up, 'appdata')).toMatch(/data folder/)
     expect(await refusal(up, 'appdata/sub')).toMatch(/data folder/)
     expect(await refusal(up, 'notes.txt')).toMatch(/not a folder/)
+  })
+
+  it('refuses a link whose real path is the data dir inside the project', async () => {
+    const inner = join(proj, 'appdata')
+    mkdirSync(inner)
+    // Named `alias`, so only the real path names the data dir (the link's own target is `alias`).
+    symlinkSync(inner, join(proj, 'alias'))
+    expect(await refusal(make({ dataDir: inner }), 'alias')).toMatch(/data folder/)
+  })
+
+  it('refuses with a fixed text when the project folder cannot be resolved', async () => {
+    const up = make({ projectRoot: () => join(tmp, 'gone') })
+    expect(seen(await up.begin(A, SRC, '', files('a')))).toEqual({ error: 'the project folder cannot be read' })
+    expect(seen(await up.folders(WINDOW, ''))).toEqual({ error: 'the project folder cannot be read' })
+  })
+
+  it.runIf(process.getuid?.() !== 0)('refuses each file it cannot lstat, with a fixed text', async () => {
+    const locked = join(proj, 'locked')
+    mkdirSync(locked)
+    chmodSync(locked, 0o000)
+    try {
+      const reply = await begun(make(), A, 'locked', files('a.txt'))
+      expect(reply.refused).toEqual([{ index: 0, reason: 'a.txt cannot be checked in locked' }])
+      expect(reply.tokens).toEqual([])
+    } finally {
+      chmodSync(locked, 0o755)
+    }
   })
 
   it('refuses when the window has no project', async () => {
@@ -196,6 +234,28 @@ describe('begin: names, caps and the disk', () => {
       [0, 'ok.txt'],
       [4, 'Ok (1).TXT'],
       [5, '.env'],
+    ])
+  })
+
+  it('refuses a file named .git (a gitfile), .GIT on darwin only, and keeps .gitignore', async () => {
+    const linux = await begun(make(), A, '', files('.git', '.GIT', '.gitignore'))
+    expect(linux.refused).toEqual([{ index: 0, reason: UPLOAD_GIT_NAME_TEXT }])
+    expect(linux.tokens?.map((t) => t.name)).toEqual(['.GIT', '.gitignore'])
+    const darwin = await begun(make({ platform: 'darwin' }), B, '', files('.git', '.GIT', '.gitignore'))
+    expect(darwin.refused).toEqual([
+      { index: 0, reason: UPLOAD_GIT_NAME_TEXT },
+      { index: 1, reason: UPLOAD_GIT_NAME_TEXT },
+    ])
+    expect(darwin.tokens?.map((t) => t.name)).toEqual(['.gitignore'])
+  })
+
+  it('refuses a repeated name too long to number, with that reason', async () => {
+    const long = `${'a'.repeat(248)}.txt` // 252 bytes: " (1)" takes it to 256
+    const reply = await begun(make(), A, '', files(long, long, 'b.txt'))
+    expect(reply.refused).toEqual([{ index: 1, reason: expect.stringMatching(/is too long to number/) }])
+    expect(reply.tokens?.map((t) => [t.index, t.name])).toEqual([
+      [0, long],
+      [2, 'b.txt'],
     ])
   })
 
@@ -230,6 +290,38 @@ describe('begin: names, caps and the disk', () => {
     expect('tokens' in (await begun(up, A, '', files('a', 'b')))).toBe(true)
     const broken = make({ statfs: async () => Promise.reject(new Error(`ENOENT: ${proj}`)) })
     expect(await refusal(broken, '')).toBe("the server's free disk space cannot be read")
+  })
+
+  /** 20 files of 1 GiB: two of these fit in 30 GiB plus the margin one at a time, not together. */
+  const twentyGiB = (prefix: string): Array<{ name: string; size: number }> =>
+    Array.from({ length: 20 }, (_, i) => ({ name: `${prefix}${i}`, size: 1024 ** 3 }))
+
+  it('counts what running uploads have yet to write: parallel begins that fit only one at a time', async () => {
+    freeBytes = UPLOAD_FREE_MARGIN_BYTES + 30 * 1024 ** 3
+    const up = make()
+    const replies = await Promise.all([begin(up, A, '', twentyGiB('a')), begin(up, B, '', twentyGiB('b'))])
+    const ran = replies.filter((r): r is UploadBegun => 'tokens' in r)
+    expect(ran).toHaveLength(1)
+    expect(replies.filter((r) => 'error' in r)).toEqual([{ error: expect.stringMatching(/free beside the uploads running/) }])
+    // Each settled file gives its bytes back: once every one has, the other fits.
+    for (const t of ran[0]!.tokens!) up.settle(t.token, { ok: true, name: t.name, path: t.name })
+    expect('tokens' in (await begin(up, B, '', twentyGiB('b')))).toBe(true)
+  })
+
+  it('checks the disk again at resolve, and a refusal there leaves it pending as asked', async () => {
+    freeBytes = UPLOAD_FREE_MARGIN_BYTES + 30 * 1024 ** 3
+    writeFileSync(join(proj, 'a0'), 'old')
+    const up = make()
+    const pending = await begun(up, A, '', twentyGiB('a'))
+    expect(pending.clashes).toHaveLength(1)
+    const other = await begun(up, B, '', twentyGiB('b'))
+    expect(seen(await up.resolve(A, pending.uploadId, 'keep-both'))).toEqual({ error: expect.stringMatching(/disk has/) })
+    await up.cancel(B, other.uploadId)
+    // Still pending, and Keep both's numbering was not kept: Replace targets the name that was asked about.
+    const resolved = seen(await up.resolve(A, pending.uploadId, 'replace'))
+    if ('error' in resolved) throw new Error(resolved.error)
+    expect(resolved.tokens[0]).toMatchObject({ index: 0, name: 'a0' })
+    expect(up.grant(resolved.tokens[0]!.token)?.choice).toBe('replace')
   })
 })
 
@@ -301,6 +393,17 @@ describe('clashes and resolve', () => {
     expect(resolved.tokens.map((t) => t.name)).toEqual(['other'])
   })
 
+  it('keep-both refuses a name too long to number, with that reason', async () => {
+    const long = `${'a'.repeat(248)}.txt`
+    writeFileSync(join(proj, long), 'x')
+    const up = make()
+    const reply = await begun(up, A, '', files(long))
+    const resolved = seen(await up.resolve(A, reply.uploadId, 'keep-both'))
+    if ('error' in resolved) throw new Error(resolved.error)
+    expect(resolved.refused).toEqual([{ index: 0, reason: expect.stringMatching(/is too long to number/) }])
+    expect(resolved.tokens).toEqual([])
+  })
+
   it('cancel ends a pending upload; a bad answer is refused', async () => {
     writeFileSync(join(proj, 'a.txt'), 'old')
     const up = make()
@@ -315,6 +418,18 @@ describe('clashes and resolve', () => {
     writeFileSync(join(proj, 'a.txt'), 'old')
     const up = make()
     const reply = await begun(up, A, '', files('a.txt'))
+    await vi.advanceTimersByTimeAsync(UPLOAD_PENDING_MS + 1)
+    expect(await up.resolve(A, reply.uploadId, 'replace')).toEqual({ error: UPLOAD_UNKNOWN_TEXT })
+  })
+
+  it('a resolve refused for the disk keeps the pending deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    writeFileSync(join(proj, 'a.txt'), 'old')
+    const up = make()
+    const reply = await begun(up, A, '', files('a.txt'))
+    freeBytes = 0
+    expect(seen(await up.resolve(A, reply.uploadId, 'replace'))).toEqual({ error: expect.stringMatching(/disk has/) })
+    freeBytes = 100 * 1024 ** 3
     await vi.advanceTimersByTimeAsync(UPLOAD_PENDING_MS + 1)
     expect(await up.resolve(A, reply.uploadId, 'replace')).toEqual({ error: UPLOAD_UNKNOWN_TEXT })
   })
@@ -390,6 +505,17 @@ describe('limits', () => {
     expect('tokens' in (await begin(up, A, '', files('x')))).toBe(true)
   })
 
+  it('a begin refused for a full device spends none of its begins', async () => {
+    const up = make({ now: () => 1_000_000 })
+    const first = await begun(up, A, '', files('a'))
+    await begun(up, A, '', files('b'))
+    for (let i = 0; i < UPLOAD_BEGINS_MAX; i++) {
+      expect(await refusal(up, '', files('c'))).toMatch(new RegExp(`${UPLOAD_MAX_PER_DEVICE} uploads are already running`))
+    }
+    up.settle(first.tokens![0]!.token, { ok: true, name: 'a', path: 'a' })
+    expect('tokens' in (await begin(up, A, '', files('c')))).toBe(true)
+  })
+
   it('None mode: every view is the device none, so its limits and ownership are shared', async () => {
     const up = make()
     const viewOne: UploadCaller = { deviceId: 'none', windowId: WINDOW }
@@ -444,6 +570,40 @@ describe('the idle clock', () => {
     // Its place is free again.
     await begun(up, A, '', files('c'))
     await begun(up, A, '', files('d'))
+  })
+})
+
+describe('a writer whose abort fails', () => {
+  const failing = (log: string[]): Partial<UploadsDeps> => ({
+    writer: {
+      abortUpload: async (id) => {
+        aborted.push(id)
+        throw new Error('EIO: close failed')
+      },
+    },
+    log: (line) => log.push(line),
+  })
+
+  it('a drop still resolves and ends every upload', async () => {
+    const log: string[] = []
+    const up = make(failing(log))
+    const a = await begun(up, A, '', files('a'))
+    const b = await begun(up, B, '', files('b'))
+    await expect(up.dropAll()).resolves.toBeUndefined()
+    expect(aborted.sort()).toEqual([a.uploadId, b.uploadId].sort())
+    expect(log.filter((l) => l.includes('could not all be deleted'))).toHaveLength(2)
+    await expect(up.cancel(A, a.uploadId)).resolves.toBeUndefined()
+  })
+
+  it('the idle expiry ends it without an unhandled rejection', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const log: string[] = []
+    const up = make(failing(log))
+    const reply = await begun(up, A, '', files('a'))
+    await vi.advanceTimersByTimeAsync(UPLOAD_IDLE_MS + 1_000)
+    expect(aborted).toEqual([reply.uploadId])
+    expect(up.grant(reply.tokens![0]!.token)).toBeUndefined()
+    expect(log.some((l) => l.includes('could not all be deleted'))).toBe(true)
   })
 })
 
@@ -502,6 +662,38 @@ describe('drops', () => {
     expect(seen(await pendingBegin)).toEqual({ error: 'the upload was ended' })
   })
 
+  it('a drop while Keep both checks names mints nothing', async () => {
+    writeFileSync(join(proj, 'a.txt'), 'old')
+    const up = make()
+    const reply = await begun(up, A, '', files('a.txt'))
+    // resolve runs up to its first lstat synchronously; the drop lands while that lstat runs.
+    const resolving = up.resolve(A, reply.uploadId, 'keep-both')
+    await up.dropDevice('dev-a')
+    expect(await resolving).toEqual({ error: UPLOAD_UNKNOWN_TEXT })
+    expect(aborted).toEqual([])
+    expect(up.outcome(A, reply.uploadId)).toBeUndefined()
+  })
+
+  it('a drop while resolve reads the disk mints nothing', async () => {
+    writeFileSync(join(proj, 'a.txt'), 'old')
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    let hold = false
+    const up = make({
+      statfs: async () => {
+        if (hold) await gate
+        return { bavail: freeBytes, bsize: 1 }
+      },
+    })
+    const reply = await begun(up, A, '', files('a.txt'))
+    hold = true
+    const resolving = up.resolve(A, reply.uploadId, 'replace')
+    await up.dropDevice('dev-a')
+    release()
+    expect(await resolving).toEqual({ error: UPLOAD_UNKNOWN_TEXT })
+    expect(aborted).toEqual([])
+  })
+
   it('keeps only the last UPLOAD_FINISHED_KEPT finished uploads of a device', async () => {
     const own: string[] = []
     let now = 1
@@ -541,6 +733,17 @@ describe('folders', () => {
     expect(reply.folders).toHaveLength(UPLOAD_FOLDER_LIST_MAX)
     expect(reply.folders[0]).toBe('d0000')
     expect(reply.more).toBe(true)
+  })
+
+  it.runIf(process.getuid?.() !== 0)('refuses a folder it cannot read, with a fixed text', async () => {
+    const locked = join(proj, 'locked')
+    mkdirSync(locked)
+    chmodSync(locked, 0o000)
+    try {
+      expect(seen(await make().folders(WINDOW, 'locked'))).toEqual({ error: 'locked cannot be read' })
+    } finally {
+      chmodSync(locked, 0o755)
+    }
   })
 
   it('refuses a path as begin refuses its folder', async () => {
