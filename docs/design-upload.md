@@ -176,7 +176,7 @@ Refusals answer a JSON `{error}`: 400 (shape, or a body that ended short), 409 w
 507 (disk full), 500 (the temp, the record or the commit failed). A guest with no right to the token gets the guest block's
 404, the same status, headers and plain-text body as a route that does not exist (D-26): a read guest whatever it sends,
 a method other than PUT, and a token unknown, another device's or ended. So such a guest cannot tell a live token from a
-guess, nor `/u/` from a route that does not exist; like the guest block's, that 404 keeps the connection and Node reads
+guess; like the guest block's, that 404 keeps the connection and Node reads
 the body off under the request bound. A write guest holding its own live token gets the owner's answers above (400, 409
 with `expected`, 413, 507, 500): without the 409 a Chromium resend (§3.3) would end its file. Its own token once ended
 gets the plain-text 404 too, so the client goes by the status, never the body. Every answer after the writer's goes once

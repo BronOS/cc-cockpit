@@ -1185,7 +1185,7 @@ export class WebGateway {
    * its answer goes back as JSON.
    * A guest not entitled (the read role, a method other than PUT, a token unknown, another device's or
    * ended) gets the guest block's 404, the same status, headers and body as a route that does not exist
-   * (D-26): a read guest cannot tell a live token from a guess, nor `/u/` from a missing route. A write
+   * (D-26): a read guest cannot tell a live token from a guess. A write
    * guest holding its own live token gets the protocol's answers (400, 409 with `expected`, 413, 507,
    * 500): without the 409 a Chromium resend would end its file. Answers carry fixed words and
    * project-relative names only (D-33). A line per file in the access log, never the token.
