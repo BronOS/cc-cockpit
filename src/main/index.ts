@@ -87,6 +87,7 @@ import {
   registerGroupHandlers,
   registerWebviewHandlers,
   registerGuestHandlers,
+  registerUploadHandlers,
   summary
 } from './ipc/router'
 import { registerRoomStripHandlers, registerRoomViewHandlers } from './ipc/room-handlers'
@@ -133,6 +134,8 @@ import { bundledPluginSpecs, bundledRoot } from './plugins/bundled'
 import { electronConfirmLink, QueuedLinkConfirm } from './plugins/link-dialog'
 import { LINK_ASK_MS, LinkAsks } from './plugins/link-asks'
 import { Downloads } from './files/downloads'
+import { Uploads } from './files/uploads'
+import { UploadWriter } from './files/upload-writer'
 import { electronSystemShell } from './files/electron-shell'
 import { SystemFiles } from './files/system-files'
 import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
@@ -1064,6 +1067,9 @@ function start(server: boolean): void {
       trashAsks.windowClosed(windowId)
       // Its `ccc download` offers end (settled for every view) and an accepted one's Try again with them.
       downloads.windowClosed(windowId)
+      // Its uploads end (design-upload.md §3.4): the live request cut, every temp deleted (by the writer's own
+      // descriptors and paths, not through the project folder, which this window no longer has).
+      void uploads.dropWindow(windowId).catch((err: unknown) => warnLog(`uploads: ending a closed window's uploads failed: ${errorText(err)}`))
       roomRemoveAsks.windowClosed(windowId)
       // Its in-page notices end as dismissed (server mode; a plugin waiting on one is told now).
       pageNotices?.windowClosed(windowId)
@@ -2511,6 +2517,8 @@ function start(server: boolean): void {
     dropPageTokens: (deviceId) => pluginPages.tokens.dropDevice(deviceId),
     // Created further down (it needs the gateway's view lookups); only called once guests act, long after.
     dropDownloads: (deviceId) => downloads.dropDevice(deviceId),
+    // The same for uploads (design-upload.md §3.4); never a rejection in main.
+    dropUploads: (deviceId) => void uploads.dropDevice(deviceId).catch((err: unknown) => warnLog(`guests: ending uploads failed: ${errorText(err)}`)),
     pluginShown: (projectId, pluginId) => pluginGuestAccess.visible(projectId, pluginId),
     // A role downgrade warns about the guest's own unsaved pages only.
     unsavedOf: guestUnsavedOf((viewId) => views.whoOf(viewId), { access: (who) => guestStore.access(who) }, (projectId, inView) =>
@@ -2650,12 +2658,35 @@ function start(server: boolean): void {
     dataDir,
     log: warnLog
   })
+  // Uploads from a browser view's device (design-upload.md): uploads.ts decides (folder, names, caps,
+  // tokens, limits) and the writer puts the bytes on disk (temps in the target folder, the record in
+  // <data>/uploads/temps.json, swept at start before the gateway takes a PUT). The project folder is the
+  // window's own project's (main's window table): a window that is closing has none, so a commit then fails.
+  const uploadProjectRoot = (windowId: number): string | undefined => {
+    const projectId = projectOfWindow(windowId)
+    return projectId === undefined ? undefined : registry.get(projectId)?.path
+  }
+  const uploadWriter: UploadWriter = new UploadWriter({
+    grants: () => uploads,
+    projectRoot: uploadProjectRoot,
+    tempsFile: paths.uploadTempsJson,
+    log: warnLog
+  })
+  const uploads: Uploads = new Uploads({ projectRoot: uploadProjectRoot, dataDir, writer: uploadWriter, log: warnLog })
   const webGateway = new WebGateway({
     log: warnLog,
     auth: webAuth,
     accessLog: webAccessLog,
     pages: pluginPages,
     downloads,
+    // `/u/<token>` (design-upload.md §3.2): the grants are uploads.ts's, the bytes the writer's; the gateway
+    // ends a device's uploads on its revoke, disconnect and leaving None mode, and all of them at its stop.
+    uploads: {
+      grant: (token) => uploads.grant(token),
+      writeChunk: (token, offset, body, length) => uploadWriter.writeChunk(token, offset, body, length),
+      dropDevice: (deviceId) => uploads.dropDevice(deviceId),
+      dropAll: () => uploads.dropAll()
+    },
     // The invite redeem route, guest sessions and the guests' 404s (design-guests §4, §5).
     guests: guestStore,
     // The renderer build next to main's (out/renderer): the web shell and its shared assets.
@@ -3993,6 +4024,18 @@ function start(server: boolean): void {
     },
     downloadDecline: (windowId, requestId) => downloads.decline(windowId, requestId)
   })
+  // Uploads (design-upload.md §3.1): the view's device is main's own (the connection's sign-in, `none` in None
+  // mode), as the gateway keys `/u/`; the source panel through the layout's zones now, the tab through main's
+  // tab table, both in the caller's own project. The paste rule (`paste`) comes with the terminal entry.
+  registerUploadHandlers(router, {
+    deviceOf: (viewId, windowId) => webConnections.deviceIdOf(viewId, windowId),
+    placedPanel: (projectId, panelKey) => layouts.placedPanel(projectId, panelKey),
+    tabKind: (projectId, tabId) => tabs.list(projectId).find((t) => t.id === tabId)?.kind,
+    begin: (caller, source, folder, files) => uploads.begin(caller, source, folder, files),
+    resolve: (caller, uploadId, choice) => uploads.resolve(caller, uploadId, choice),
+    cancel: (caller, uploadId) => uploads.cancel(caller, uploadId),
+    folders: (windowId, path) => uploads.folders(windowId, path)
+  })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.
   if (testRun) {
@@ -4436,6 +4479,10 @@ function start(server: boolean): void {
     .whenReady()
     .then(async () => {
       serverHold = holdForRun(platformRow, powerHolds)
+      // The temps a crash left mid-upload go before the gateway can take a `/u/` PUT (design-upload.md §2.4):
+      // on the desktop `runStartOrder` does not await the gateway, so the sweep is awaited here, first. Never a
+      // reason not to start (the writer logs what it could not delete and keeps it for the next sweep).
+      await uploadWriter.sweepTemps().catch((err: unknown) => warnLog(`uploads: the temps sweep failed: ${errorText(err)}`))
       // server-start.ts has the order. The socket first, so the first Claude tab already has a live
       // socket to report to (milliseconds; the stale probe is capped at 500 ms; on the desktop false
       // only logs and its tabs get no CC_COCKPIT_SOCK, see the TabManager `sock` above). In server

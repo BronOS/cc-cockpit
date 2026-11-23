@@ -530,6 +530,44 @@ describe('changes', () => {
     expect(droppedDownloads).toHaveLength(4)
   })
 
+  it('uploads end where downloads do, and on a kick before the devices are revoked (design-upload.md §3.4)', async () => {
+    const droppedUploads: Array<{ deviceId: string; listed: boolean }> = []
+    let guestId = ''
+    const s = store({
+      // Whether the device was still listed when its uploads were dropped: the end must not rest on the revoke.
+      dropUploads: (d) => droppedUploads.push({ deviceId: d, listed: devices.devicesOfGuest(guestId).some((x) => x.id === d) })
+    })
+    const inv = await invited(s, { scope: ['t1'] })
+    const token = inv.token
+    guestId = inv.guestId
+    const { deviceId } = redeemed(s, token)
+    s.setRole(guestId, 'write')
+    expect(droppedUploads).toEqual([])
+    s.setRole(guestId, 'read')
+    expect(droppedUploads.map((x) => x.deviceId)).toEqual([deviceId])
+    s.shareTab(guestId, 't1', false)
+    expect(droppedUploads.map((x) => x.deviceId)).toEqual([deviceId, deviceId])
+    expect(s.kick(guestId)).toBe(true)
+    expect(droppedUploads).toHaveLength(3)
+    expect(droppedUploads[2]).toEqual({ deviceId, listed: true })
+    expect(devices.devicesOfGuest(guestId)).toEqual([])
+  })
+
+  it('a throwing dropUploads is logged, never stops the guest ending', async () => {
+    const lines: string[] = []
+    const s = store({
+      dropUploads: () => {
+        throw new Error('boom')
+      },
+      log: (line) => lines.push(line)
+    })
+    const { token, guestId } = await invited(s)
+    redeemed(s, token)
+    expect(s.kick(guestId)).toBe(true)
+    expect(s.list()).toEqual([])
+    expect(lines.some((l) => l.includes('dropping uploads failed'))).toBe(true)
+  })
+
   it('unsharing a tab the guest opened takes it from openedTabs too: it is no longer visible, and the views reconnect', async () => {
     const s = store()
     const { token, guestId } = await invited(s, { scope: ['t1'] })

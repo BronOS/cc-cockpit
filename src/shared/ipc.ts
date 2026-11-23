@@ -25,6 +25,18 @@ import type { RoomRemoveAsk, RoomView } from './room-view'
 import type { GroupRefusalReason, GroupsSnapshot, PaneEdge, PlaceIntent } from './tab-groups'
 import type { DiscussTarget } from './discuss'
 import type { DownloadAccept, DownloadAnswer, DownloadFailed, DownloadOffer, DownloadSettled, DownloadStart } from './downloads'
+import type {
+  UploadBeginReply,
+  UploadBeginRequest,
+  UploadCancelRequest,
+  UploadError,
+  UploadFoldersReply,
+  UploadFoldersRequest,
+  UploadPasteReply,
+  UploadPasteRequest,
+  UploadResolveReply,
+  UploadResolveRequest
+} from './uploads'
 import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
 import type { PageNotice } from './notify'
@@ -1286,6 +1298,23 @@ export interface IpcInvokeMap {
   'downloads.accept': { req: DownloadAccept; res: boolean }
   /** Cancel in a `downloads.offer` dialog: declines it for every view of the sender's window; false for an unknown or settled id. */
   'downloads.answer': { req: DownloadAnswer; res: boolean }
+  /**
+   * Uploads from the person's device (design-upload.md §3.1). Each is served only to a browser view (main's
+   * `view.remote`) of the owner or a write guest; the view's device and window are main's (the connection it
+   * bound), never the payload's. Begin: `source` a panel the project's layout places now or a Claude or shell
+   * tab of the window (a guest's: in its scope, the plugin visible to it); the folder, names, sizes, caps and
+   * disk checked by main (files/uploads.ts). Answers the tokens when nothing clashes, the clashes otherwise, or
+   * a refusal of the whole upload.
+   */
+  'uploads.begin': { req: UploadBeginRequest; res: UploadBeginReply }
+  /** The person's answer to the clash dialog: the tokens (none for `cancel`), or a refusal. Only the beginning device's. */
+  'uploads.resolve': { req: UploadResolveRequest; res: UploadResolveReply }
+  /** Aborts the upload and deletes its temps; an unknown or another device's id does nothing (the same answer). */
+  'uploads.cancel': { req: UploadCancelRequest; res: void }
+  /** The terminal entry's paste (design §4.3): the text to paste, or held with its reason. */
+  'uploads.paste': { req: UploadPasteRequest; res: UploadPasteReply }
+  /** The folder chooser's listing (design §4.2), through the terminal tab the drop or paste landed on. */
+  'uploads.folders': { req: UploadFoldersRequest; res: UploadFoldersReply | UploadError }
 
   // Zones.
   /** The sender's project layout, reconciled with the panels that exist. Plain query. */
@@ -2308,6 +2337,11 @@ export const INVOKE_CHANNELS = [
   'trash.answer',
   'downloads.accept',
   'downloads.answer',
+  'uploads.begin',
+  'uploads.resolve',
+  'uploads.cancel',
+  'uploads.paste',
+  'uploads.folders',
   'layout.get',
   'layout.set',
   'commands.list',
@@ -2649,6 +2683,15 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'downloads.settled': 'yes',
   'downloads.answer': 'yes',
   'downloads.accept': 'adapted',
+  // Uploads (design-upload.md §3.1, §6): served only to a browser view (`view.remote`, main's binding: the
+  // desktop page and server mode's hidden page are on that computer already) of the owner or a write guest
+  // (GUEST_CLASS `write`); the device and window are the connection's, the source panel or tab is resolved in
+  // the caller's own project, and an upload id answers only to the device that began it.
+  'uploads.begin': 'adapted',
+  'uploads.resolve': 'adapted',
+  'uploads.cancel': 'adapted',
+  'uploads.paste': 'adapted',
+  'uploads.folders': 'adapted',
   'app.linkNotice': 'yes',
   'oauth.signInEnded': 'yes',
   'project.updated': 'yes',

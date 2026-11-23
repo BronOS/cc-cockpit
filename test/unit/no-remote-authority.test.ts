@@ -26,6 +26,8 @@ const TRANSPORT: Record<string, Record<string, string>> = {
       'D-11 widening helper; its handlers check isOwner first (owner())',
     'return deps.linkAnswer(ctx.windowId, requestId, allow, view.remote)': 'links.answer: after its isOwner check, remote may only Deny on a desktop',
     'if (!view.remote || !deps.downloadAccept) return false': 'downloads.accept: only a browser downloads; guests checked by the ask target (D-23)',
+    "if (!view.remote) throw new Error(`${channel}: refused, uploads come from a browser's device`)":
+      'uploads.*: only a browser uploads (the desktop and hidden page are on that computer); the role is guestCall and GUEST_CLASS write',
     'const view = callView.remote ? deps.set(ctx.projectId, layout, { keepGeometry: true }) : deps.set(ctx.projectId, layout)':
       "layout.set keepGeometry: a browser never moves the desktop's window geometry",
     'if (view.remote) return': "overlays.ack: only the desktop's acks are flow control",

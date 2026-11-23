@@ -6,6 +6,8 @@ import {
   byPageDiscuss,
   byTab,
   byTabCreate,
+  byUploadSource,
+  byUploadTab,
   GUEST_CLASS,
   GUEST_SAFE_COMMANDS,
   guestClassOf,
@@ -39,7 +41,9 @@ describe('GUEST_CLASS', () => {
     // field. Channels with no target field and no extractor are the "plain" ones listed here.
     const plain = new Set([
       'window.info', 'app.openExternal', 'theme.get', 'theme.scheme', 'prefs.get', 'sessions.list', 'layout.get',
-      'commands.list', 'pageTabs.unsaved', 'overlays.list', 'tabs.list', 'groups.get', 'tabs.visibility', 'presence.get'
+      'commands.list', 'pageTabs.unsaved', 'overlays.list', 'tabs.list', 'groups.get', 'tabs.visibility', 'presence.get',
+      // An upload id only (design-upload.md §6): the role alone, and main answers the id only to its device.
+      'uploads.resolve', 'uploads.cancel', 'uploads.paste'
     ])
     for (const channel of INVOKE_CHANNELS) {
       const rule = guestClassOf(channel)
@@ -149,6 +153,24 @@ describe('target extractors (fail closed)', () => {
     expect(byPageDiscuss({ tabId: 'p' })).toBeUndefined()
     expect(byOverlayDiscuss({ overlayId: 'o', target: { kind: 'tab', tabId: 'c' } })).toEqual([{ overlay: 'o' }, { tab: 'c' }])
     expect(byOverlayDiscuss({ overlayId: 'o', target: { kind: 'other', tabId: 'c' } })).toBeUndefined()
+  })
+
+  it('uploads.begin: exactly one source, a panel or a tab; both, neither or junk refused', () => {
+    expect(byUploadSource({ source: { panel: 'cockpit.files/tree' }, folder: '', files: [] })).toEqual([{ panel: 'cockpit.files/tree' }])
+    expect(byUploadSource({ source: { tab: 't1' }, folder: '' })).toEqual([{ tab: 't1' }])
+    for (const source of [undefined, null, 'cockpit.files/tree', {}, { panel: 'a/b', tab: 't1' }, { panel: '' }, { tab: 3 }, { tab: 'x'.repeat(201) }, ['t1'], Object.create({ tab: 't1' })]) {
+      expect(byUploadSource({ source }), JSON.stringify(source)).toBeUndefined()
+    }
+    // A panel and a tab together are refused even when one of them is junk: the handler must act on what was checked.
+    expect(byUploadSource({ source: { panel: 'a/b', tab: 3 } })).toBeUndefined()
+    expect(GUEST_CLASS['uploads.begin'].cls).toBe('write')
+  })
+
+  it('uploads.folders: the terminal tab (`tab`, not `tabId`)', () => {
+    expect(byUploadTab({ tab: 't1', path: 'src' })).toEqual([{ tab: 't1' }])
+    for (const raw of [{ tabId: 't1' }, { tab: '' }, { tab: 2 }, { tab: 'x'.repeat(201) }]) expect(byUploadTab(raw), JSON.stringify(raw)).toBeUndefined()
+    expect(GUEST_CLASS['uploads.folders'].cls).toBe('write')
+    for (const c of ['uploads.resolve', 'uploads.cancel', 'uploads.paste'] as const) expect(GUEST_CLASS[c]).toEqual({ cls: 'write' })
   })
 
   it('overlays.button: the overlay, plus the plugin of a type button', () => {

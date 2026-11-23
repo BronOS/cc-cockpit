@@ -54,6 +54,27 @@ export const UPLOAD_TEMP_PREFIX = '.cc-upload-'
 /** What an upload came from: a panel of the view's layout now (Files), or a Claude or shell tab. */
 export type UploadSource = { panel: string } | { tab: string }
 
+/** A source id (a tab's UUID, a `<plugin>/<panel>` key) is far below this; anything longer is no id. */
+const UPLOAD_SOURCE_ID_MAX = 200
+
+const ownString = (o: object, key: string): unknown => (Object.hasOwn(o, key) ? (o as Record<string, unknown>)[key] : undefined)
+const isSourceId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= UPLOAD_SOURCE_ID_MAX
+
+/**
+ * A begin request's `source` from a page, parsed once for both the guest target check (`guest-class.ts`)
+ * and the router's handler, so the two can never read different fields: exactly one own `panel` or `tab`,
+ * a non-empty string. Both, neither, or anything else: undefined (the call is refused).
+ */
+export function uploadSourceOf(raw: unknown): UploadSource | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
+  const panel = ownString(raw, 'panel')
+  const tab = ownString(raw, 'tab')
+  if (panel !== undefined && tab !== undefined) return undefined
+  if (isSourceId(panel)) return { panel }
+  if (isSourceId(tab)) return { tab }
+  return undefined
+}
+
 /** One file as the page declares it; main checks the name and the size, never trusts them. */
 export interface UploadFileSpec {
   name: string

@@ -44,6 +44,7 @@ import {
   type LayoutState,
   type ZoneId
 } from '../../shared/layout'
+import { pluginOfPanelKey } from '../../shared/guest-filter'
 import { pluginFileUrl } from '../plugins/plugin-protocol'
 
 /** A panel a plugin's manifest declares (design §5: id, title, entry, defaultZone). */
@@ -275,6 +276,24 @@ export class LayoutService {
     const panelId = panelKey.slice(cut + 1)
     const def = this.plugin.get(projectId)?.get(pluginId)?.find((p) => p.id === panelId)
     return def?.kind === 'webview' ? { pluginId, panelId } : undefined
+  }
+
+  /**
+   * The plugin and panel id of `panelKey` when the project's layout places it in a zone now (declared by a
+   * running plugin of the project and in a zone's panels, open or not), any panel kind; else undefined. An
+   * upload's `{panel}` source (design-upload.md §3.1): Files is an html panel, which `webviewPanel` never
+   * answers. A hidden panel has no frame (the "..." menu lists it, nothing draws it), so it is no source. The
+   * plugin is `pluginOfPanelKey`'s (the first slash), the rule the guest target check reads, so both name the
+   * same plugin.
+   */
+  placedPanel(projectId: string, panelKey: unknown): { pluginId: string; panelId: string } | undefined {
+    if (typeof panelKey !== 'string') return undefined
+    const pluginId = pluginOfPanelKey(panelKey)
+    if (pluginId === undefined) return undefined
+    const stored = this.deps.getLayout(projectId)
+    if (!stored || !this.hasKey(projectId, panelKey)) return undefined
+    if (zoneOf(reconcile(stored, this.available(projectId)), panelKey) === undefined) return undefined
+    return { pluginId, panelId: panelKey.slice(pluginId.length + 1) }
   }
 
   /** Replace the panels one plugin declares for a project (empty: the plugin has none/is off). */
