@@ -111,6 +111,8 @@ interface LiveFile {
   /** The body being read now: an abort destroys it so the chunk stops. */
   body?: Readable
   aborted: boolean
+  /** Fired by an abort: stops a commit's copy (up to 2 GiB on a filesystem with no hard links). */
+  stop: AbortController
 }
 
 /** A write error, kept apart from the body's own errors (a client gone mid-chunk is a retry, ENOSPC is not). */
@@ -190,6 +192,7 @@ export class UploadWriter {
         written: 0,
         chain: Promise.resolve(),
         aborted: false,
+        stop: new AbortController(),
       }
       this.files.set(token, file)
     }
@@ -206,6 +209,7 @@ export class UploadWriter {
       files.map(async (file) => {
         file.aborted = true
         file.body?.destroy()
+        file.stop.abort()
         // The chunk running now sees `aborted` after its next await and returns; a queued one returns at once.
         await file.chain
         if (this.files.get(file.token) === file) await this.discard(file)
@@ -352,11 +356,13 @@ export class UploadWriter {
       if (typeof name !== 'string') return name
       placed = name
     }
+    // Settled in the same step as the entry goes: a PUT for this token while the close below runs must
+    // find no grant (404), never a fresh entry that would make a second temp nothing deletes.
+    const path = grant.folderRel === '' ? placed : `${grant.folderRel}/${placed}`
     this.files.delete(file.token)
+    this.deps.grants().settle(file.token, { ok: true, name: placed, path })
     await handle.close().catch(() => undefined)
     this.dropRecord(file.temp)
-    const path = grant.folderRel === '' ? placed : `${grant.folderRel}/${placed}`
-    this.deps.grants().settle(file.token, { ok: true, name: placed, path })
     return { status: 200, reply: { done: true, name: placed, path } }
   }
 
@@ -377,8 +383,10 @@ export class UploadWriter {
         if (code === 'EEXIST') continue
         if (!NO_HARD_LINKS.has(code ?? '')) throw err
         try {
-          await copyExclusive(file.temp, final, mode, undefined)
+          await copyExclusive(file.temp, final, mode, file.stop.signal)
         } catch (copyErr) {
+          // Aborted mid-copy: the copy removed its own file, the abort deletes the temp.
+          if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
           if (codeOf(copyErr) === 'EEXIST') continue
           if (codeOf(copyErr) === 'ENOSPC') return this.fail(file, 507, UPLOAD_DISK_FULL_TEXT)
           throw copyErr

@@ -410,6 +410,22 @@ describe('aborts', () => {
     expect(recorded()).toEqual([])
   })
 
+  it('a cancel during the commit’s copy (no hard links) places nothing', async () => {
+    const ids: { uploadId?: string } = {}
+    const r: Rig = rig({
+      link: async (_from, to) => {
+        // The cancel lands while the commit runs (not awaited: its abort waits for this chunk).
+        void r.uploads.cancel(A, ids.uploadId)
+        throw Object.assign(new Error(`EXDEV: cross-device link not permitted, link '${to}'`), { code: 'EXDEV' })
+      },
+    })
+    const { token, uploadId } = await tokenFor(r, '', 'a.txt', 3)
+    ids.uploadId = uploadId
+    expect(await put(r, token, 0, 'new')).toMatchObject({ status: 404 })
+    await until(() => tempsIn(proj).length === 0)
+    expect(readdirSync(proj)).toEqual([])
+  })
+
   it('a drop deletes the temps of every file of the upload, the ones between chunks too', async () => {
     const r = rig()
     const b = await begin(r, '', [
