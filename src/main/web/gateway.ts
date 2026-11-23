@@ -1214,7 +1214,12 @@ export class WebGateway {
     // Another device's token answers as an unknown one (§3.1): nobody learns that it exists.
     if (!uploads || !grant || grant.deviceId !== device.id) {
       if (guest) return this.notFound(res, host)
-      return this.json(res, host, 404, { error: UPLOAD_TOKEN_UNKNOWN_TEXT }, { Connection: 'close' })
+      // An ended upload's next chunk is how the client learns of the end (`lost` reads it as the server's): a body
+      // within the cap is read off by Node and the connection kept, as the guest's 404, so the answer is not lost
+      // to the reset a close on unread bytes makes. Anything else is not a chunk and is not read.
+      const length = req.headers['transfer-encoding'] === undefined ? decimalCount(req.headers['content-length']) : undefined
+      const chunk = length !== undefined && length <= UPLOAD_CHUNK_MAX_BYTES
+      return this.json(res, host, 404, { error: UPLOAD_TOKEN_UNKNOWN_TEXT }, chunk ? {} : { Connection: 'close' })
     }
     // A chunked body has no length to hold against the cap before it is read.
     if (req.headers['transfer-encoding'] !== undefined) {
@@ -1230,7 +1235,18 @@ export class WebGateway {
     // a reset, and sends the next chunk on it.
     const offset = offsetOf(req.url ?? '')
     if (offset === undefined) return this.json(res, host, 400, { error: 'the offset is not valid' })
-    const result = await uploads.writeChunk(token, offset, req, length)
+    // Node destroys a socket idle for `server.timeout` (IDLE_SOCKET_MS) unless a listener takes the timeout. The
+    // last chunk's request waits through the commit, which on a volume with no hard links copies the whole temp:
+    // minutes for a large file with nothing on the socket, and the client's last-chunk deadline allows for it. A
+    // cut there would read as a failure of a file that is placed. So while the writer holds the request the
+    // timeout is ignored: the request bound covers the body, and an end (the idle clock, a revoke) destroys it.
+    let writing = true
+    res.on('timeout', () => {
+      if (!writing) res.destroy()
+    })
+    const result = await uploads.writeChunk(token, offset, req, length).finally(() => {
+      writing = false
+    })
     if (result.status === 200) {
       if ('done' in result.reply) this.logUpload(grant, device, grant.size, 'completed')
       if (!res.destroyed) this.json(res, host, 200, result.reply)

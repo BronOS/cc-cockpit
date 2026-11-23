@@ -76,7 +76,7 @@ From each `File`, checked by main, never trusted from the page:
   refused name skips that file, with its reason in the result; main never renames it quietly.
 - Dot names are allowed (`.env` is a fair upload; Files' New file allows them too), but not `.git` (§2.1).
 - A null from the numbering says why: "too long to number" when ` (99)` would pass 255 bytes, else "no free name".
-- A file from a **clipboard paste** (`pasted: true`) is named `pasted-YYYYMMDD-HHMMSS.<ext>` from the device's clock and
+- A file from a **clipboard paste** is named `pasted-YYYYMMDD-HHMMSS.<ext>` from the device's clock and
   the `File`'s type (`png`, `jpg`, `gif`, `webp`, `pdf`, else `bin`): browsers call every clipboard image `image.png`, so
   the original name would clash on every paste.
 - Two files of one upload with the same name (compared case-insensitively) get " (1)" and up without asking.
@@ -233,8 +233,11 @@ in the project, whose direction `pluginAccessChanged` does not know, so an unrel
 upload, an accepted cost: the client begins again); leaving None mode; gateway stop; the window or the project closing. Each aborts the live request and deletes the
 temp. A cancel of a running upload some of whose files have already settled (committed or failed) finishes the upload
 instead of removing it: its live tokens end and their files settle as cancelled, and the record keeps every outcome, so
-a partial result still pastes (§4.3, §5.3). The shell sends that cancel itself when its client gave up on files (a lost
-link, a file no longer readable), and sends it before the paste, which needs a finished upload. A reconnect on its own does not end it (the token is bound to the device, not to the view id, which a reconnect replaces), so a
+a partial result still pastes (§4.3, §5.3). The idle clock does the same to such an upload (its live files settle with
+"no bytes for 60 s"): a link that dropped for good leaves the shell's own cancel and paste undelivered, and the files
+already placed must still paste. The shell sends that cancel itself when its client gave up on files (a lost
+link, a file no longer readable), and sends it before the paste, which needs a finished upload; Paste path on such a
+run sends it again first (the first may never have arrived), and main ignores a cancel of a finished upload. A reconnect on its own does not end it (the token is bound to the device, not to the view id, which a reconnect replaces), so a
 phone that slept for a few seconds resumes at `expected`.
 
 ### 3.5 The remote window
@@ -262,7 +265,7 @@ In the web shell, on the terminal's container:
 - **Drop:** a drag whose `dataTransfer.types` includes `Files` over a Claude or shell tab highlights the pane; the drop
   counts as a click on that pane (it selects it), and `preventDefault` keeps the browser from opening the file. Plugin
   command tabs, page tabs and a read guest's view take no drops.
-- **Paste:** in the capture phase, before xterm: the paste becomes an upload (`pasted: true` for each file) only when
+- **Paste:** in the capture phase, before xterm: the paste becomes an upload only when
   `clipboardData.files` is not empty **and** the clipboard holds no `text/plain`. A copy from Excel, Word or a browser's
   Copy image carries text and an image together, and there the text is what the person meant, so any paste with text
   stays a text paste, unchanged. A screenshot copied with Ctrl+Cmd+Shift+4 has no text. Task 1 ran only synthetic
@@ -492,7 +495,8 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
 - `checkUploadName` and `pasteText` use `HIDDEN_TEXT`, not control characters alone: the text lands in Claude's prompt (tag
   characters can hide text), at the cost of refusing a name with a soft hyphen or a subdivision-flag emoji. A tab is a
   control character, so `pasteText` returns `null` (held) instead of dropping a path. A file over 2 GiB refuses the whole
-  upload; `pasted: true` gets only `checkUploadName` in main (the device's clock names the file).
+  upload; a pasted file's name gets only `checkUploadName` in main (the device's clock names it), and the begin payload carries
+  no `pasted` flag (nothing in main read it).
 - Added as named constants: `UPLOAD_PATH_PREFIX`, `UPLOAD_TEMP_PREFIX`, `UPLOAD_CHUNK_FAST_MS` / `SLOW_MS`,
   `UPLOAD_BEGINS_MAX` / `WINDOW_MS`, `UPLOAD_NAME_MAX_BYTES`; `UPLOAD_PENDING_MS` and `UPLOAD_FINISHED_KEPT` (20) are in `main/files/uploads.ts`.
 
@@ -526,20 +530,28 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
   keeps an entry whose root cannot be `realpath`ed (an unmounted volume says ENOENT, which "drop on ENOENT" would lose).
   `UploadWriterFs` has a `copy` seam for tests. `DataPaths.uploadTempsJson` is `<data>/uploads/temps.json`.
 - The sweep is awaited in the `whenReady` chain before `runStartOrder`, not inside `applyWebAccess` (on the desktop
-  `runStartOrder` does not await the gateway); its failure only logs.
+  `runStartOrder` does not await the gateway); its failure only logs. It walks a copy of the record's entries taken at
+  its start and reads the live temps again before each one: the start goes on past a stalled sweep, and a new upload's
+  temp pushed onto the record meanwhile must never be reached.
 
 **Gateway and router.**
 - `connectionsCheckingInterval` is 5 s server-wide (`CONNECTIONS_CHECKING_MS`), see §3.3. The `clientError` listener
   answers `ERR_HTTP_REQUEST_TIMEOUT` with 408 (it had answered every client error 400).
-- A `Sec-Fetch-Site` refusal is 403 JSON, an unsigned `/u/` request 401, both with `Connection: close`. A refusal after
+- A `Sec-Fetch-Site` refusal is 403 JSON, an unsigned `/u/` request 401, both with `Connection: close`. The owner's 404
+  for an unknown or ended token keeps the connection when the body is a chunk (a `Content-Length` within 8 MiB, not
+  chunked), so Node reads it off and the client reads the 404 rather than a reset; anything else closes.
+- While the writer holds a chunk's request the socket's idle timeout (`IDLE_SOCKET_MS`, `server.timeout`) is ignored
+  through a `timeout` listener on the response: the last chunk waits through the commit, which on a volume with no hard
+  links copies the whole temp with nothing on the socket. The request bound covers the body, and an end destroys the
+  request. A refusal after
   the token is live and `Content-Length` is at most 8 MiB keeps the connection and reads the body off, so a 409 reaches the
   client with its `expected`.
 - Window and project close reach `Uploads.dropWindow` from `main/index.ts`'s wiring (the gateway knows no windows); a read
   guest's role change ends its upload through `GuestStore`'s `dropUploads`, not at the route. `GuestStore.end()` drops the
-  guest's uploads before `revokeGuest`; `dropDownloadsOf` became `dropTransfersOf` and drops both. It also runs when a widening's quiet wait ends (the guest
-  reconnects then), so sharing one more tab with a write guest ends that guest's running upload too, unlike §3.4's rule
-  that a reconnect alone does not. `guest-wiring.ts` needed
-  no change.
+  guest's uploads before `revokeGuest`. A narrowing and the downgrade to read call `dropTransfersOf` (downloads and
+  uploads); a widening's quiet-wait reconnect calls `dropDownloadsOf` only (a download is bound to the closed view, an
+  upload to the device), so sharing one more tab with a write guest leaves its running upload alone, as §3.4 says of a
+  reconnect. `guest-wiring.ts` needed no change.
 - `uploads.begin` for a `{panel}` source needs the panel in a zone of the reconciled layout: a hidden panel has no frame, so
   it is refused. A source that does not resolve (panel not placed, tab not a Claude or shell tab of the project) answers
   `{error}` with a fixed text; a malformed source, a non-browser view, no device or a guest's out-of-reach target throws
@@ -559,8 +571,9 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
   a request only from a panel frame: `PluginFrame` hands `onPageMessage` `{source, frame}`, the filter re-checks
   `event.source`, and a source-scan test keeps overlays, slots, settings and page tabs out. A file list over 100 passes
   as it is (main's refusal is the visible one); a non-`File` entry drops the whole message. `onUploadRequest` is one
-  module-level sink. The SDK sets `dropEffect: 'none'` on an unhandled `Files` dragover, not only `preventDefault`; a page's
-  own drag listeners must set `dropEffect` synchronously, so the guide says the SDK's cancel runs first and a window-level handler must set `dropEffect: 'copy'` itself. `types.ts` did
+  module-level sink. In a remote view the SDK sets `dropEffect: 'none'` on an unhandled `Files` dragover, not only `preventDefault`; a page's
+  own drag listeners must set `dropEffect` synchronously, so the guide says the SDK's cancel runs first and a window-level handler must set `dropEffect: 'copy'` itself there.
+  On the desktop (no uploads) it only cancels, so a plugin that took drops with a window-level `preventDefault` before uploads keeps its drop. `types.ts` did
   not change (the `ccPanel` types live in `panel-core.ts`), so there is no example copy.
 - The controller is made in `web/main.tsx`'s `startShell`: React remounts `<App>` on every reconnect and a reconnect must
   not end an upload. The notice, chooser and clash state live in `UploadUi` (`upload-model.ts`, module-level,
@@ -570,7 +583,10 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
   preset's folder listing resolves.
 - A `resolve` that errors cancels and shows "Nothing uploaded: <reason>" instead of asking again. After a run that left
   files not done the controller sends and awaits `uploads.cancel` before the paste, which needs a finished upload (a
-  client-side failure leaves a token live on main for the idle minute). The folder preset is written only for a chooser (terminal) upload. The person's own Cancel
+  client-side failure leaves a token live on main for the idle minute); its Paste path sends the cancel again before
+  the manual paste. Main's idle clock finishes a running upload with a settled file (as a cancel does, the rest settled
+  with `UPLOAD_IDLE_TEXT`) instead of removing it, so a link that dropped for good still leaves a Paste path that works.
+  Progress is `{ index, sent }` (the controller sums the run's total itself). The folder preset is written only for a chooser (terminal) upload. The person's own Cancel
   in the chooser or the clash dialog shows no notice unless refused files or folders need naming.
 - The shell cancels every `Files` drag nobody cancelled, whatever its target (`cancelUnhandledFileDrops`, installed in
   `startShell`; §3.6), not the SDK's `cancelsFilesDrag`, which spares inputs: a file dropped on a shell text field would

@@ -29,9 +29,9 @@
 // Ends (§3.4): the idle clock (UPLOAD_IDLE_MS with no body bytes for the whole upload, one clock per
 // upload, `touch` from the writer on bytes read), a cancel, the device's or window's drop and `dropAll`.
 // Each aborts through the writer (every temp of the upload deleted, a write in flight ended). A pending
-// upload nobody answers ends after UPLOAD_PENDING_MS. A cancel of a running upload with files already
-// settled finishes it rather than removing it (the rest settle as cancelled), so its partial result
-// still pastes.
+// upload nobody answers ends after UPLOAD_PENDING_MS. A cancel or the idle clock of a running upload with
+// files already settled finishes it rather than removing it (the rest settle as cancelled), so its partial
+// result still pastes.
 //
 // The paste (§4.3, `paste`): main types nothing; it answers the text the shell pastes with xterm's own
 // `paste` in that view, or holds it with a reason. Only for an upload whose source was a tab, begun by
@@ -51,11 +51,13 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { downloadSizeText } from '../../shared/downloads'
 import type { TabStatus } from '../../shared/ipc'
 import type { TabKind } from '../../shared/types'
+import { MAX_NAME_NUMBER } from '../../shared/numbered-name'
 import { dataDirRefused } from '../../shared/outside-paths'
 import {
   checkUploadName,
   dedupeNames,
   insideGit,
+  nameKey,
   numberedUploadName,
   pasteText,
   UPLOAD_BEGINS_MAX,
@@ -66,7 +68,6 @@ import {
   UPLOAD_MAX_APP,
   UPLOAD_MAX_FILE_BYTES,
   UPLOAD_MAX_FILES,
-  UPLOAD_MAX_NAME_NUMBER,
   UPLOAD_MAX_PER_DEVICE,
   UPLOAD_NAME_MAX_BYTES,
   type UploadBeginReply,
@@ -96,6 +97,8 @@ export const UPLOAD_UNKNOWN_TEXT = 'no such upload'
 
 /** A file still live when a partly settled upload is cancelled (`cancel`, §3.4): its outcome. */
 export const UPLOAD_CANCELLED_TEXT = 'cancelled'
+/** A file's reason when its upload's idle clock ran out after another file had settled (kept for the paste). */
+export const UPLOAD_IDLE_TEXT = `no bytes for ${UPLOAD_IDLE_MS / 1000} s`
 
 /** The paste's holds (§4.3): fixed words, shown in the held notice beside Paste path. */
 export const UPLOAD_PASTE_AGAIN_TEXT = 'the paths were offered once already: use Paste path'
@@ -706,7 +709,7 @@ export class Uploads {
    * link counts as taken) and no other file of the upload takes; null past 99 or the name limit.
    */
   private async freeNumberedName(folderReal: string, name: string, taken: ReadonlySet<string>): Promise<string | null> {
-    for (let n = 1; n <= UPLOAD_MAX_NAME_NUMBER; n++) {
+    for (let n = 1; n <= MAX_NAME_NUMBER; n++) {
       const candidate = numberedUploadName(name, n)
       if (candidate === null) return null
       if (taken.has(nameKey(candidate))) continue
@@ -760,7 +763,12 @@ export class Uploads {
       if (this.records.get(record.uploadId) !== record || record.state !== 'running') return
       const left = record.lastBytes + UPLOAD_IDLE_MS - this.now()
       if (left > 0) this.armIdle(record, left)
-      else void this.end(record, 'idle')
+      // A file already settled (a link that dropped for good after it: the client's own cancel and paste could
+      // not reach main) is finished like a cancel, so its path still pastes; nothing settled: the record goes.
+      else if (record.results.size > 0) {
+        this.deps.log?.(`upload ${record.uploadId.slice(0, 8)}: no bytes for ${UPLOAD_IDLE_MS / 1000} s, ended`)
+        void this.finishCancelled(record, UPLOAD_IDLE_TEXT)
+      } else void this.end(record, 'idle')
     }, ms)
     record.timer.unref?.()
   }
@@ -795,17 +803,17 @@ export class Uploads {
   }
 
   /**
-   * A cancel of a running upload with some files settled: every live token dies and its file settles as
-   * cancelled, and the upload is finished (place freed, clock stopped, outcomes kept), all in this one
+   * A cancel (or the idle clock) of a running upload with some files settled: every live token dies and its
+   * file settles as cancelled (`reason`), and the upload is finished (place freed, clock stopped, outcomes kept), all in this one
    * synchronous step, so a paste that follows finds it finished; then the writer deletes the live temps.
    * A commit the abort comes too late for still places its file (the writer's rule), but its settle finds
    * no grant, so its outcome stays cancelled, as the person's own view says.
    */
-  private async finishCancelled(record: UploadRecord): Promise<void> {
+  private async finishCancelled(record: UploadRecord, reason = UPLOAD_CANCELLED_TEXT): Promise<void> {
     for (const token of record.tokens) {
       const grant = this.grants.get(token)
       this.grants.delete(token)
-      if (grant) record.results.set(grant.index, { ok: false, reason: UPLOAD_CANCELLED_TEXT })
+      if (grant) record.results.set(grant.index, { ok: false, reason })
     }
     this.finish(record)
     await this.abortTemps(record)
@@ -843,12 +851,8 @@ export class Uploads {
  * (a 251-byte name fits ` (1)` to ` (9)`, not ` (10)`), else every number to 99 is taken `where`.
  */
 export function numberingRefusal(name: string, where: string): string {
-  return numberedUploadName(name, UPLOAD_MAX_NAME_NUMBER) === null
+  return numberedUploadName(name, MAX_NAME_NUMBER) === null
     ? `${displayText(name)} is too long to number (a name is at most ${UPLOAD_NAME_MAX_BYTES} bytes)`
-    : `no free name for ${displayText(name)} ${where} (up to (${UPLOAD_MAX_NAME_NUMBER}))`
+    : `no free name for ${displayText(name)} ${where} (up to (${MAX_NAME_NUMBER}))`
 }
 
-/** The key two names clash under within one upload (as `dedupeNames`: case folded, NFC). */
-function nameKey(name: string): string {
-  return name.normalize('NFC').toLowerCase()
-}

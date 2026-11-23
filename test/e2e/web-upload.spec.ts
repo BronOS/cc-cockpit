@@ -4,7 +4,7 @@
 // uploads there and names a dropped folder as skipped, a drop on a fake-`claude` tab in `waiting` opens the
 // folder chooser and ends with the escaped path typed into the tab, a busy tab holds the paste (Paste path
 // then types it), a file-only paste becomes an upload while a paste with text stays text, and a drop
-// outside every target is cancelled and does nothing.
+// outside every target is cancelled and does nothing; a drop on the pane beside the selected one selects it.
 //
 // The "device" is a temp folder outside the project; the browsers are test/fixtures/web-browser/main.cjs
 // windows (Electron's Chromium, a profile each), driven by Playwright like any page.
@@ -15,6 +15,7 @@ import type { Page } from '@playwright/test'
 import { filesTree, joinProject, pluginActive, treeRow } from './download-fixtures'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { centreOf, chooseAndGo, dropPaths, echoCount, entriesOf, escapePath, expectOneEcho, patternBytes, resultNotice, statusOf, UPLOAD_TEMP, uploadHere } from './upload-fixtures'
+import { focusedPanes, paneOf, place, tabsOf } from './split-fixtures'
 import { enableWebAccess, type WebBrowser } from './web-fixtures'
 
 const BIG = patternBytes(20 * 1024 * 1024, 3)
@@ -81,6 +82,16 @@ test('Files in a browser view: Upload here writes the exact bytes, a clash asks 
     await uploadHere(page, tree, 'dest', [join(second, 'big.bin')])
     await expect(clash).toBeVisible()
     await expect(clash.getByTestId('upload-clash-replace')).toBeEnabled({ timeout: 5_000 })
+    // Enter and Space on the armed Replace (the data-loss button) and on Keep both answer nothing: a key
+    // meant for something else must not press either.
+    for (const id of ['upload-clash-replace', 'upload-clash-keep-both']) {
+      await clash.getByTestId(id).focus()
+      await page.keyboard.press('Enter')
+      await page.keyboard.press('Space')
+    }
+    await page.waitForTimeout(300)
+    await expect(clash).toBeVisible()
+    expect(readFileSync(join(projectDir, 'dest', 'big.bin')).equals(BIG)).toBe(true)
     await clash.getByTestId('upload-clash-replace').click()
     await expect(resultNotice(page, /^Uploaded big\.bin to dest/)).toBeVisible({ timeout: 30_000 })
     expect(readFileSync(join(projectDir, 'dest', 'big.bin'), 'utf8')).toBe('second version\n')
@@ -249,6 +260,45 @@ test('a Files drop on a Claude tab: the folder chooser, the upload, the escaped 
     await page.keyboard.press('Enter')
     await expectOneEcho(browser, echoes2, escapePath(join(projectDir, pasted)))
     expect(readdirSync(projectDir)).not.toContain('stray.txt')
+  } finally {
+    await browser?.close()
+    await close()
+    rmSync(device, { recursive: true, force: true })
+  }
+})
+
+test('a drop on the pane beside the selected one selects that pane first, as a click there would (design §4.1)', async () => {
+  // TerminalView hands the terminal its upload entry (a shell tab of the web shell) with SplitArea's
+  // onPanePress as the drop's select: the chooser then belongs to the pane the file landed on.
+  test.setTimeout(180_000)
+  const { cockpit: c, close } = await launchCockpit()
+  let browser: WebBrowser | undefined
+  const device = mkdtempSync(join(tmpdir(), 'ccc-e2e-device-'))
+  try {
+    const web = await enableWebAccess(c)
+    browser = await joinProject(web)
+    const { page } = browser
+    // Through the New tab menu, which also selects the new tab in this view (a raw `tabs.create` does not).
+    for (let i = 0; i < 2; i++) {
+      await page.getByRole('button', { name: 'New tab' }).click()
+      await page.getByRole('menuitem', { name: 'Shell' }).click()
+      await expect.poll(async () => (await tabsOf(page)).length).toBe(i + 1)
+    }
+    const [a, b] = await tabsOf(page)
+    expect((await place(page, b!.id, a!.id, 'right')).ok).toBe(true)
+    await expect(paneOf(page, a!.id)).toBeVisible()
+    await expect(paneOf(page, b!.id)).toBeVisible()
+    await paneOf(page, a!.id).locator('.xterm').click()
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', a!.id)
+
+    writeFileSync(join(device, 'beside.txt'), 'beside\n')
+    await dropPaths(page, await centreOf(paneOf(page, b!.id).locator('.terminal-host')), [join(device, 'beside.txt')])
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', b!.id)
+    const dialog = page.getByTestId('upload-dialog')
+    await expect(dialog).toBeVisible({ timeout: 10_000 })
+    await dialog.getByTestId('upload-cancel').click()
+    await expect(dialog).toHaveCount(0)
+    expect(existsSync(join(c.projectDir, 'beside.txt'))).toBe(false)
   } finally {
     await browser?.close()
     await close()

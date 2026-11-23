@@ -167,8 +167,6 @@ describe('UploadUi store', () => {
     ui.dropNotice('nope')
     ui.endClash('nope')
     expect(calls).toBe(before)
-    ui.clear()
-    expect(ui.get().notices).toEqual([])
     off()
   })
 })

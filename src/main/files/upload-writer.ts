@@ -46,7 +46,7 @@ import { link as fsLink, lstat, open as fsOpen, realpath, rename as fsRename, un
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { Readable } from 'node:stream'
 import { codeOf, errorText } from '../../shared/error-text'
-import { numberedUploadName, UPLOAD_CHUNK_MAX_BYTES, UPLOAD_MAX_NAME_NUMBER, UPLOAD_TEMP_PREFIX, type UploadChunkReply } from '../../shared/uploads'
+import { numberedUploadName, UPLOAD_CHUNK_MAX_BYTES, UPLOAD_TEMP_PREFIX, type UploadChunkReply } from '../../shared/uploads'
 import { displayText } from '../plugins/link-request'
 import { within } from '../path-within'
 import { JsonFile, type Versioned } from '../store/json-file'
@@ -178,11 +178,14 @@ export class UploadWriter {
    */
   async sweepTemps(): Promise<number> {
     const live = (): Set<string> => new Set([...this.files.values()].map((f) => f.temp))
-    const now = live()
+    // The entries listed now, as a copy: the start goes on past a stalled sweep (a network share), and a new
+    // upload's temp pushed onto the record's own array meanwhile would be reached by the loop and unlinked
+    // under its writer. Live temps are read again before each entry for the same reason.
+    const listed = [...(this.temps.data.temps as unknown[])]
     const retry: TempEntry[] = []
     let removed = 0
-    for (const entry of this.temps.data.temps as unknown[]) {
-      if (!isTempEntry(entry) || now.has(entry.path)) continue
+    for (const entry of listed) {
+      if (!isTempEntry(entry) || live().has(entry.path)) continue
       const outcome = await sweepOne(entry)
       if (outcome === 'removed') removed++
       else if (outcome === 'retry') retry.push(entry)
@@ -437,8 +440,10 @@ export class UploadWriter {
     st: Stats,
     mode: number
   ): Promise<{ name: string; final: string; st: Stats } | UploadChunkResult> {
-    for (let n = 0; n <= UPLOAD_MAX_NAME_NUMBER; n++) {
-      const name = n === 0 ? grant.name : numberedUploadName(grant.name, n)
+    // `numberedUploadName` answers the name itself for 0 (checkUploadName passed it) and null past the
+    // numbering's limit or the name limit.
+    for (let n = 0; ; n++) {
+      const name = numberedUploadName(grant.name, n)
       if (name === null) break
       if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
       const final = join(grant.folderReal, name)

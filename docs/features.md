@@ -699,8 +699,9 @@ no text (a copy from Excel, Word or Copy image pastes its text as before). A tab
 - *Limits and safety:* 2 uploads at once per device and 6 in all, 20 uploads started per 10 minutes per device. The bytes go in
   chunks that adapt to the link (1 MiB to start, 256 KiB to 8 MiB), each retried up to 3 times at 1, 5 and 20 seconds;
   60 seconds with no bytes, Cancel, leaving the page, revoking or disconnecting the device, leaving None mode, stopping the
-  gateway, closing the window or a guest losing access (or being given another tab) end it and delete the temp (`.cc-upload-*`, swept at the next start
-  if the server died). Only the owner and write guests upload; a read guest sees no menu item, and main refuses it.
+  gateway, closing the window or a guest losing access end it and delete the temp (`.cc-upload-*`, swept at the next start
+  if the server died); files already placed stay, and their paths still paste (Paste path works once the link is back).
+  Only the owner and write guests upload; a read guest sees no menu item, and main refuses it.
 - *The desktop:* a local project's own window has no upload (the files are on that computer).
 
 **Guests.** Invite another person into one project: a friend or a colleague who watches (**Read-only**) or pairs with

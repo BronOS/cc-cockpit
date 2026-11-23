@@ -16,6 +16,7 @@ import {
   pastedFiles,
   pasteIntoTerminal,
   registerTerminalPane,
+  terminalPaneOf,
   takesUploads,
   terminalKeysOff,
   type ClipboardLike,
@@ -177,7 +178,7 @@ describe('attachTerminalEntry: the container (design §4.1)', () => {
     expect(started).toHaveLength(1)
     expect(started[0]?.[0]).toBe('tab-1')
     expect(started[0]?.[1].map((f) => f.name)).toEqual([pastedName('image/png', NOW)])
-    expect(started[0]?.[2]).toEqual({ pasted: true })
+    expect(started[0]?.[2]).toEqual({})
     const mixed = event('paste', { clipboardData: clipboard(['text/plain', 'Files'], [fakeFile('image.png')]) })
     el.dispatchEvent(mixed)
     expect(mixed.defaultPrevented).toBe(false)
@@ -250,7 +251,7 @@ describe('the paste seams: keys-off and the terminal (design §4.3)', () => {
   it("reads the mounted pane's keys-off at each call, and again at the paste itself", () => {
     let off = false
     const pasted: Array<[string, string]> = []
-    const unregister = registerTerminalPane({ keysOff: () => off, paste: (tabId, text) => (pasted.push([tabId, text]), true) })
+    const unregister = registerTerminalPane(terminalPaneOf(() => ({ activeId: 't', keysOff: off }), (tabId, text) => (pasted.push([tabId, text]), true)))
     offs.push(unregister)
     expect(terminalKeysOff()).toBe(false)
     expect(pasteIntoTerminal('t', '/p/a.png ')).toBe(true)
@@ -265,10 +266,31 @@ describe('the paste seams: keys-off and the terminal (design §4.3)', () => {
     expect(terminalKeysOff()).toBe(false)
   })
 
+  it("TabsPane's pane (terminalPaneOf): pastes only into the view's selected tab, never while keys are off, state read at each call", () => {
+    const state = { activeId: 't1' as string | null, keysOff: false }
+    const pasted: Array<[string, string]> = []
+    const p = terminalPaneOf(() => state, (tabId, text) => (pasted.push([tabId, text]), true))
+    expect(p.paste('t1', 'a ')).toBe(true)
+    // The person picked another tab or pane during the round trip: nothing goes into a terminal not shown.
+    state.activeId = 't2'
+    expect(p.paste('t1', 'b ')).toBe(false)
+    state.activeId = null
+    expect(p.paste('t1', 'c ')).toBe(false)
+    state.activeId = 't1'
+    state.keysOff = true
+    expect(p.keysOff()).toBe(true)
+    expect(p.paste('t1', 'd ')).toBe(false)
+    state.keysOff = false
+    expect(p.keysOff()).toBe(false)
+    // The sessions' own answer (no terminal for the tab here) passes through.
+    expect(terminalPaneOf(() => state, () => false).paste('t1', 'e ')).toBe(false)
+    expect(pasted).toEqual([['t1', 'a ']])
+  })
+
   it('wired into the controller: keys-off holds the paste before uploads.paste is asked; keys on pastes the text', async () => {
     let off = true
     const pasted: string[] = []
-    offs.push(registerTerminalPane({ keysOff: () => off, paste: (_t, text) => (pasted.push(text), true) }))
+    offs.push(registerTerminalPane(terminalPaneOf(() => ({ activeId: 't', keysOff: off }), (_t, text) => (pasted.push(text), true))))
     const calls: string[] = []
     const invoke = (async (channel: string) => {
       calls.push(channel)

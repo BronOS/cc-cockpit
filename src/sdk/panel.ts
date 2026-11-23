@@ -98,13 +98,15 @@ const client = new PanelClient(
 // plain browser that replaces the page). Bubble phase on the window, after the page's own handlers: a
 // drag the page already took (`preventDefault` on its dragover / drop) is left alone, and so is one over a
 // file input, a text field or a contenteditable (they take a drop by the browser's default, never
-// cancelling dragover); any other `Files` drag is refused (`dropEffect` none: no drop, no copy cursor)
-// and its drop cancelled. These listeners run before the page's own window-level ones (added first), so a
-// window-level dragover handler must set `dropEffect` itself (the guide says so).
+// cancelling dragover); any other `Files` drag is refused and its drop cancelled. These listeners run
+// before the page's own window-level ones (added first). In a remote view the refusal also sets `dropEffect`
+// none (no drop, no copy cursor over a near miss), so there a window-level dragover handler must set
+// `dropEffect` itself (the guide says so). On the desktop, where nothing uploads, it does not: a plugin that
+// took file drops with a window-level `preventDefault` before uploads existed still gets its drop.
 window.addEventListener('dragover', (event: DragEvent) => {
   if (!cancelsFilesDrag(event)) return
   event.preventDefault()
-  if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
+  if (event.dataTransfer && client.api.view.remote) event.dataTransfer.dropEffect = 'none'
 })
 window.addEventListener('drop', (event: DragEvent) => {
   if (cancelsFilesDrag(event)) event.preventDefault()

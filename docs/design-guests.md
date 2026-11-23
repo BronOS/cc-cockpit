@@ -119,7 +119,7 @@ holds it.
 - **Allowing a plugin** shows what it exposes ("Team shows every room doc of this project to guests"). 
 - **Uploads** (`design-upload.md`): write guests upload into the project from Files (Upload here, a drop) and onto a shared
   Claude or shell tab (the paste is a path relative to the tab's starting folder, D-33); read guests never, by role in main
-  (`uploads.*` rows in `GUEST_CLASS`). A narrowing of a guest's access, and a widening once its quiet wait ends, ends its running uploads (`dropTransfersOf`).
+  (`uploads.*` rows in `GUEST_CLASS`). A narrowing of a guest's access ends its running uploads (`dropTransfersOf`); a widening's reconnect does not.
 - **Bundled adoption** (public API only): Files (read guests: no rename, trash, upload, download; confined to the
   project realpath, no symlink escape), Editor (read guests: no save, no quick chat or Ask Claude; guests confined to
   the project for LSP and outside-path rules), Sessions and Usage (this project only, per-view posts, or they stay

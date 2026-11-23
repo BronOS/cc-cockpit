@@ -59,20 +59,28 @@ export function uploadRequestOf(
   if (!Array.isArray(files) || files.length > MAX_POSTED_ENTRIES) return null
   // An indexed loop: `every` and `for of` skip or walk holes of a sparse array a forged post can carry.
   for (let i = 0; i < files.length; i++) if (!isFile(files[i])) return null
-  const names: string[] = []
-  if (Array.isArray(folders) && folders.length <= MAX_POSTED_ENTRIES) {
-    let total = 0
-    for (let i = 0; i < folders.length && names.length < MAX_FOLDER_NAMES; i++) {
-      const name: unknown = folders[i]
-      // Page text that lands in core's notice: the same name rules as a file's (no control, bidi or invisible characters).
-      if (typeof name !== 'string' || name.length > MAX_FOLDER_NAME_LENGTH || !checkUploadName(name).ok) continue
-      if (total + name.length > MAX_FOLDER_NAMES_TOTAL) break
-      total += name.length
-      names.push(name)
-    }
-  }
+  const names = Array.isArray(folders) && folders.length <= MAX_POSTED_ENTRIES ? folderNamesForNotice(folders) : []
   if (files.length === 0 && names.length === 0) return null
   return { source: { panel: panelKey }, folder, files: files as File[], folders: names }
+}
+
+/**
+ * Skipped folders' names as the result notice names them, for a panel's post and a terminal drop alike:
+ * a name passes the same rules as a file's (no control, bidi or invisible characters: it lands in core's
+ * notice) or is left out; at most MAX_FOLDER_NAMES, and MAX_FOLDER_NAMES_TOTAL characters in all.
+ */
+export function folderNamesForNotice(folders: ArrayLike<unknown>): string[] {
+  const names: string[] = []
+  let total = 0
+  // An indexed loop: a forged post's sparse array has holes `for of` would walk.
+  for (let i = 0; i < folders.length && names.length < MAX_FOLDER_NAMES; i++) {
+    const name: unknown = folders[i]
+    if (typeof name !== 'string' || name.length > MAX_FOLDER_NAME_LENGTH || !checkUploadName(name).ok) continue
+    if (total + name.length > MAX_FOLDER_NAMES_TOTAL) break
+    total += name.length
+    names.push(name)
+  }
+  return names
 }
 
 let handler: ((request: UploadRequest) => void) | undefined

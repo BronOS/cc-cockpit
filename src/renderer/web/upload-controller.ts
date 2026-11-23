@@ -46,8 +46,8 @@ export interface UploadFile extends UploadBytes {
 
 /**
  * What starts an upload: a panel's request (its folder named) or the terminal entry's
- * (tabs/terminal-drop.ts: `{ tab }`, no folder, so the chooser asks; `pasted` for a clipboard paste, its
- * files already named `pasted-<date>-<time>.<ext>` there, main checks the name as any other).
+ * (tabs/terminal-drop.ts: `{ tab }`, no folder, so the chooser asks; a clipboard paste's files already
+ * named `pasted-<date>-<time>.<ext>` there, main checks the name as any other).
  */
 export interface ControllerRequest {
   source: UploadRequest['source']
@@ -56,8 +56,6 @@ export interface ControllerRequest {
   files: readonly UploadFile[]
   /** Dropped folders, skipped and named in the result. */
   folders?: readonly string[]
-  /** Every file came from a clipboard paste (design §4.1). */
-  pasted?: boolean
 }
 
 type UiPart = Pick<UploadUi, 'showChooser' | 'endChooser' | 'showClash' | 'endClash' | 'putNotice' | 'dropNotice'>
@@ -90,6 +88,15 @@ const RUN_FAILED = 'the upload stopped unexpectedly'
 /** A call's rejection as a notice reason: main's refusal text, or a fixed one. */
 function reasonOf(err: unknown): string {
   return err instanceof Error && err.message !== '' ? err.message : 'the host did not answer'
+}
+
+/** A held paste the result notice offers again with Paste path. */
+interface PasteLater {
+  held: HeldPaste
+  tab: string
+  uploadId: string
+  /** The run left files not done: Paste path sends the cancel again before the paste. */
+  recancel: boolean
 }
 
 /** One upload in flight: what `pagehide` and Cancel act on. */
@@ -129,8 +136,8 @@ export class UploadController {
    * The terminal entry's call (tabs/terminal-drop.ts `onTerminalUpload`): files dropped on or pasted into a Claude or shell tab. The
    * chooser asks for the folder, and the paths are pasted into that tab when the upload is done.
    */
-  startForTab(tabId: string, files: readonly UploadFile[], opts: { folders?: readonly string[]; pasted?: boolean } = {}): Promise<void> {
-    return this.start({ source: { tab: tabId }, files, ...(opts.folders ? { folders: opts.folders } : {}), ...(opts.pasted ? { pasted: true } : {}) })
+  startForTab(tabId: string, files: readonly UploadFile[], opts: { folders?: readonly string[] } = {}): Promise<void> {
+    return this.start({ source: { tab: tabId }, files, ...(opts.folders ? { folders: opts.folders } : {}) })
   }
 
   /**
@@ -152,19 +159,17 @@ export class UploadController {
     const folders = request.folders ?? []
     const tab = 'tab' in source ? source.tab : undefined
     let folder = request.folder
+    if (files.length === 0) {
+      // A drop of folders only: nothing to send, and for a terminal source no folder to choose.
+      if (folder !== undefined || tab !== undefined) {
+        this.notice(entry, { kind: 'result', id: entry.noticeId, ...resultText({ folder: folder ?? '', fileCount: 0, done: [], failed: [], folders }) })
+      }
+      return
+    }
     if (folder === undefined) {
       if (tab === undefined) return
-      if (files.length === 0) {
-        // A drop of folders only: nothing to choose a folder for.
-        this.notice(entry, { kind: 'result', id: entry.noticeId, ...resultText({ folder: '', fileCount: 0, done: [], failed: [], folders }) })
-        return
-      }
       folder = await this.choose(entry, tab, files, `chooser-${n}`)
       if (folder === undefined || this.left) return
-    }
-    if (files.length === 0) {
-      this.notice(entry, { kind: 'result', id: entry.noticeId, ...resultText({ folder, fileCount: 0, done: [], failed: [], folders }) })
-      return
     }
 
     let begun: UploadBegun
@@ -172,7 +177,7 @@ export class UploadController {
       const reply = await this.deps.invoke('uploads.begin', {
         source,
         folder,
-        files: files.map((f) => ({ name: f.name, size: f.size, ...(request.pasted ? { pasted: true } : {}) }))
+        files: files.map((f) => ({ name: f.name, size: f.size }))
       })
       if ('error' in reply) return this.refusedAtBegin(entry, reply.error, folders)
       begun = reply
@@ -212,10 +217,11 @@ export class UploadController {
     if (notDone && !cancelled) await this.cancelOnMain(begun.uploadId)
     if (this.left) return
     let held: HeldPaste | undefined
-    if (tab !== undefined && done.length > 0 && !cancelled) held = await this.paste(entry.uploadId, tab, false)
+    if (tab !== undefined && done.length > 0 && !cancelled) held = await this.paste(begun.uploadId, tab, false)
     // A pagehide while the paste was in flight (the bridge's close rejects it): nothing more to show.
     if (this.left) return
-    this.result(entry, request, folder, results, refused, cancelled, held, tab)
+    const pasteLater = held !== undefined && tab !== undefined ? { held, tab, uploadId: begun.uploadId, recancel: notDone } : undefined
+    this.result(entry, request, folder, results, refused, cancelled, pasteLater)
   }
 
   /** Core's folder chooser for a terminal source; the folder, or undefined for Cancel (or leaving). */
@@ -311,8 +317,7 @@ export class UploadController {
    * The automatic paste (`manual` false) or the held notice's Paste path. Answers the hold the notice
    * keeps, or undefined when the text went into the terminal.
    */
-  private async paste(uploadId: string | undefined, tab: string, manual: boolean): Promise<HeldPaste | undefined> {
-    if (uploadId === undefined) return { reason: PASTE_FAILED_HELD, text: '' }
+  private async paste(uploadId: string, tab: string, manual: boolean): Promise<HeldPaste | undefined> {
     // Checked before either call (design §4.3): keys-off is held, and main is not asked at all.
     if (this.deps.keysOff?.(tab) === true) return { reason: KEYS_OFF_HELD, text: '' }
     let reply: UploadPasteReply
@@ -334,8 +339,7 @@ export class UploadController {
     results: readonly UploadFileResult[],
     refused: readonly UploadRefusedFile[],
     cancelled: boolean,
-    held?: HeldPaste,
-    tab?: string
+    pasteLater?: PasteLater
   ): void {
     const outcome: UploadOutcome = {
       folder,
@@ -350,12 +354,11 @@ export class UploadController {
     }
     const { text, sticky } = resultText(outcome)
     const id = entry.noticeId
-    const uploadId = entry.uploadId
     const show = (h: HeldPaste | undefined): void => {
       // Not through notice(): a Paste path click comes after the upload left `live`. The page leaving
       // still ends every later answer here (a manual paste in flight at pagehide).
       if (this.left) return
-      if (h === undefined || tab === undefined) {
+      if (h === undefined || pasteLater === undefined) {
         this.deps.ui.putNotice({ kind: 'result', id, text, sticky })
         return
       }
@@ -368,13 +371,23 @@ export class UploadController {
         // Paste path: the person's own click, any number of times while the notice lives; main checks
         // again and so does keys-off here. A new hold replaces the shown one; a paste keeps the notice.
         onPaste: () => {
-          void this.paste(uploadId, tab, true).then((again) => {
+          void this.pastePath(pasteLater).then((again) => {
             if (again !== undefined) show(again)
           })
         }
       })
     }
-    show(held)
+    show(pasteLater?.held)
+  }
+
+  /**
+   * Paste path. After a run that left files not done the cancel goes again first: the one after the run
+   * may never have reached main (the link that dropped those files), and main pastes only a finished
+   * upload (its idle clock finishes one too, a minute later). Main ignores a cancel of a finished upload.
+   */
+  private async pastePath(p: PasteLater): Promise<HeldPaste | undefined> {
+    if (p.recancel) await this.cancelOnMain(p.uploadId)
+    return this.paste(p.uploadId, p.tab, true)
   }
 
   /** "Nothing uploaded: <reason>", with the skipped folders named too. */

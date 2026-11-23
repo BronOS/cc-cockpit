@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_NAME_NUMBER, numberedName } from '../../src/shared/numbered-name'
 import {
-  UPLOAD_MAX_NAME_NUMBER,
   checkUploadName,
   dedupeNames,
   insideGit,
@@ -106,7 +105,7 @@ describe('dedupeNames', () => {
   })
 
   it('numbers up to 99, then gives null', () => {
-    expect(UPLOAD_MAX_NAME_NUMBER).toBe(99)
+    expect(MAX_NAME_NUMBER).toBe(99)
     const out = dedupeNames(Array.from({ length: 101 }, () => 'x.png'))
     expect(out[99]).toBe('x (99).png')
     expect(out[100]).toBeNull()

@@ -885,10 +885,6 @@ interface OverlayLink {
   copies: Map<string, OverlayFrom>
 }
 
-// RateWindow moved to main/rate-window.ts (uploads use it too, without this module's imports);
-// re-exported so its existing importers stay as they are.
-export { RateWindow }
-
 /**
  * A per-plugin cap hit (design-rooms.md §6): names the cap, its value and that the person sets it, so a plugin author
  * reading the error knows it is not a fixed rule of the app.

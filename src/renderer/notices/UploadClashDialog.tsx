@@ -1,4 +1,3 @@
-import { useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { ApprovalBox } from './ApprovalDialog'
 import { clashText, MAX_RESULT_NAMES, replaceAllowed, type ClashRequest } from './upload-model'
@@ -21,21 +20,16 @@ export function UploadClashBox(props: { request: ClashRequest }): React.JSX.Elem
   const { request } = props
   const text = clashText(request.folder, request.clashes)
   const canReplace = replaceAllowed(request.clashes)
-  const answered = useRef(false)
-  const answer = (choice: 'replace' | 'keep-both' | 'cancel'): void => {
-    if (answered.current) return
-    answered.current = true
-    request.onAnswer(choice)
-  }
+  // ApprovalBox answers once, whichever button: no guard of its own here.
   return (
     <ApprovalBox
       title={text.title}
       allowLabel="Replace"
       denyLabel="Cancel"
       denyOnly={!canReplace}
-      alsoAllow={{ label: 'Keep both', testId: 'upload-clash-keep-both', onClick: () => answer('keep-both') }}
+      alsoAllow={{ label: 'Keep both', testId: 'upload-clash-keep-both', onClick: () => request.onAnswer('keep-both') }}
       testIds={{ dialog: 'upload-clash', allow: 'upload-clash-replace', deny: 'upload-clash-cancel' }}
-      onAnswer={(allow) => answer(allow && canReplace ? 'replace' : 'cancel')}
+      onAnswer={(allow) => request.onAnswer(allow && canReplace ? 'replace' : 'cancel')}
     >
       {/* Every name, in a list with its own scroll: the title names only a few, and the dialog takes no
           focus, so buttons pushed below the viewport could not be reached at all. */}

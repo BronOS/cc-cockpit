@@ -22,6 +22,7 @@ import {
 } from '../../src/shared/uploads'
 import {
   UPLOAD_CANCELLED_TEXT,
+  UPLOAD_IDLE_TEXT,
   UPLOAD_FINISHED_KEPT,
   UPLOAD_GIT_NAME_TEXT,
   UPLOAD_PENDING_MS,
@@ -613,6 +614,33 @@ describe('the idle clock', () => {
     expect(up.outcome(A, reply.uploadId)).toBeUndefined()
     expect(log).toHaveLength(1)
     // Its place is free again.
+    await begun(up, A, '', files('c'))
+    await begun(up, A, '', files('d'))
+  })
+})
+
+describe('the idle clock of a partly settled upload', () => {
+  it('finishes it like a cancel: the rest settle as idle, outcomes kept so the path still pastes, temps deleted', async () => {
+    // File 1 committed, then the link dropped for good: the client's cancel and paste could not reach main.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const log: string[] = []
+    const up = make({ log: (l) => log.push(l) })
+    const reply = await begun(up, A, '', files('a', 'b'))
+    const [a, b] = reply.tokens!
+    up.settle(a!.token, { ok: true, name: 'a', path: 'a' })
+    await vi.advanceTimersByTimeAsync(UPLOAD_IDLE_MS + 1_000)
+    expect(aborted).toEqual([reply.uploadId])
+    expect(up.grant(b!.token)).toBeUndefined()
+    const outcome = up.outcome(A, reply.uploadId)
+    expect(outcome?.state).toBe('finished')
+    expect([...outcome!.results.entries()]).toEqual([
+      [a!.index, { ok: true, name: 'a', path: 'a' }],
+      [b!.index, { ok: false, reason: UPLOAD_IDLE_TEXT }],
+    ])
+    expect(log).toHaveLength(1)
+    // The shell's cancel arriving late is a no-op; its place is free.
+    await up.cancel(A, reply.uploadId)
+    expect(aborted).toEqual([reply.uploadId])
     await begun(up, A, '', files('c'))
     await begun(up, A, '', files('d'))
   })

@@ -324,7 +324,7 @@ describe('runUpload', () => {
     const size = 3 * MIB
     const seen: number[] = []
     const r = rig((c, n) => (n === 0 ? honest(size)(c) : json(409, { expected: 0 })))
-    const results = await runUpload([fileOf(size)], [tokenOf(0)], { ...r, onProgress: (p) => seen.push(p.fileSent) })
+    const results = await runUpload([fileOf(size)], [tokenOf(0)], { ...r, onProgress: (p) => seen.push(p.sent) })
     expect(r.calls).toHaveLength(2)
     expect(seen).toEqual([MIB])
     expect(results[0]).toMatchObject({ outcome: 'failed', reason: 'the server gave an unexpected answer' })
@@ -516,22 +516,22 @@ describe('runUpload', () => {
     expect(done.map((x) => x.outcome)).toEqual(['done', 'cancelled'])
   })
 
-  it('reports acknowledged bytes per file and over the whole run', async () => {
+  it('reports acknowledged bytes over the whole run, with the file being sent', async () => {
     const seen: UploadProgress[] = []
     const sizes = [MIB + 5, 100]
     const r = rig((c) => honest(c.token === 'tok-0' ? sizes[0]! : sizes[1]!)(c), { chunkMs: 1 })
     await runUpload(sizes.map(fileOf), [tokenOf(0), tokenOf(1)], { ...r, onProgress: (p) => seen.push({ ...p }) })
-    expect(seen.map((p) => [p.index, p.fileSent, p.sent, p.total])).toEqual([
-      [0, MIB, MIB, MIB + 105],
-      [0, MIB + 5, MIB + 5, MIB + 105],
-      [1, 100, MIB + 105, MIB + 105]
+    expect(seen).toEqual([
+      { index: 0, sent: MIB },
+      { index: 0, sent: MIB + 5 },
+      { index: 1, sent: MIB + 105 }
     ])
   })
 
   it('counts a 409 jump forward in the progress', async () => {
     const seen: number[] = []
     const r = rig((c, n) => (n === 0 ? json(409, { expected: 2 * MIB }) : honest(3 * MIB)(c)))
-    await runUpload([fileOf(3 * MIB)], [tokenOf(0)], { ...r, onProgress: (p) => seen.push(p.fileSent) })
+    await runUpload([fileOf(3 * MIB)], [tokenOf(0)], { ...r, onProgress: (p) => seen.push(p.sent) })
     expect(seen[0]).toBe(2 * MIB)
   })
 

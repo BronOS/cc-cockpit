@@ -31,14 +31,10 @@ export interface UploadSource {
 
 export type UploadFetch = (input: string, init?: RequestInit) => Promise<Response>
 
-/** Acknowledged bytes: of the file being sent and of every file of the run. */
+/** Acknowledged bytes of every file of the run so far, while the file at `index` is sent. */
 export interface UploadProgress {
   index: number
-  name: string
-  fileSent: number
-  fileSize: number
   sent: number
-  total: number
 }
 
 /** How one file ended: `done` with the committed name and project-relative path, or why it did not. */
@@ -104,20 +100,7 @@ const REASON_MAX_CHARS = 200
 
 const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
 
-/** The reason of a JSON `{error}` body, or the status line when the body is anything else. */
-async function reasonOf(res: Response): Promise<string> {
-  try {
-    const body: unknown = await res.json()
-    if (body !== null && typeof body === 'object') {
-      const error = (body as Record<string, unknown>)['error']
-      if (typeof error === 'string' && error.length > 0) return error.slice(0, REASON_MAX_CHARS)
-    }
-  } catch {
-    // Not JSON (a proxy's page, a plain-text 404): the status says it.
-  }
-  return `the server answered ${res.status}`
-}
-
+/** A JSON object body, or undefined (not JSON: a proxy's page, a plain-text 404). */
 async function jsonOf(res: Response): Promise<Record<string, unknown> | undefined> {
   try {
     const body: unknown = await res.json()
@@ -125,6 +108,12 @@ async function jsonOf(res: Response): Promise<Record<string, unknown> | undefine
   } catch {
     return undefined
   }
+}
+
+/** The reason of a JSON `{error}` body, capped, or the status line when the body has none. */
+function errorOf(body: Record<string, unknown> | undefined, status: number): string {
+  const error = body?.['error']
+  return typeof error === 'string' && error.length > 0 ? error.slice(0, REASON_MAX_CHARS) : `the server answered ${status}`
 }
 
 const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
@@ -172,8 +161,6 @@ export async function runUpload(
   // A function, not a property read: TypeScript narrows `signal?.aborted` for good after one check, but an abort comes at any await.
   const aborted = (): boolean => signal?.aborted === true
   const results: UploadFileResult[] = []
-  let total = 0
-  for (const t of tokens) total += files[t.index]?.size ?? 0
   let sentBefore = 0
   // Carried across files: the link's speed is the person's, not the file's.
   let chunk = UPLOAD_CHUNK_START_BYTES
@@ -206,8 +193,7 @@ export async function runUpload(
     // failed whose answer was lost, not a token that simply ended.
     let lost = false
 
-    const progress = (): void =>
-      opts.onProgress?.({ index: t.index, name: t.name, fileSent: offset, fileSize: size, sent: sentBefore + offset, total })
+    const progress = (): void => opts.onProgress?.({ index: t.index, sent: sentBefore + offset })
 
     // An empty file is one zero-length PUT at offset 0 that commits it, so the loop runs once for it.
     for (;;) {
@@ -372,13 +358,12 @@ async function put(
       // The writer's 400 with `expected` is a body that ended short or ran long (a proxy cutting it):
       // truncated back and the token kept for a retry (§3.2). Any other 400 is a refusal.
       const body = await jsonOf(res)
-      const error = body?.['error']
-      const reason = typeof error === 'string' && error.length > 0 ? error.slice(0, REASON_MAX_CHARS) : 'the server answered 400'
+      const reason = errorOf(body, 400)
       return isCount(body?.['expected']) ? { kind: 'short', reason } : { kind: 'refused', reason }
     }
     // 413, 500, 507 (the writer's own, never retried: a failed file is settled and a retry finds 404
     // with the reason gone), 401, 403, anything else.
-    return { kind: 'refused', reason: await reasonOf(res) }
+    return { kind: 'refused', reason: errorOf(await jsonOf(res), res.status) }
   } finally {
     clearTimeout(timer)
     outer?.removeEventListener('abort', onAbort)

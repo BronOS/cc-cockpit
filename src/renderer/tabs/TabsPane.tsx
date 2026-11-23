@@ -65,7 +65,7 @@ import {
   touchRecent,
   type SwitcherState
 } from './tab-switcher'
-import { registerTerminalPane } from './terminal-drop'
+import { registerTerminalPane, terminalPaneOf } from './terminal-drop'
 import { SessionRegistry, tabIo } from './terminal-session'
 import { checkFrameFocus, pageFrames, setFrameFocusHandler } from './PageTabArea'
 import { chordTarget, type ChordSource } from './frame-focus'
@@ -252,18 +252,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   }, [state, view, autoZoom])
   // The terminal entry of uploads (terminal-drop.ts, design-upload.md §4.3): the upload controller lives
   // outside React and asks this view, at the paste, whether its keys are off (D3's or a refused frame's:
-  // no command, and no paste, acts on a pane then) and pastes through this view's terminal of the tab.
+  // no command, and no paste, acts on a pane then) and pastes through this view's terminal of the tab,
+  // only while that tab is the one selected here (`terminalPaneOf`).
   useEffect(
-    () =>
-      registerTerminalPane({
-        keysOff: () => stateRef.current.keysOff,
-        // Main's "selected in the calling view" answer is one round trip old at the paste: the person may
-        // have picked another tab or pane meanwhile, and the paths must not go into a terminal not shown.
-        paste: (tabId, text) => {
-          const s = stateRef.current
-          return s.activeId === tabId && !s.keysOff && sessions.paste(tabId, text)
-        }
-      }),
+    () => registerTerminalPane(terminalPaneOf(() => stateRef.current, (tabId, text) => sessions.paste(tabId, text))),
     [sessions]
   )
   // "Close <tab>?" (close-confirm.ts): the question shown, null when no dialog is up.

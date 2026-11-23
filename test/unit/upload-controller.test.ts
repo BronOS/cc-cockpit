@@ -72,7 +72,7 @@ function fakeRun(outcome: (t: UploadFileToken) => UploadFileResult['outcome'] = 
     let sent = 0
     return tokens.map((t) => {
       sent += files[t.index]?.size ?? 0
-      opts.onProgress?.({ index: t.index, name: t.name, fileSent: 0, fileSize: 0, sent, total: 0 })
+      opts.onProgress?.({ index: t.index, sent })
       const o = outcome(t)
       return { index: t.index, name: t.name, outcome: o, ...(o === 'failed' ? { reason: 'the disk is full' } : {}), ...(o === 'done' ? { path: `p/${t.name}` } : {}) }
     })
@@ -394,7 +394,7 @@ describe('UploadController: a terminal source', () => {
     const ui = new UploadUi()
     const { invoke, calls } = fakeInvoke({ 'uploads.begin': begin, 'uploads.cancel': undefined, ...answers })
     const c = new UploadController({ invoke, ui, projectId: 'proj', run: fakeRun().run, storage, ...deps })
-    const done = c.startForTab('tab-1', [file('shot.png', 4)], { pasted: true })
+    const done = c.startForTab('tab-1', [file('shot.png', 4)])
     await tick()
     const chooser = ui.get().choosers[0]
     expect(chooser).toMatchObject({ tab: 'tab-1', files: [{ name: 'shot.png', size: 4 }] })
@@ -414,7 +414,7 @@ describe('UploadController: a terminal source', () => {
       storage
     )
     expect(chooser.preset).toBe('assets')
-    expect(calls[0]?.payload).toEqual({ source: { tab: 'tab-1' }, folder: 'docs', files: [{ name: 'shot.png', size: 4, pasted: true }] })
+    expect(calls[0]?.payload).toEqual({ source: { tab: 'tab-1' }, folder: 'docs', files: [{ name: 'shot.png', size: 4 }] })
     expect(storage.data.get(presetKey('proj'))).toBe('docs')
     expect(calls[1]).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1' } })
     expect(pasted).toEqual([['tab-1', '/p/docs/n0 ']])
@@ -492,7 +492,8 @@ describe('UploadController: a terminal source', () => {
     let paste = 0
     const { invoke, calls } = fakeInvoke({
       'uploads.begin': { uploadId: 'u1', refused: [], clashes: [], tokens: tokensFor(0, 1) },
-      'uploads.cancel': () => new Promise<void>((r) => (answerCancel = () => ((finished = true), r()))),
+      // The first cancel waits for the test; Paste path's second one finds the upload finished (main ignores it).
+      'uploads.cancel': () => (finished ? undefined : new Promise<void>((r) => (answerCancel = () => ((finished = true), r())))),
       'uploads.paste': () =>
         !finished ? { held: 'the upload is still running', text: '' } : ++paste === 1 ? { held: 'Claude is busy', text: '/p/d/n0 ' } : { text: '/p/d/n0 ' }
     })
@@ -513,8 +514,43 @@ describe('UploadController: a terminal source', () => {
     const r = lastResult(ui)
     expect(r).toMatchObject({ text: 'Uploaded 1 of 2 to d; not uploaded: n1 (the disk is full)', sticky: true, held: { reason: 'Claude is busy' } })
     r.onPaste!()
-    await tick()
+    while (pasted.length === 0) await tick()
+    expect(calls.slice(3).map((x) => x.channel)).toEqual(['uploads.cancel', 'uploads.paste'])
     expect(calls.at(-1)).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1', manual: true } })
+    expect(pasted).toEqual(['/p/d/n0 '])
+  })
+
+  it('a link that dropped: Paste path sends the cancel again before the paste, which then finds it finished', async () => {
+    // The cancel and the automatic paste after the run both failed (the link was down), so main's upload is
+    // still running and a paste alone would be refused. A run with every file done never sends the cancel.
+    const ui = new UploadUi()
+    let up = false
+    let finished = false
+    const { invoke, calls } = fakeInvoke({
+      'uploads.begin': { uploadId: 'u1', refused: [], clashes: [], tokens: tokensFor(0, 1) },
+      'uploads.cancel': () => {
+        if (!up) throw new Error('the connection was lost')
+        finished = true
+      },
+      'uploads.paste': () => {
+        if (!up) throw new Error('the connection was lost')
+        if (!finished) throw new Error('no such upload')
+        return { text: '/p/d/n0 ' }
+      }
+    })
+    const pasted: string[] = []
+    const run = fakeRun((t) => (t.index === 1 ? 'failed' : 'done')).run
+    const c = new UploadController({ invoke, ui, projectId: 'p', run, keysOff: () => false, pasteInto: (_t, text) => (pasted.push(text), true) })
+    const done = c.startForTab('t', [file('a'), file('b')])
+    await tick()
+    ui.get().choosers[0]!.onAnswer('d')
+    await done
+    expect(lastResult(ui).held).toEqual({ reason: 'the connection was lost', text: '' })
+    up = true
+    lastResult(ui).onPaste!()
+    while (pasted.length === 0) await tick()
+    expect(calls.map((x) => x.channel)).toEqual(['uploads.begin', 'uploads.cancel', 'uploads.paste', 'uploads.cancel', 'uploads.paste'])
+    expect(calls.at(-2)?.payload).toEqual({ uploadId: 'u1' })
     expect(pasted).toEqual(['/p/d/n0 '])
   })
 

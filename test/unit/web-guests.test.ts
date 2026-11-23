@@ -530,7 +530,7 @@ describe('changes', () => {
     expect(droppedDownloads).toHaveLength(4)
   })
 
-  it('uploads end where downloads do, and on a kick before the devices are revoked (design-upload.md §3.4)', async () => {
+  it('uploads end on a narrowing, a downgrade to read and a kick (before the devices are revoked), never on a widening (design-upload.md §3.4)', async () => {
     const droppedUploads: Array<{ deviceId: string; listed: boolean }> = []
     let guestId = ''
     const s = store({
@@ -545,8 +545,17 @@ describe('changes', () => {
     expect(droppedUploads).toEqual([])
     s.setRole(guestId, 'read')
     expect(droppedUploads.map((x) => x.deviceId)).toEqual([deviceId])
+    s.setRole(guestId, 'write')
     s.shareTab(guestId, 't1', false)
     expect(droppedUploads.map((x) => x.deviceId)).toEqual([deviceId, deviceId])
+    // A widening takes nothing away: its 4464 ends the downloads (bound to the closed views) but never an upload,
+    // which is bound to the device and carries on over the reconnect (design-upload.md §3.4).
+    const downloadsBefore = droppedDownloads.length
+    s.shareTab(guestId, 't2', true)
+    fireTimers()
+    expect(closed.map((c) => c.code)).toContain(CLOSE.accessChanged)
+    expect(droppedDownloads.length).toBe(downloadsBefore + 1)
+    expect(droppedUploads).toHaveLength(2)
     expect(s.kick(guestId)).toBe(true)
     expect(droppedUploads).toHaveLength(3)
     expect(droppedUploads[2]).toEqual({ deviceId, listed: true })

@@ -155,6 +155,7 @@ function setup(over: Partial<UploadHandlerDeps> = {}) {
       calls.push(['folders', windowId, path])
       return uploads.folders(windowId, path)
     },
+    paste: () => ({ held: 'not wired in this test', text: '' }),
     ...over
   }
   registerUploadHandlers(router, deps)
@@ -194,7 +195,7 @@ describe('uploads.*: who may call (design-upload.md §3.1, §6)', () => {
     // Cancelled as it goes: a device runs at most two uploads at once.
     await router.dispatch(o, 'uploads.cancel', { uploadId: fromPanel.uploadId })
     for (const tab of ['c1', 's1']) {
-      const r = (await router.dispatch(o, 'uploads.begin', begin({ tab }, [{ name: `${tab}.png`, size: 1, pasted: true }]))) as UploadBegun
+      const r = (await router.dispatch(o, 'uploads.begin', begin({ tab }, [{ name: `${tab}.png`, size: 1 }]))) as UploadBegun
       expect(r.uploadId, tab).toEqual(expect.any(String))
       await router.dispatch(o, 'uploads.cancel', { uploadId: r.uploadId })
     }
@@ -351,11 +352,6 @@ describe('upload ids and the role after an await', () => {
 })
 
 describe('uploads.paste: the gate only (the rule is Uploads.paste, upload-paste.test.ts)', () => {
-  it('is refused while main has no paste rule wired', async () => {
-    const { router, web } = setup()
-    await expect(router.dispatch(web(OWNER, 'owner'), 'uploads.paste', { uploadId: 'u' })).rejects.toThrow(/refused/)
-  })
-
   it("hands on main's caller, view and role, never the payload's; manual must be a boolean", async () => {
     const seen: UploadPasteCall[] = []
     const { router, web } = setup({

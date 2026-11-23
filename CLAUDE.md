@@ -347,8 +347,10 @@ the pasted path, clipboard cases (Excel, Word, Copy image), a 1 GiB upload over 
   multi-use (chunks at `offset`), minted by `uploads.begin` / `resolve` for the device and bound to it, one idle clock (60 s of
   body bytes) per upload, chunks sized to finish inside the 30 s request bound (`connectionsCheckingInterval` 5 s, a cut is a
   408). Answers are JSON with real statuses; a guest not entitled gets the guest block's 404 byte for byte. Teardowns are
-  revoke, disconnect, leaving None mode, gateway stop, window close every narrowing of a guest and a widening's reconnect (`dropTransfersOf`); each
-  deletes its temp. The writer writes `.cc-upload-<hex>` beside the target, then commits by exclusive `link` (`rename` only
+  revoke, disconnect, leaving None mode, gateway stop, window close, every narrowing of a guest (`dropTransfersOf`; a widening's reconnect leaves it running); each
+  deletes its temp (a cancel or the idle clock of an upload with a settled file finishes it instead, so its paths still
+  paste). While the writer holds a chunk the socket's idle timeout is ignored (a no-hard-link commit copies with nothing
+  on the socket). The writer writes `.cc-upload-<hex>` beside the target, then commits by exclusive `link` (`rename` only
   for Replace; no-hard-link volumes use `copyExclusive`), and records each temp with its project root in
   `<data>/uploads/temps.json` before creating it; the start sweep deletes only what that record names and still lies in its
   root. Names are checked in main (`HIDDEN_TEXT`, `.git` refused); never trust a name, size or folder from the page.

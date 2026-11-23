@@ -729,7 +729,9 @@ export class GuestStore implements GuestService {
       if (this.pendingAccess.get(guestId)?.timer !== timer) return
       this.pendingAccess.delete(guestId)
       if (!this.live(guestId)) return
-      this.dropTransfersOf(guestId)
+      // Downloads only: one is bound to a view this reconnect closes. An upload is bound to the device and its
+      // page reconnects in place, so a widening (which takes nothing away) leaves it running (design-upload.md §3.4).
+      this.dropDownloadsOf(guestId)
       this.reconnect(guestId, CLOSE.accessChanged, 'access changed')
     }, wait)
     this.pendingAccess.set(guestId, { first, timer })
@@ -740,13 +742,18 @@ export class GuestStore implements GuestService {
    * uploads (design-upload.md §3.4: a read guest uploads nothing, and one whose access narrowed begins again).
    */
   private dropTransfersOf(guestId: string): void {
+    this.dropDownloadsOf(guestId)
+    for (const d of this.deps.devices.devicesOfGuest(guestId)) this.dropUploadsOf(d.id)
+  }
+
+  /** The guest's download links and running streams end (a download is bound to a view these closes end). */
+  private dropDownloadsOf(guestId: string): void {
     for (const d of this.deps.devices.devicesOfGuest(guestId)) {
       try {
         this.deps.dropDownloads?.(d.id)
       } catch (err) {
         this.deps.log(`guests: dropping downloads failed: ${String(err)}`)
       }
-      this.dropUploadsOf(d.id)
     }
   }
 

@@ -344,15 +344,13 @@ export interface UploadUiState {
   notices: readonly UploadNotice[]
 }
 
-const EMPTY: UploadUiState = { choosers: [], clashes: [], notices: [] }
-
 /**
  * The upload UI's state, module-level like the downloads' `acceptedOffers`: the controller (outside
  * React) pushes, ShellNotices subscribes. Each change is a new state object so `useSyncExternalStore`
  * sees it; a change that alters nothing keeps the old one.
  */
 export class UploadUi {
-  private state: UploadUiState = EMPTY
+  private state: UploadUiState = { choosers: [], clashes: [], notices: [] }
   private readonly listeners = new Set<() => void>()
 
   readonly subscribe = (fn: () => void): (() => void) => {
@@ -395,11 +393,6 @@ export class UploadUi {
   dropNotice(id: string): void {
     if (!this.state.notices.some((n) => n.id === id)) return
     this.set({ ...this.state, notices: this.state.notices.filter((n) => n.id !== id) })
-  }
-
-  /** Everything gone (the page is leaving or the controller was reset). */
-  clear(): void {
-    if (this.state !== EMPTY) this.set(EMPTY)
   }
 }
 

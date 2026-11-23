@@ -697,6 +697,21 @@ describe('the temps record and the sweep', () => {
     expect(recorded()).toEqual([unmounted.path])
   })
 
+  it("a sweep still running when an upload starts never deletes that upload's temp", async () => {
+    // The start goes on past a stalled sweep (a network share); here a long record keeps it running. A new
+    // temp pushed onto the record meanwhile was reached by the sweep's loop and unlinked under its writer.
+    const left = Array.from({ length: 400 }, (_, i) => ({ path: join(proj, `.cc-upload-${i.toString(16).padStart(16, '0')}`), root: proj }))
+    writeRecord(left)
+    const r = rig()
+    const sweep = r.writer.sweepTemps()
+    const { token } = await tokenFor(r, '', 'a.txt', 8)
+    expect(await put(r, token, 0, 'abcd')).toMatchObject({ status: 200 })
+    await sweep
+    expect(tempsIn(proj)).toHaveLength(1)
+    expect(await put(r, token, 4, 'efgh')).toMatchObject({ status: 200, reply: { done: true, name: 'a.txt' } })
+    expect(readFileSync(join(proj, 'a.txt'), 'utf8')).toBe('abcdefgh')
+  })
+
   it('a record that is not a list is read as empty', async () => {
     writeRecord([])
     writeFileSync(tempsFile, JSON.stringify({ schemaVersion: 1, temps: 'x' }))

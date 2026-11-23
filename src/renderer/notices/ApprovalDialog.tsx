@@ -65,10 +65,18 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
   }, [focusDeny])
   // How the last press on Allow began: armed or not (undefined: no press seen).
   const pressArmed = useRef<boolean | undefined>(undefined)
-  const answer = (allow: boolean): void => {
+  // One answer per dialog, whichever button gives it.
+  const once = (fn: () => void): void => {
     if (answered.current) return
     answered.current = true
-    props.onAnswer(allow)
+    fn()
+  }
+  const answer = (allow: boolean): void => once(() => props.onAnswer(allow))
+  // Allow and `alsoAllow`: a click counts only when its press began armed (allowClickCounts).
+  const guardedClick = (fn: () => void): void => {
+    const counts = allowClickCounts(armed, pressArmed.current)
+    pressArmed.current = undefined
+    if (counts) fn()
   }
   useEffect(() => {
     const arm = new ApprovalArm(setArmed)
@@ -149,14 +157,7 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
               type="button"
               data-testid={props.alsoAllow.testId}
               disabled={!armed}
-              onClick={() => {
-                const counts = allowClickCounts(armed, pressArmed.current)
-                pressArmed.current = undefined
-                if (counts && !answered.current) {
-                  answered.current = true
-                  props.alsoAllow?.onClick()
-                }
-              }}
+              onClick={() => guardedClick(() => once(() => props.alsoAllow?.onClick()))}
             >
               {props.alsoAllow.label}
             </button>
@@ -166,11 +167,7 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
             className="confirm-danger"
             data-testid={props.testIds?.allow}
             disabled={!armed}
-            onClick={() => {
-              const counts = allowClickCounts(armed, pressArmed.current)
-              pressArmed.current = undefined
-              if (counts) answer(true)
-            }}
+            onClick={() => guardedClick(() => answer(true))}
           >
             {props.allowLabel ?? 'Allow'}
           </button>}

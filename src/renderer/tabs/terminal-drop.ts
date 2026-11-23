@@ -5,7 +5,7 @@
 //   - Drop: a drag whose `dataTransfer.types` holds `Files` highlights the pane; the drop counts as a
 //     click on that pane (it selects it) and `preventDefault` keeps the browser from opening the file.
 //     Dropped folders are told by their entry during the event, skipped and named in the result.
-//   - Paste: an upload only when the clipboard holds files and no `text/plain` (`pasted: true`). A copy
+//   - Paste: an upload only when the clipboard holds files and no `text/plain` (named by `pastedName`). A copy
 //     from Excel, Word or a browser's Copy image carries text beside the image, and there the text is what
 //     the person meant (Task 1: an image alone gives one file and no text/plain; image plus text gives one
 //     file with text/plain). Seen on the terminal's container in the capture phase, registered after the
@@ -26,15 +26,13 @@
 
 import { isFilesDrag, splitTransfer, type UploadTransferLike } from '../../sdk/panel-core'
 import type { TabKind } from '../../shared/types'
-import { checkUploadName, pastedName } from '../../shared/uploads'
+import { pastedName } from '../../shared/uploads'
 import type { ViewAccess } from '../../shared/views'
 import type { UploadFile } from '../web/upload-controller'
+import { folderNamesForNotice } from '../web/upload-request'
 
 /** The class that highlights a pane while a `Files` drag is over it. */
 export const DROP_TARGET_CLASS = 'terminal-drop-target'
-
-/** Dropped folder names kept for the notice, as upload-request.ts keeps a panel's. */
-const MAX_FOLDER_NAMES = 100
 
 /** Whether a terminal of `kind` takes drops and file pastes in this view (§4.1): a Claude or shell tab of the web shell, not a read guest's. */
 export function takesUploads(kind: TabKind, webShell: boolean, access: ViewAccess): boolean {
@@ -80,7 +78,7 @@ export function pastedFiles(data: ClipboardLike | null | undefined, now: Date): 
 export function droppedFiles(transfer: UploadTransferLike): { files: UploadFile[]; folders: string[] } {
   const split = splitTransfer(transfer)
   const files = split.files.filter((f): f is File => typeof f === 'object' && f !== null && typeof (f as Partial<FileLike>).slice === 'function')
-  const folders = split.folders.filter((name) => checkUploadName(name).ok).slice(0, MAX_FOLDER_NAMES)
+  const folders = folderNamesForNotice(split.folders)
   return { files, folders }
 }
 
@@ -88,7 +86,7 @@ export function droppedFiles(transfer: UploadTransferLike): { files: UploadFile[
 // The seams.
 
 /** What the upload controller takes from the terminal entry (UploadController.startForTab). */
-export type TerminalUploadHandler = (tabId: string, files: readonly UploadFile[], opts: { folders?: readonly string[]; pasted?: boolean }) => void
+export type TerminalUploadHandler = (tabId: string, files: readonly UploadFile[], opts: { folders?: readonly string[] }) => void
 
 let handler: TerminalUploadHandler | undefined
 
@@ -104,11 +102,30 @@ export function onTerminalUpload(fn: TerminalUploadHandler): () => void {
 export interface TerminalPane {
   /** This view is keys-off (state/tabs-store.ts): no command, and no paste, acts on a pane. */
   keysOff(): boolean
-  /** Pastes `text` with xterm's own `paste` in the tab's terminal here; false when there is none. */
+  /** Pastes `text` with xterm's own `paste` in the tab's terminal here; false when there is none, or keys-off. */
   paste(tabId: string, text: string): boolean
 }
 
 let pane: TerminalPane | undefined
+
+/**
+ * TabsPane's pane over its live tab state (`read`, its state ref, read at each call) and the sessions'
+ * paste. The paste goes only into the view's selected tab while its keys are on: main's "selected in the
+ * calling view" answer is one round trip old at the paste, the person may have picked another tab or pane
+ * meanwhile, and the paths must not go into a terminal not shown (keys-off read again here, at the paste).
+ */
+export function terminalPaneOf(
+  read: () => { readonly activeId: string | null; readonly keysOff: boolean },
+  paste: (tabId: string, text: string) => boolean
+): TerminalPane {
+  return {
+    keysOff: () => read().keysOff,
+    paste: (tabId, text) => {
+      const s = read()
+      return s.activeId === tabId && !s.keysOff && paste(tabId, text)
+    }
+  }
+}
 
 /** TabsPane's mount; returns the unregister (a remount registers its own). */
 export function registerTerminalPane(p: TerminalPane): () => void {
@@ -127,10 +144,9 @@ export function terminalKeysOff(): boolean {
   return pane === undefined || pane.keysOff()
 }
 
-/** The controller's paste: keys-off read again at the moment of the paste, then xterm's own `paste`. */
+/** The controller's paste: xterm's own `paste` through the mounted pane, which reads keys-off again (`terminalPaneOf`). */
 export function pasteIntoTerminal(tabId: string, text: string): boolean {
-  if (pane === undefined || pane.keysOff()) return false
-  return pane.paste(tabId, text)
+  return pane?.paste(tabId, text) ?? false
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -195,7 +211,7 @@ export function attachTerminalEntry(container: DropContainer, entry: TerminalEnt
     if (!files || !handler) return
     e.preventDefault()
     e.stopPropagation()
-    handler(entry.tabId, files, { pasted: true })
+    handler(entry.tabId, files, {})
   }
   const onDragEnd = (): void => highlight(false)
   container.addEventListener('dragenter', onDragOver, true)

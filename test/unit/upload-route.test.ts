@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
+import { copyExclusive } from '../../src/main/files/copy-exclusive'
 import { UPLOAD_DISK_FULL_TEXT, UploadWriter, type UploadWriterFs } from '../../src/main/files/upload-writer'
 import { Uploads } from '../../src/main/files/uploads'
 import { fakeSecretStore } from '../../src/main/secrets/secret-store'
@@ -632,6 +633,8 @@ describe('the /u/ route: cut bodies', () => {
     // halving after a cut rely on (Node's own 30 s check interval would cut anywhere in 30-60 s).
     const s = await setup()
     const server = (s.gw as unknown as { server: { connectionsCheckingInterval: number; requestTimeout: number; headersTimeout: number } }).server
+    // Node's own fields: a renamed one reads undefined and fails these, never passes them.
+    expect(typeof server.headersTimeout).toBe('number')
     expect(server.connectionsCheckingInterval).toBe(5_000)
     expect(server.requestTimeout).toBe(30_000)
     expect(server.headersTimeout).toBeLessThanOrEqual(30_000)
@@ -647,6 +650,9 @@ describe('the /u/ route: cut bodies', () => {
     const text = await slow.text
     const took = Date.now() - started
     expect(text.startsWith('HTTP/1.1 408')).toBe(true)
+    // The connection is closed (the text resolves on its close) and says so; the writer's hold on the temp
+    // is let go: truncated back below, and the retry writes it again.
+    expect(text.toLowerCase()).toContain('connection: close')
     expect(took).toBeGreaterThanOrEqual(700)
     expect(took).toBeLessThan(2_500)
     await vi.waitFor(() => expect(tempSize(s)).toBe(20))
@@ -784,6 +790,70 @@ describe('the /u/ route: ends', () => {
     vi.useRealTimers()
     await vi.waitFor(() => expect(tempsIn(s.proj)).toEqual([]))
     expect((await put(s, token, 4, 'efgh')).status).toBe(404)
+  })
+
+  it("an ended token's 404 reaches an owner still sending a multi-MiB chunk: the body read off, the connection kept", async () => {
+    // The client learns of an end from its next chunk's 404 (with `lost`, "the server ended the upload"). Sent
+    // with `Connection: close` and the body unread, the close reset the client mid-send and it saw a network
+    // error instead: 26 s of backoff, then "the connection was lost" for this file and the next.
+    const s = await setup()
+    const size = 4 * MiB
+    const { token } = await mint(s, 'e.bin', size)
+    await s.uploads.dropWindow(WINDOW)
+    const pieces = Array.from({ length: 64 }, () => Buffer.alloc(64 * 1024, 3))
+    const socket = connect(s.port, '127.0.0.1')
+    const errors: string[] = []
+    let sent = 0
+    let out = ''
+    const answered = new Promise<string>((resolve) => {
+      socket.on('data', (d: Buffer) => {
+        out += d.toString()
+        // Chunked (the JSON answers carry no Content-Length): the answer is whole at the last chunk.
+        if (out.includes('\r\n0\r\n\r\n')) resolve(out)
+      })
+    })
+    socket.on('error', (err: NodeJS.ErrnoException) => errors.push(err.code ?? 'error'))
+    socket.once('connect', () => {
+      // A keep-alive request, as a browser's fetch sends it (no `Connection: close` of its own).
+      socket.write(rawHead(s, 'PUT', `/u/${token}?offset=0`, [`Content-Length: ${size}`, 'Sec-Fetch-Site: same-origin']))
+      const next = (): void => {
+        if (sent >= pieces.length || socket.destroyed) return
+        socket.write(pieces[sent++] as Buffer)
+        setTimeout(next, 5)
+      }
+      next()
+    })
+    const text = await answered
+    expect(text.startsWith('HTTP/1.1 404')).toBe(true)
+    expect(text).toContain(JSON.stringify({ error: 'no such upload' }))
+    expect(text.toLowerCase()).not.toContain('connection: close')
+    await vi.waitFor(() => expect(sent).toBe(pieces.length))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(errors).toEqual([])
+    expect(socket.destroyed).toBe(false)
+    socket.destroy()
+  })
+
+  it("a commit longer than the socket's idle timeout (a copy where hard links are refused) still answers done", async () => {
+    // The last chunk's request waits through the commit with nothing on the socket. Node's idle timeout
+    // (IDLE_SOCKET_MS, shortened here) destroyed it, and the client read a placed file as failed.
+    const s = await setup({
+      deps: { idleSocketMs: 300 },
+      writerFs: {
+        link: async (_from, to) => {
+          throw Object.assign(new Error(`EXDEV: cross-device link not permitted, link '${to}'`), { code: 'EXDEV' })
+        },
+        copy: async (temp, final, mode, opts) => {
+          await new Promise((resolve) => setTimeout(resolve, 900))
+          return copyExclusive(temp, final, mode, opts)
+        }
+      }
+    })
+    const { token } = await mint(s, 'slow.txt', 6)
+    const done = await put(s, token, 0, 'abcdef')
+    expect(done.status).toBe(200)
+    expect(JSON.parse(done.body)).toEqual({ done: true, name: 'slow.txt', path: 'slow.txt' })
+    expect(readFileSync(join(s.proj, 'slow.txt'), 'utf8')).toBe('abcdef')
   })
 
   it('a large chunk at 1 MiB pieces goes through whole', async () => {

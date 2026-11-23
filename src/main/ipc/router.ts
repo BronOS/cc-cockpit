@@ -2462,8 +2462,8 @@ export interface UploadHandlerDeps {
   resolve(caller: UploadCaller, uploadId: unknown, choice: unknown): Promise<UploadResolveReply>
   cancel(caller: UploadCaller, uploadId: unknown): Promise<void>
   folders(windowId: number, path: unknown): Promise<UploadFoldersReply | UploadError>
-  /** The paste rule (Uploads.paste: the upload's source tab, its status, the view's selection). Absent: refused. */
-  paste?(call: UploadPasteCall): Promise<UploadPasteReply> | UploadPasteReply
+  /** The paste rule (Uploads.paste: the upload's source tab, its status, the view's selection). */
+  paste(call: UploadPasteCall): Promise<UploadPasteReply> | UploadPasteReply
 }
 
 /** A `{tab}` source that is no Claude or shell tab of the project (a page tab, a command tab, another project's). */
@@ -2539,7 +2539,6 @@ export function registerUploadHandlers(router: IpcRouter, deps: UploadHandlerDep
     const caller = callerOf('uploads.paste', ctx, view)
     const { uploadId, manual } = fields('uploads.paste', payload)
     if (manual !== undefined && typeof manual !== 'boolean') throw new Error('uploads.paste: manual must be a boolean')
-    if (!deps.paste) throw new Error('uploads.paste: refused')
     return deps.paste({ caller, projectId: ctx.projectId, viewId: view.viewId, guest: !isOwner(view), uploadId, manual: manual === true })
   })
 

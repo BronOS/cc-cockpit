@@ -40,8 +40,6 @@ export const UPLOAD_BEGINS_MAX = 20
 export const UPLOAD_BEGINS_WINDOW_MS = 10 * 60_000
 /** The folder chooser lists at most this many subfolders of one folder (then `more`). */
 export const UPLOAD_FOLDER_LIST_MAX = 500
-/** Keep both and the in-upload dedupe number up to `name (99).ext`: the remote window's own limit. */
-export const UPLOAD_MAX_NAME_NUMBER = MAX_NAME_NUMBER
 
 /** Where a view's chunk PUTs go: `/u/<token>?offset=<n>`. */
 export const UPLOAD_PATH_PREFIX = '/u/'
@@ -79,8 +77,6 @@ export function uploadSourceOf(raw: unknown): UploadSource | undefined {
 export interface UploadFileSpec {
   name: string
   size: number
-  /** A clipboard paste: named by `pastedName` (browsers call every clipboard image `image.png`). */
-  pasted?: boolean
 }
 
 export interface UploadBeginRequest {
@@ -207,11 +203,11 @@ export function checkUploadName(name: unknown): UploadNameCheck {
 /**
  * `numberedName` within the name limit: `null` when ` (n)` would take a name that passed
  * `checkUploadName` at 251-255 bytes past UPLOAD_NAME_MAX_BYTES (the write would fail later with a raw
- * ENAMETOOLONG instead of a refusal with a reason, §2.2), or when n is past UPLOAD_MAX_NAME_NUMBER. The
+ * ENAMETOOLONG instead of a refusal with a reason, §2.2), or when n is past MAX_NAME_NUMBER. The
  * in-upload dedupe and Keep both both number through it.
  */
 export function numberedUploadName(name: string, n: number): string | null {
-  if (n > UPLOAD_MAX_NAME_NUMBER) return null
+  if (n > MAX_NAME_NUMBER) return null
   const candidate = numberedName(name, n)
   return fitsNameLimit(candidate) ? candidate : null
 }
@@ -244,21 +240,21 @@ export function pastedName(type: string, date: Date): string {
  * `Readme.md` and `README.md` as one entry) and NFC (APFS also ignores normalization, so a decomposed
  * `é` from one browser and a composed one from another are one name there too).
  */
-function nameKey(name: string): string {
+export function nameKey(name: string): string {
   return name.normalize('NFC').toLowerCase()
 }
 
 /**
  * The names of one upload with the repeats numbered (` (1)` and up, the Keep both pattern) without
  * asking: the first keeps its name, a later one takes the first number no earlier name of the
- * upload holds. `null` when every number up to UPLOAD_MAX_NAME_NUMBER is taken, or when numbering
+ * upload holds. `null` when every number up to MAX_NAME_NUMBER is taken, or when numbering
  * would take the name past UPLOAD_NAME_MAX_BYTES (a longer number only makes it longer): main refuses
  * that file. Clashes with the folder are not decided here: that is begin's `lstat` and the dialog.
  */
 export function dedupeNames(names: readonly string[]): (string | null)[] {
   const taken = new Set<string>()
   return names.map((name) => {
-    for (let n = 0; n <= UPLOAD_MAX_NAME_NUMBER; n++) {
+    for (let n = 0; n <= MAX_NAME_NUMBER; n++) {
       const candidate = numberedUploadName(name, n)
       if (candidate === null) return null
       const key = nameKey(candidate)
