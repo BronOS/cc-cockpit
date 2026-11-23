@@ -27,7 +27,8 @@ import { DEVICE_KEY_STORAGE } from '../../src/shared/web-protocol'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { addDeviceLink, ccc, expectMainAlive, launchServer, type Server } from './server-fixtures'
 import { sshKeyPair } from '../fakes/ssh-keys'
-import { patternBytes } from './upload-fixtures'
+import { filesTree, treeRow } from './download-fixtures'
+import { patternBytes, resultNotice, uploadHere } from './upload-fixtures'
 
 test.skip(process.platform === 'win32', 'server mode does not run on Windows')
 
@@ -1018,17 +1019,11 @@ test('Direct: an Upload here in the remote window opens the file chooser (not ca
 
     // The Files panel in the remote window: Upload here on a folder row. The click is the activation
     // Chromium needs, and the window's hardening leaves the file chooser alone (only off-screen views cancel it).
-    await remote.locator('.zone-left').getByRole('button', { name: /^Files/ }).click()
-    const tree = remote.frameLocator('section.panel[aria-label="Files"] iframe')
-    const row = tree.locator('.row', { has: tree.locator('.name', { hasText: /^incoming$/ }) })
-    await expect(row).toBeVisible({ timeout: 20_000 })
-    await row.click({ button: 'right' })
-    const item = tree.getByRole('menu').getByRole('menuitem', { name: 'Upload here…', exact: true })
-    await expect(item).toBeVisible()
-    const [chooser] = await Promise.all([remote.waitForEvent('filechooser', { timeout: 15_000 }), item.click()])
-    await chooser.setFiles(join(device, 'from-desktop.bin'))
+    const tree = await filesTree(remote)
+    await expect(treeRow(tree, 'incoming')).toBeVisible({ timeout: 20_000 })
+    await uploadHere(remote, tree, 'incoming', [join(device, 'from-desktop.bin')])
 
-    await expect(remote.getByTestId('upload-result').filter({ hasText: /^Uploaded from-desktop\.bin to incoming/ })).toBeVisible({ timeout: 60_000 })
+    await expect(resultNotice(remote, /^Uploaded from-desktop\.bin to incoming/)).toBeVisible({ timeout: 60_000 })
     const landed = join(server.cockpit.projectDir, 'incoming')
     expect(readFileSync(join(landed, 'from-desktop.bin')).equals(bytes)).toBe(true)
     expect(readdirSync(landed)).toEqual(['from-desktop.bin'])

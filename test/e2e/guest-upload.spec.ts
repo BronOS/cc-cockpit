@@ -13,7 +13,7 @@ import { DEVICE_KEY_HEADER } from '../../src/shared/web-protocol'
 import { filesTree, joinProject, pluginActive, treeRow } from './download-fixtures'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { guestGet, inviteGuest, redeemOk, type Answer, type GuestClient } from './guest-fixtures'
-import { centreOf, chooseAndGo, dropPaths, resultNotice, uploadHere } from './upload-fixtures'
+import { centreOf, chooseAndGo, dropPaths, echoCount, expectOneEcho, resultNotice, statusOf, uploadHere } from './upload-fixtures'
 import { enableWebAccess, openBrowser, type WebBrowser } from './web-fixtures'
 
 /** Files shown to guests (hidden by default, bundled included, design.md §5 "Guests"). */
@@ -35,8 +35,6 @@ async function guestPut(client: GuestClient, path: string): Promise<Answer> {
   return { status: res.status, type: res.headers.get('content-type') ?? '', body: await res.text() }
 }
 
-const statusOf = async (c: Cockpit): Promise<string | undefined> => (await c.hook<Array<{ status: string }>>('sessions', c.projectDir))[0]?.status
-
 test("a read guest: no Upload here item, its drops do nothing, and a guessed /u/ PUT (made-up or the owner's live token) answers as a route that does not exist", async () => {
   test.setTimeout(180_000)
   const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
@@ -55,6 +53,9 @@ test("a read guest: no Upload here item, its drops do nothing, and a guessed /u/
     await c.waitForTerminalText('FAKE-CLAUDE banner')
 
     // The owner's upload, stopped in the browser before it reaches the gateway: a live token of the owner's.
+    // Timing: the client retries a cancelled chunk 3 times, waiting 1 + 5 + 20 s (UPLOAD_RETRY_BACKOFF_MS,
+    // upload-client.ts), so the lift below must come within about 26 s of the first attempt or the upload ends
+    // `lost`; the two invites, two redeems and six requests in between take a few seconds.
     owner = await joinProject(web)
     await owner.app.evaluate(({ session }) => {
       const g = globalThis as unknown as { capturedUploads: string[] }
@@ -153,6 +154,7 @@ test('a write guest: Upload here lands in the folder, and a file dropped on the 
     expect(await resultNotice(page).allInnerTexts()).not.toContainEqual(expect.stringContaining(projectDir))
 
     // A drop on the shared Claude tab: the path pasted is relative to the tab's folder (the project), never absolute.
+    const echoes = await echoCount(guest)
     await dropPaths(page, await centreOf(page.locator('.terminal-view:not([hidden])')), [join(device, 'drop me.txt')])
     await chooseAndGo(page)
     await expect(resultNotice(page, /^Uploaded drop me\.txt to the project folder/)).toBeVisible({ timeout: 30_000 })
@@ -160,8 +162,9 @@ test('a write guest: Upload here lands in the folder, and a file dropped on the 
     await guest.waitForTerminalText('./drop\\ me.txt')
     await page.locator('.terminal-view:not([hidden]) .xterm').click()
     await page.keyboard.press('Enter')
-    await guest.waitForTerminalText('FAKE-CLAUDE echo: ./drop\\ me.txt ')
-    expect(await guest.terminalText()).not.toContain(projectDir)
+    // One echo, the relative path once (the paste carried no Enter, nothing doubled).
+    await expectOneEcho(guest, echoes, './drop\\ me.txt')
+    expect((await guest.terminalText()).replaceAll('\n', '')).not.toContain(projectDir)
   } finally {
     await guest?.close()
     await close()

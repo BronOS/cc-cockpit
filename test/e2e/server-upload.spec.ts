@@ -23,15 +23,17 @@ test('server mode: an Upload here from a browser writes the exact bytes and leav
   server = await launchServer({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
   const { cockpit } = server
   const { projectDir } = cockpit
-  const device = mkdtempSync(join(tmpdir(), 'ccc-e2e-device-'))
   const bytes = patternBytes(3 * 1024 * 1024 + 17, 5)
   mkdirSync(join(projectDir, 'inbox'))
-  writeFileSync(join(device, 'phone.bin'), bytes)
-  writeFileSync(join(device, 'note.txt'), 'from the device\n')
-  await pluginActive(cockpit, 'cockpit.files')
-
-  const browser = await openBrowser(`${server.origin}/`)
+  // Made inside the try with everything that can fail (the plugin poll, the browser launch): the temp dir never leaks.
+  let device: string | undefined
+  let browser: Awaited<ReturnType<typeof openBrowser>> | undefined
   try {
+    device = mkdtempSync(join(tmpdir(), 'ccc-e2e-device-'))
+    writeFileSync(join(device, 'phone.bin'), bytes)
+    writeFileSync(join(device, 'note.txt'), 'from the device\n')
+    await pluginActive(cockpit, 'cockpit.files')
+    browser = await openBrowser(`${server.origin}/`)
     await openProjectInBrowser(browser, server.origin, server.projectId)
     const tree = await filesTree(browser.page)
     await expect(treeRow(tree, 'inbox')).toBeVisible()
@@ -42,7 +44,7 @@ test('server mode: an Upload here from a browser writes the exact bytes and leav
     expect(readdirSync(join(projectDir, 'inbox')).sort()).toEqual(['note.txt', 'phone.bin'])
     await expectMainAlive(server)
   } finally {
-    await browser.close()
-    rmSync(device, { recursive: true, force: true })
+    await browser?.close()
+    if (device !== undefined) rmSync(device, { recursive: true, force: true })
   }
 })

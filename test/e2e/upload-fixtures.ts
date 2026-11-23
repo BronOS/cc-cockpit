@@ -5,6 +5,8 @@
 import { expect, type Locator, type Page, type FrameLocator } from '@playwright/test'
 import { readdirSync } from 'node:fs'
 import { treeRow } from './download-fixtures'
+import type { Cockpit } from './fixtures'
+import type { WebBrowser } from './web-fixtures'
 
 /** The uploader's own temps (`.cc-upload-<16 hex>`, main/files/upload-writer.ts): none may outlive an upload. */
 export const UPLOAD_TEMP = /^\.cc-upload-/
@@ -68,3 +70,30 @@ export async function chooseAndGo(page: Page): Promise<void> {
   await go.click()
   await expect(dialog).toHaveCount(0)
 }
+
+const ECHO = 'FAKE-CLAUDE echo:'
+
+/** The terminal's rows glued (a long line can be soft-wrapped at this view's width, as `waitForTerminalText` reads it too). */
+const gluedText = async (b: Pick<WebBrowser, 'terminalText'>): Promise<string> => (await b.terminalText()).replaceAll('\n', '')
+
+/** How many lines the fake `claude` has echoed so far (each submitted line prints one `FAKE-CLAUDE echo:`). */
+export async function echoCount(b: Pick<WebBrowser, 'terminalText'>): Promise<number> {
+  return (await gluedText(b)).split(ECHO).length - 1
+}
+
+/**
+ * After the person's Enter: exactly one echo more than `before` (so the paste carried no Enter of its own and
+ * nothing was delivered twice) and the last one holds `line` and nothing else (the path once, no extra text).
+ * Take `before` ahead of the step, read the result after the Enter.
+ */
+export async function expectOneEcho(b: Pick<WebBrowser, 'terminalText'>, before: number, line: string): Promise<void> {
+  await expect.poll(() => echoCount(b), { timeout: 10_000, message: `no new ${ECHO} line` }).toBeGreaterThanOrEqual(before + 1)
+  // A second, late echo would be a second delivery: give it a moment to show up.
+  await new Promise((r) => setTimeout(r, 750))
+  expect(await echoCount(b)).toBe(before + 1)
+  const text = await gluedText(b)
+  expect(text.slice(text.lastIndexOf(ECHO) + ECHO.length).trim()).toBe(line)
+}
+
+/** The status of the project's first Claude session (`waiting`, `working`, ...), from main's registry. */
+export const statusOf = async (c: Cockpit): Promise<string | undefined> => (await c.hook<Array<{ status: string }>>('sessions', c.projectDir))[0]?.status

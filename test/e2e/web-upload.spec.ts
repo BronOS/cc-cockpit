@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { filesTree, joinProject, pluginActive, treeRow } from './download-fixtures'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
-import { centreOf, chooseAndGo, dropPaths, entriesOf, escapePath, patternBytes, resultNotice, UPLOAD_TEMP, uploadHere } from './upload-fixtures'
+import { centreOf, chooseAndGo, dropPaths, echoCount, entriesOf, escapePath, expectOneEcho, patternBytes, resultNotice, statusOf, UPLOAD_TEMP, uploadHere } from './upload-fixtures'
 import { enableWebAccess, type WebBrowser } from './web-fixtures'
 
 const BIG = patternBytes(20 * 1024 * 1024, 3)
@@ -117,9 +117,6 @@ test('Files in a browser view: Upload here writes the exact bytes, a clash asks 
   }
 })
 
-/** The sessions the app knows in this project, by tab id and status. */
-const statusOf = async (c: Cockpit): Promise<string | undefined> => (await c.hook<Array<{ status: string }>>('sessions', c.projectDir))[0]?.status
-
 /** Opens a Claude tab in the browser view and waits until it is at the prompt. */
 async function claudeTab(c: Cockpit, browser: WebBrowser): Promise<void> {
   await browser.page.getByRole('button', { name: 'New tab' }).click()
@@ -166,7 +163,11 @@ test('a Files drop on a Claude tab: the folder chooser, the upload, the escaped 
       .toBeGreaterThan(0)
     await page.waitForTimeout(500)
     const seen = await page.evaluate(() => (window as unknown as { __seen: Seen }).__seen)
-    expect(seen.filter((e) => e.type === 'dragover').every((e) => e.prevented && e.effect === 'none')).toBe(true)
+    // At least one dragover was recorded (`every` on an empty list is true) and the listener record is the
+    // evidence: Electron never navigates on a drop (`navigateOnDragDrop` is off), so the URL check below cannot fail.
+    const overs = seen.filter((e) => e.type === 'dragover')
+    expect(overs.length).toBeGreaterThan(0)
+    expect(overs.every((e) => e.prevented && e.effect === 'none')).toBe(true)
     // A drop that is delivered anyway is cancelled too: nothing may reach the browser's default.
     expect(seen.filter((e) => e.type === 'drop').every((e) => e.prevented)).toBe(true)
     expect(page.url()).toBe(url)
@@ -178,16 +179,18 @@ test('a Files drop on a Claude tab: the folder chooser, the upload, the escaped 
 
     // The drop on the tab, at the prompt: chooser (project folder preset), upload, path typed.
     const named = 'my shot (1).png'
+    const echoes0 = await echoCount(browser)
     writeFileSync(join(device, named), patternBytes(300_000, 9))
     await dropPaths(page, await centreOf(pane), [join(device, named)])
     await chooseAndGo(page)
     await expect(resultNotice(page, `Uploaded ${named} to the project folder`)).toBeVisible({ timeout: 30_000 })
     expect(readFileSync(join(projectDir, named)).equals(patternBytes(300_000, 9))).toBe(true)
     const typed = `${escapePath(join(projectDir, named))} `
-    // Typed into the line and not submitted: Enter (the person's) makes the fake echo the line.
+    // Typed into the line and not submitted: the person's Enter makes the fake echo the line, exactly once and
+    // exactly the path (a paste that carried its own Enter would have echoed it already, and this Enter an empty line).
     await browser.waitForTerminalText(typed.trimEnd())
     await page.keyboard.press('Enter')
-    await browser.waitForTerminalText(`FAKE-CLAUDE echo: ${typed}`)
+    await expectOneEcho(browser, echoes0, typed.trimEnd())
     // The notice is clean and hides itself: the paste was not held.
     await expect(page.getByTestId('upload-paste')).toHaveCount(0)
 
@@ -197,13 +200,15 @@ test('a Files drop on a Claude tab: the folder chooser, the upload, the escaped 
     await page.keyboard.press('Enter')
     await expect.poll(() => statusOf(c), { timeout: 15_000 }).toBe('working')
     writeFileSync(join(device, 'held.txt'), 'held\n')
+    const echoes1 = await echoCount(browser)
     await dropPaths(page, await centreOf(pane), [join(device, 'held.txt')])
     await chooseAndGo(page)
     const held = resultNotice(page, 'held.txt')
     await expect(held).toBeVisible({ timeout: 30_000 })
     await expect(held.getByTestId('upload-paste')).toBeVisible()
     expect(readFileSync(join(projectDir, 'held.txt'), 'utf8')).toBe('held\n')
-    expect(await browser.terminalText()).not.toContain('held.txt')
+    // Not typed, rows glued too (the long project path can be soft-wrapped).
+    expect((await browser.terminalText()).replaceAll('\n', '')).not.toContain('held.txt')
     await page.locator('.terminal-view:not([hidden]) .xterm').click()
     await page.keyboard.type('/stop')
     await page.keyboard.press('Enter')
@@ -213,7 +218,8 @@ test('a Files drop on a Claude tab: the folder chooser, the upload, the escaped 
     // The button keeps the focus (an Enter there would press it again): back to the terminal for the Enter.
     await page.locator('.terminal-view:not([hidden]) .xterm').click()
     await page.keyboard.press('Enter')
-    await browser.waitForTerminalText(`FAKE-CLAUDE echo: ${escapePath(join(projectDir, 'held.txt'))} `)
+    // Paste path typed it once: one echo, the path once.
+    await expectOneEcho(browser, echoes1, escapePath(join(projectDir, 'held.txt')))
 
     // A paste whose clipboard holds a file and text stays a text paste: no chooser, the text arrives.
     const paste = (withText: boolean) =>
@@ -229,14 +235,19 @@ test('a Files drop on a Claude tab: the folder chooser, the upload, the escaped 
     await browser.waitForTerminalText('plain words')
     await expect(page.getByTestId('upload-dialog')).toHaveCount(0)
     await page.keyboard.press('Enter')
+    await browser.waitForTerminalText('FAKE-CLAUDE echo: plain words')
 
     // A paste of a file alone is an upload named pasted-<date>-<time>.png; the path types in.
+    const echoes2 = await echoCount(browser)
     await paste(false)
     await chooseAndGo(page)
     await expect.poll(() => readdirSync(projectDir).find((n) => /^pasted-\d{8}-\d{6}\.png$/.test(n)), { timeout: 30_000 }).toBeDefined()
     const pasted = readdirSync(projectDir).find((n) => /^pasted-\d{8}-\d{6}\.png$/.test(n))!
     expect([...readFileSync(join(projectDir, pasted))]).toEqual([137, 80, 78, 71, 1, 2, 3])
-    await browser.waitForTerminalText(join(projectDir, pasted))
+    await browser.waitForTerminalText(escapePath(join(projectDir, pasted)))
+    await page.locator('.terminal-view:not([hidden]) .xterm').click()
+    await page.keyboard.press('Enter')
+    await expectOneEcho(browser, echoes2, escapePath(join(projectDir, pasted)))
     expect(readdirSync(projectDir)).not.toContain('stray.txt')
   } finally {
     await browser?.close()
