@@ -388,7 +388,7 @@ export class Uploads {
     if (record.tokens.size === 0) this.finish(record)
   }
 
-  /** The upload's state and outcomes, when it is the caller's (tests; the paste reads the record itself). */
+  /** Test hook: the upload's state and outcomes, when it is the caller's. No production caller (the paste reads the record itself). */
   outcome(caller: UploadCaller, uploadId: unknown): { state: UploadRecord['state']; source: UploadSource; results: ReadonlyMap<number, UploadFileOutcome> } | undefined {
     const record = this.owned(caller, uploadId)
     return record && { state: record.state, source: record.source, results: record.results }

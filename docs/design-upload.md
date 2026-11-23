@@ -136,7 +136,7 @@ extension kept), **Cancel** (nothing written). One answer covers the whole uploa
 On the view's own socket. Each is `adapted`: served only to a remote view (`view.remote`) that is the owner or a write
 guest, decided by main from the connection it bound, never the payload.
 
-- **`uploads.begin {source, folder, files: [{name, size, pasted?}]}`.** `source` is `{panel: key}` (a panel in that
+- **`uploads.begin {source, folder, files: [{name, size}]}`.** `source` is `{panel: key}` (a panel in that
   project's layout now: main resolves it through `LayoutService`'s zones, any panel kind, the plugin through
   `pluginOfPanelKey`; `webviewPanel` alone knows webview panels only and Files is an html panel; for a guest the plugin
   must be visible to it) or `{tab: id}` (a Claude or shell tab of the view's window, in a guest's scope). Answers
@@ -508,9 +508,9 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
   synchronous step; the reservation counts every running upload's unsettled sizes, on any device of the disk.
 - `.git` is refused by name in `begin` (platform-aware, `insideGit`), not in the shared `checkUploadName`, which has no
   platform. `folders()` lists real directories only (links left out), sorted by code unit.
-- Finished uploads are kept per device (20) for the paste. `RateWindow` moved to `main/rate-window.ts`, re-exported from
-  `host-api.ts`, so `uploads.ts` does not pull in HostApi's imports. The API for the rest of main: `begin`, `resolve`,
-  `cancel`, `grant(token)`, `touch`, `settle`, `outcome`, `dropWindow`.
+- Finished uploads are kept per device (20) for the paste. `RateWindow` moved to `main/rate-window.ts` (its importers take
+  it from there), so `uploads.ts` does not pull in HostApi's imports. The API for the rest of main: `begin`, `resolve`,
+  `cancel`, `grant(token)`, `touch`, `settle`, `outcome` (a test hook: the paste reads the record itself), `dropWindow`.
 - Main's cancel finishes (not removes) a running upload with at least one settled file; one with none settled is removed.
 
 **Writer (`main/files/upload-writer.ts`).**
