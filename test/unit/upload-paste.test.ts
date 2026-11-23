@@ -5,7 +5,7 @@
 // times in any status but `needs-permission` and `ended`. The owner gets absolute paths, a guest paths
 // relative to the tab's starting folder (D-33). Real trees in a temp dir; the writer is a recorder and each
 // file is settled by hand, as the writer would after its commit.
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -108,6 +108,19 @@ describe('Uploads.paste: the text (design §4.3)', () => {
     const reply = again.paste(A, held, false, root)
     expect(reply).toEqual({ held: UPLOAD_PASTE_NOT_WAITING_TEXT, text: './sub/z.png ' })
     expect(JSON.stringify(reply)).not.toContain(tmp)
+  })
+
+  it("builds paths from the folder's real path when it is reached through a link inside the project", async () => {
+    mkdirSync(join(proj, 'shared', 'assets'), { recursive: true })
+    symlinkSync(join(proj, 'shared', 'assets'), join(proj, 'assets'))
+    const uploads = make()
+    const id = await finished(uploads, ['x.png'], { folder: 'assets' })
+    expect(uploads.paste(A, id, true, facts())).toEqual({ text: `${join(proj, 'shared', 'assets', 'x.png').replaceAll(' ', '\\ ')} ` })
+    // The guest's tab began in the project folder, then in a subfolder: both relative to real paths.
+    expect(uploads.paste(A, id, true, facts({ guest: true }))).toEqual({ text: './shared/assets/x.png ' })
+    expect(uploads.paste(A, id, true, facts({ guest: true, tab: { cwd: join(proj, 'sub') } }))).toEqual({
+      text: '../shared/assets/x.png '
+    })
   })
 
   it("a guest's paste for a tab that is gone says nothing of the paths", async () => {

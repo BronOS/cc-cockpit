@@ -257,7 +257,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     () =>
       registerTerminalPane({
         keysOff: () => stateRef.current.keysOff,
-        paste: (tabId, text) => sessions.paste(tabId, text)
+        // Main's "selected in the calling view" answer is one round trip old at the paste: the person may
+        // have picked another tab or pane meanwhile, and the paths must not go into a terminal not shown.
+        paste: (tabId, text) => {
+          const s = stateRef.current
+          return s.activeId === tabId && !s.keysOff && sessions.paste(tabId, text)
+        }
       }),
     [sessions]
   )
