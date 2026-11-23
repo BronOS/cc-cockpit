@@ -61,8 +61,9 @@ export async function unlinkInDir(
  * name whatever is there now, another process's file included. The folder's real path is read before the
  * `lstat` and the unlink goes through `unlinkInDir` against it, so an ancestor swapped for a link after
  * the identity check is refused too; one swapped before it is caught by the identity (the name then
- * leads to another entry), and our own file found through a folder moved earlier still goes. This moves
- * the gap (from `lstat`..`unlink` to the re-check's `realpath`..`unlink`) rather than shrinking it: the
+ * leads to another entry), and our own file found through a folder moved earlier still goes. For an
+ * ancestor swap the gap moved (from `lstat`..`unlink` to the re-check's `realpath`..`unlink`); a file
+ * replaced at the name keeps `lstat`..`unlink` (the re-check does not look at the file). The
  * identity-less deletes (`unlinkInDir` alone) are the ones that gained a check. Never throws.
  *
  * Not atomic, and accepted (design-upload.md §13 "Name-based deletes", which states the threat model):

@@ -357,7 +357,7 @@ the pasted path, clipboard cases (Excel, Word, Copy image), a 1 GiB upload over 
   Deletes are checked against the written file's identity (`removeIfOwn`, its `fstat`) and unlink through `unlinkInDir`,
   which re-reads the folder's real path (against one read before the check, never the lexical `dirname`) just before the `unlink`
   and refuses a moved one; Node has no `unlinkat`, so a rename over the name or an ancestor swapped for a link between
-  that re-check and the `unlink` still wins (for `removeIfOwn` the gap moved, it did not shrink). Accepted (design-upload.md §13 "Name-based deletes", its threat model): it covers the
+  that re-check and the `unlink` still wins (for `removeIfOwn` an ancestor swap's gap moved to `realpath`..`unlink`; a file replaced at the name keeps `lstat`..`unlink`). Accepted (design-upload.md §13 "Name-based deletes", its threat model): it covers the
   owner's own OS user only; another OS user who can write the project folder or an ancestor is not covered, by these
   deletes or by any name-based write in the app; an aside rename does not close it. A committed temp is never truncated (a hard link's temp is the placed file); only an abort's `discard` truncates.
 - `ccPanel.upload` (`src/sdk/panel*.ts`) posts `cc-plugin.upload` to the parent only, and the shell accepts it from a mounted

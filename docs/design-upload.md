@@ -570,9 +570,9 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
     link between the identity check and that re-check is refused (`name-deletes.test.ts`); one swapped before the
     check fails the identity, except that our own temp reached through a folder moved before it still goes (the
     identity proves it ours). A swap between the re-check's `realpath` and the `unlink` (two awaited calls) is still
-    followed, as is an entry renamed over the name there. For `removeIfOwn` this moves the gap (it was `lstat` to
-    `unlink`, it is now `realpath` to `unlink`) and does not make it smaller, so the external review's scenario is no
-    harder to win there; what gained a check are the identity-less deletes: `discard` with no `fstat` (it had none) and
+    followed, as is an entry renamed over the name there. For `removeIfOwn` an ancestor swap's gap moved (it was `lstat` to
+    `unlink`, it is now `realpath` to `unlink`); a file replaced at the name keeps the `lstat` to `unlink` window (the
+    re-check proves the folder, not the file), so neither scenario is harder to win there; what gained a check are the identity-less deletes: `discard` with no `fstat` (it had none) and
     the sweep (its `realpath` came before its `lstat`).
   - *Who can win what is left:* for a temp, only a process aiming at a random hidden name made `O_EXCL` by this run;
     for a final name, only one that renames something over a name this call made a moment before with an exclusive
