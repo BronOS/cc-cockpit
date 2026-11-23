@@ -4,14 +4,15 @@
 // sweep at start. Real `Uploads` and real trees in a temp dir; the fs seam makes a write fail with
 // ENOSPC and a link with EXDEV.
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from 'node:fs'
-import { open as realOpen, type FileHandle } from 'node:fs/promises'
+import { link as realLink, open as realOpen, type FileHandle } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UPLOAD_CHUNK_MAX_BYTES, UPLOAD_TEMP_PREFIX, type UploadBegun } from '../../src/shared/uploads'
 import { Uploads, type UploadCaller } from '../../src/main/files/uploads'
 import { UPLOAD_DISK_FULL_TEXT, UPLOAD_TOKEN_UNKNOWN_TEXT, UploadWriter, type UploadChunkResult, type UploadWriterFs } from '../../src/main/files/upload-writer'
+import { copyExclusive } from '../../src/main/files/copy-exclusive'
 
 let tmp: string
 let proj: string
@@ -46,7 +47,7 @@ interface Rig {
   logs: string[]
 }
 
-function rig(fs?: Partial<UploadWriterFs>): Rig {
+function rig(fs?: Partial<UploadWriterFs>, opts: { now?: () => number; random?: (size: number) => Buffer } = {}): Rig {
   const logs: string[] = []
   // The cycle the wiring has too: Uploads takes the writer, the writer reads Uploads through a getter.
   const ref: { uploads?: Uploads } = {}
@@ -55,6 +56,7 @@ function rig(fs?: Partial<UploadWriterFs>): Rig {
     projectRoot: () => proj,
     tempsFile,
     fs,
+    random: opts.random,
     log: (line) => logs.push(line),
   })
   const uploads = new Uploads({
@@ -63,6 +65,7 @@ function rig(fs?: Partial<UploadWriterFs>): Rig {
     writer,
     statfs: async () => ({ bavail: 100 * 1024 ** 3, bsize: 1 }),
     platform: 'linux',
+    now: opts.now,
     log: (line) => logs.push(line),
   })
   ref.uploads = uploads
@@ -112,9 +115,25 @@ function tempsIn(dir: string): string[] {
   return readdirSync(dir).filter((n) => n.startsWith(UPLOAD_TEMP_PREFIX))
 }
 
+/** The record's temp paths (each entry also names its project folder). */
 function recorded(): string[] {
   if (!existsSync(tempsFile)) return []
-  return (JSON.parse(readFileSync(tempsFile, 'utf8')) as { temps: string[] }).temps
+  return (JSON.parse(readFileSync(tempsFile, 'utf8')) as { temps: Array<{ path: string }> }).temps.map((e) => e.path)
+}
+
+function writeRecord(temps: unknown[]): void {
+  mkdirSync(join(tmp, 'data', 'uploads'), { recursive: true })
+  writeFileSync(tempsFile, JSON.stringify({ schemaVersion: 1, temps }))
+}
+
+const exdev = async (_from: string, to: string): Promise<void> => {
+  throw Object.assign(new Error(`EXDEV: cross-device link not permitted, link '${to}'`), { code: 'EXDEV' })
+}
+
+/** The temp's path swapped for a link to `target` (the written file moved to `moved`): a local racer. */
+function swapTempForLink(temp: string, target: string): void {
+  renameSync(temp, join(proj, 'moved'))
+  symlinkSync(target, temp)
 }
 
 /** Past the record's debounced save (JsonFile, 300 ms). */
@@ -125,23 +144,26 @@ async function until(check: () => boolean): Promise<void> {
   if (!check()) throw new Error('timed out')
 }
 
-/** fs.open whose handles fail every write with ENOSPC (its message names the path, as Node's does). */
-const fullDisk: Partial<UploadWriterFs> = {
-  open: async (path, flags, mode) => {
-    const handle = await realOpen(path, flags, mode)
-    return new Proxy(handle, {
-      get(target, key) {
-        if (key === 'write') {
-          return async () => {
-            throw Object.assign(new Error(`ENOSPC: no space left on device, write '${path}'`), { code: 'ENOSPC' })
+/** fs.open whose handles fail every write with `code` (its message names the path, as Node's does). */
+function failingWrites(code: string): Partial<UploadWriterFs> {
+  return {
+    open: async (path, flags, mode) => {
+      const handle = await realOpen(path, flags, mode)
+      return new Proxy(handle, {
+        get(target, key) {
+          if (key === 'write') {
+            return async () => {
+              throw Object.assign(new Error(`${code}: the write failed, write '${path}'`), { code })
+            }
           }
-        }
-        const value = Reflect.get(target, key) as unknown
-        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value
-      },
-    }) as FileHandle
-  },
+          const value = Reflect.get(target, key) as unknown
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value
+        },
+      }) as FileHandle
+    },
+  }
 }
+const fullDisk = failingWrites('ENOSPC')
 
 describe('chunks and offsets', () => {
   it('writes a file in chunks at their offsets and commits it on the last byte', async () => {
@@ -248,7 +270,8 @@ describe('chunks and offsets', () => {
       touch(id)
     }
     await put(r, token, 0, body('ab', 'cd', 'ef'), 6)
-    expect(touched).toEqual([uploadId, uploadId, uploadId])
+    // One per piece, and one as the commit starts (its copy, where there is one, touches per chunk).
+    expect(touched).toEqual([uploadId, uploadId, uploadId, uploadId])
   })
 })
 
@@ -263,6 +286,69 @@ describe('failures', () => {
     expect(await put(r, token, 0, 'abcd')).toMatchObject({ status: 404 })
     await settleRecord()
     expect(recorded()).toEqual([])
+  })
+
+  it('ENOSPC at the temp’s create is 507, another write error 500, both failing the file', async () => {
+    const full = rig({
+      open: async (path) => {
+        throw Object.assign(new Error(`ENOSPC: no space left on device, open '${path}'`), { code: 'ENOSPC' })
+      },
+    })
+    const a = await tokenFor(full, '', 'a.txt', 4)
+    expect(await put(full, a.token, 0, 'abcd')).toEqual({ status: 507, error: UPLOAD_DISK_FULL_TEXT, failed: true })
+    const eio = rig(failingWrites('EIO'))
+    const b = await tokenFor(eio, '', 'b.txt', 4)
+    expect(await put(eio, b.token, 0, 'abcd')).toEqual({ status: 500, error: 'the file could not be written', failed: true })
+    expect(eio.uploads.outcome(A, b.uploadId)?.results.get(0)).toEqual({ ok: false, reason: 'the file could not be written' })
+    expect(readdirSync(proj)).toEqual([])
+  })
+
+  it('a name planted at the temp’s name is never written through nor deleted', async () => {
+    const fixed = (): Buffer => Buffer.from('0123456789abcdef', 'hex')
+    const name = `${UPLOAD_TEMP_PREFIX}0123456789abcdef`
+    writeFileSync(join(outside, 'x'), 'x')
+    symlinkSync(join(outside, 'x'), join(proj, name))
+    const r = rig(undefined, { random: fixed })
+    const linked = await tokenFor(r, '', 'a.txt', 4)
+    expect(await put(r, linked.token, 0, 'abcd')).toMatchObject({ status: 500, failed: true })
+    expect(readFileSync(join(outside, 'x'), 'utf8')).toBe('x')
+    expect(lstatSync(join(proj, name)).isSymbolicLink()).toBe(true)
+    rmSync(join(proj, name))
+    writeFileSync(join(proj, name), 'theirs')
+    const plain = await tokenFor(r, '', 'b.txt', 4)
+    expect(await put(r, plain.token, 0, 'abcd')).toMatchObject({ status: 500, failed: true })
+    expect(readFileSync(join(proj, name), 'utf8')).toBe('theirs')
+    expect(readdirSync(proj)).toEqual([name])
+  })
+
+  it('a temp replaced by another file under its name before the last chunk is not committed', async () => {
+    const r = rig()
+    const { token } = await tokenFor(r, '', 'a.txt', 8)
+    expect(await put(r, token, 0, 'abcd')).toMatchObject({ status: 200 })
+    const [temp] = tempsIn(proj)
+    rmSync(join(proj, temp!))
+    writeFileSync(join(proj, temp!), 'other')
+    expect(await put(r, token, 4, 'efgh')).toMatchObject({ status: 500, error: 'the file changed on the server while it was written', failed: true })
+    expect(existsSync(join(proj, 'a.txt'))).toBe(false)
+    // Not ours: left where it is. Refused by the commit's own check, before any placement was tried.
+    expect(readFileSync(join(proj, temp!), 'utf8')).toBe('other')
+    expect(r.logs.some((l) => l.includes('not the file written'))).toBe(false)
+  })
+
+  it('a folder swapped for a link while the temp is created gets no bytes, and the empty file goes', async () => {
+    mkdirSync(join(proj, 'sub'))
+    const r = rig({
+      open: async (path, flags, mode) => {
+        renameSync(join(proj, 'sub'), join(proj, 'sub2'))
+        symlinkSync(outside, join(proj, 'sub'))
+        return realOpen(path, flags, mode)
+      },
+    })
+    // Not the last chunk: refused before its bytes, not only at the commit.
+    const { token } = await tokenFor(r, 'sub', 'a.txt', 8)
+    expect(await put(r, token, 0, 'abcd')).toMatchObject({ status: 500, error: 'the folder changed since the upload began', failed: true })
+    expect(readdirSync(outside)).toEqual([])
+    expect(readdirSync(join(proj, 'sub2'))).toEqual([])
   })
 
   it('a folder swapped for a link before the first chunk receives nothing', async () => {
@@ -318,9 +404,9 @@ describe('commit', () => {
   it('copies where hard links are refused (EXDEV), exclusively, and the temp goes', async () => {
     const tried: string[] = []
     const r = rig({
-      link: async (_from, to) => {
+      link: async (from, to) => {
         tried.push(to)
-        throw Object.assign(new Error(`EXDEV: cross-device link not permitted, link '${to}'`), { code: 'EXDEV' })
+        await exdev(from, to)
       },
     })
     const { token } = await tokenFor(r, '', 'a.txt', 3)
@@ -330,6 +416,93 @@ describe('commit', () => {
     expect(readFileSync(join(proj, 'a.txt'), 'utf8')).toBe('theirs')
     expect(readFileSync(join(proj, 'a (1).txt'), 'utf8')).toBe('new')
     expect(tempsIn(proj)).toEqual([])
+  })
+
+  it('ENOSPC in the copy fallback is 507 and places nothing', async () => {
+    const r = rig({
+      link: exdev,
+      copy: async (_temp, final) => {
+        throw Object.assign(new Error(`ENOSPC: no space left on device, write '${final}'`), { code: 'ENOSPC' })
+      },
+    })
+    const { token } = await tokenFor(r, '', 'a.txt', 3)
+    expect(await put(r, token, 0, 'new')).toEqual({ status: 507, error: UPLOAD_DISK_FULL_TEXT, failed: true })
+    expect(readdirSync(proj)).toEqual([])
+  })
+
+  it('a slow copy at the commit restarts the idle clock: the upload is not ended mid-copy', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      let clock = 1_000_000
+      const r = rig(
+        {
+          link: exdev,
+          // 160 s of copying after the last body byte, past the 60 s idle limit: only the chunks' touches
+          // keep the upload alive (the timer fires inside, at 60 s and again after).
+          copy: async (temp, final, mode, opts) => {
+            for (let i = 0; i < 4; i++) {
+              clock += 40_000
+              opts.onChunk?.()
+              await vi.advanceTimersByTimeAsync(40_000)
+            }
+            return copyExclusive(temp, final, mode, opts)
+          },
+        },
+        { now: () => clock }
+      )
+      const { token } = await tokenFor(r, '', 'a.txt', 3)
+      expect(await put(r, token, 0, 'new')).toMatchObject({ status: 200, reply: { done: true, name: 'a.txt' } })
+      expect(readFileSync(join(proj, 'a.txt'), 'utf8')).toBe('new')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a temp swapped for a link before the link is placed nowhere: the name made is removed', async () => {
+    writeFileSync(join(outside, 'secret.txt'), 'secret')
+    const r = rig({
+      link: async (from, to) => {
+        swapTempForLink(from, join(outside, 'secret.txt'))
+        // macOS's link follows the link in its source (a hard link to secret.txt), Linux's links the link.
+        await realLink(from, to)
+      },
+    })
+    const { token } = await tokenFor(r, '', 'a.txt', 3)
+    expect(await put(r, token, 0, 'new')).toMatchObject({ status: 500, error: 'the file changed on the server while it was written', failed: true })
+    expect(existsSync(join(proj, 'a.txt'))).toBe(false)
+    expect(lstatSync(join(outside, 'secret.txt')).nlink).toBe(1)
+    expect(readFileSync(join(outside, 'secret.txt'), 'utf8')).toBe('secret')
+  })
+
+  it('a temp swapped for a link before the copy is never read through it', async () => {
+    writeFileSync(join(outside, 'secret.txt'), 'secret')
+    const r = rig({
+      link: async (from, to) => {
+        swapTempForLink(from, join(outside, 'secret.txt'))
+        await exdev(from, to)
+      },
+    })
+    const { token } = await tokenFor(r, '', 'a.txt', 3)
+    expect(await put(r, token, 0, 'new')).toMatchObject({ status: 500, failed: true })
+    expect(existsSync(join(proj, 'a.txt'))).toBe(false)
+    expect(readFileSync(join(outside, 'secret.txt'), 'utf8')).toBe('secret')
+  })
+
+  it('a Replace whose temp was swapped for a link before the rename fails the file', async () => {
+    writeFileSync(join(proj, 'a.txt'), 'old')
+    writeFileSync(join(outside, 'secret.txt'), 'secret')
+    const r = rig({
+      rename: async (from, to) => {
+        swapTempForLink(from, join(outside, 'secret.txt'))
+        renameSync(from, to)
+      },
+    })
+    const b = await begin(r, '', [{ name: 'a.txt', size: 3 }])
+    const resolved = await r.uploads.resolve(A, b.uploadId, 'replace')
+    if ('error' in resolved) throw new Error(resolved.error)
+    expect(await put(r, resolved.tokens[0]!.token, 0, 'new')).toMatchObject({ status: 500, failed: true })
+    expect(r.logs.some((l) => l.includes('not the file written'))).toBe(true)
+    expect(readFileSync(join(outside, 'secret.txt'), 'utf8')).toBe('secret')
   })
 
   it('refuses with a reason when no numbered name is free', async () => {
@@ -347,7 +520,10 @@ describe('commit', () => {
   it('Replace keeps the replaced file’s mode minus setuid, setgid and sticky', async () => {
     const r = rig()
     writeFileSync(join(proj, 'run.sh'), 'old')
-    chmodSync(join(proj, 'run.sh'), 0o4755)
+    chmodSync(join(proj, 'run.sh'), 0o7755)
+    // Some special bits stick for a user (macOS drops setgid for a group not the user's): at least
+    // setuid and sticky, so a mask that kept either fails below.
+    expect(statSync(join(proj, 'run.sh')).mode & 0o5000).toBe(0o5000)
     const b = await begin(r, '', [{ name: 'run.sh', size: 3 }])
     expect(b.clashes).toEqual([{ index: 0, name: 'run.sh', replaceable: true }])
     const resolved = await r.uploads.resolve(A, b.uploadId, 'replace')
@@ -426,6 +602,21 @@ describe('aborts', () => {
     expect(readdirSync(proj)).toEqual([])
   })
 
+  it('a cancel while the link runs removes the name it placed and answers 404', async () => {
+    const ids: { uploadId?: string } = {}
+    const r: Rig = rig({
+      link: async (from, to) => {
+        void r.uploads.cancel(A, ids.uploadId)
+        await realLink(from, to)
+      },
+    })
+    const { token, uploadId } = await tokenFor(r, '', 'a.txt', 3)
+    ids.uploadId = uploadId
+    expect(await put(r, token, 0, 'new')).toMatchObject({ status: 404 })
+    await until(() => readdirSync(proj).length === 0)
+    expect(r.uploads.outcome(A, uploadId)).toBeUndefined()
+  })
+
   it('a drop deletes the temps of every file of the upload, the ones between chunks too', async () => {
     const r = rig()
     const b = await begin(r, '', [
@@ -455,29 +646,59 @@ describe('the temps record and the sweep', () => {
     expect(recorded()).toEqual([])
   })
 
-  it('deletes only a regular file named as a temp, whatever a hand-edited record lists', async () => {
+  it('deletes only a regular file named as a temp inside its project, whatever a hand-edited record lists', async () => {
     writeFileSync(join(proj, 'keep.txt'), 'keep')
     mkdirSync(join(proj, '.cc-upload-0123456789abcdef'))
     writeFileSync(join(outside, 'x'), 'x')
     symlinkSync(join(outside, 'x'), join(proj, '.cc-upload-fedcba9876543210'))
-    mkdirSync(join(tmp, 'data', 'uploads'), { recursive: true })
-    writeFileSync(
-      tempsFile,
-      JSON.stringify({
-        schemaVersion: 1,
-        temps: [join(proj, 'keep.txt'), join(proj, '.cc-upload-0123456789abcdef'), join(proj, '.cc-upload-fedcba9876543210'), 'relative/.cc-upload-0000000000000000', 42],
-      })
-    )
+    // Regular temp-named files outside the project: by its path, and through a link in the project.
+    const away = '.cc-upload-1111111111111111'
+    writeFileSync(join(outside, away), 'outside')
+    symlinkSync(outside, join(proj, 'out-link'))
+    const entry = (path: string): { path: string; root: string } => ({ path, root: proj })
+    writeRecord([
+      entry(join(proj, 'keep.txt')),
+      entry(join(proj, '.cc-upload-0123456789abcdef')),
+      entry(join(proj, '.cc-upload-fedcba9876543210')),
+      entry(join(outside, away)),
+      entry(join(proj, 'out-link', away)),
+      entry('relative/.cc-upload-0000000000000000'),
+      { path: join(proj, '.cc-upload-2222222222222222'), root: 'relative' },
+      join(proj, '.cc-upload-3333333333333333'),
+      42,
+    ])
     const r = rig()
     expect(await r.writer.sweepTemps()).toBe(0)
     expect(readFileSync(join(proj, 'keep.txt'), 'utf8')).toBe('keep')
     expect(existsSync(join(proj, '.cc-upload-0123456789abcdef'))).toBe(true)
     expect(readFileSync(join(outside, 'x'), 'utf8')).toBe('x')
+    expect(readFileSync(join(outside, away), 'utf8')).toBe('outside')
     expect(recorded()).toEqual([])
   })
 
+  it('keeps an entry it could not reach for the next start', async () => {
+    mkdirSync(join(proj, 'locked'))
+    const temp = join(proj, 'locked', '.cc-upload-4444444444444444')
+    writeFileSync(temp, 'partial')
+    // A project folder not there (a volume not mounted yet) keeps its entry too.
+    const unmounted = { path: join(tmp, 'gone', '.cc-upload-5555555555555555'), root: join(tmp, 'gone') }
+    writeRecord([{ path: temp, root: proj }, unmounted])
+    chmodSync(join(proj, 'locked'), 0o000)
+    try {
+      const r = rig()
+      expect(await r.writer.sweepTemps()).toBe(0)
+      expect(recorded()).toEqual([temp, unmounted.path])
+    } finally {
+      chmodSync(join(proj, 'locked'), 0o755)
+    }
+    const next = rig()
+    expect(await next.writer.sweepTemps()).toBe(1)
+    expect(existsSync(temp)).toBe(false)
+    expect(recorded()).toEqual([unmounted.path])
+  })
+
   it('a record that is not a list is read as empty', async () => {
-    mkdirSync(join(tmp, 'data', 'uploads'), { recursive: true })
+    writeRecord([])
     writeFileSync(tempsFile, JSON.stringify({ schemaVersion: 1, temps: 'x' }))
     const r = rig()
     expect(await r.writer.sweepTemps()).toBe(0)
@@ -492,5 +713,23 @@ describe('the temps record and the sweep', () => {
     const { token } = await tokenFor(r, '', 'a.txt', 3)
     expect(await put(r, token, 0, 'abc')).toMatchObject({ status: 500, failed: true })
     expect(tempsIn(proj)).toEqual([])
+  })
+})
+
+describe('copyExclusive', () => {
+  it('never reads its source through a link nor a file other than the one named, and reports each chunk', async () => {
+    writeFileSync(join(outside, 'secret.txt'), 'secret')
+    symlinkSync(join(outside, 'secret.txt'), join(proj, 'src-link'))
+    await expect(copyExclusive(join(proj, 'src-link'), join(proj, 'dst1'), 0o644)).rejects.toThrow()
+    expect(existsSync(join(proj, 'dst1'))).toBe(false)
+    writeFileSync(join(proj, 'src'), 'abc')
+    const other = statSync(join(outside, 'secret.txt'))
+    await expect(copyExclusive(join(proj, 'src'), join(proj, 'dst2'), 0o644, { source: other })).rejects.toThrow('changed')
+    expect(existsSync(join(proj, 'dst2'))).toBe(false)
+    let chunks = 0
+    const made = await copyExclusive(join(proj, 'src'), join(proj, 'dst3'), 0o644, { source: statSync(join(proj, 'src')), onChunk: () => chunks++ })
+    expect(readFileSync(join(proj, 'dst3'), 'utf8')).toBe('abc')
+    expect(made.ino).toBe(statSync(join(proj, 'dst3')).ino)
+    expect(chunks).toBe(1)
   })
 })

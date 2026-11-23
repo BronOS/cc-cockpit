@@ -124,7 +124,7 @@ export async function placeDownload(temp: string, dir: string, name: string, opt
           if (!NO_HARD_LINKS.has(codeOf(err) ?? '')) throw err
           if (platform === 'darwin') throw new PlaceError(NO_QUARANTINE_TEXT)
           linked = false
-          await copyExclusive(temp, final, mode, signal)
+          await copyExclusive(temp, final, mode, { signal, source: st })
         })
         // A cancel while the link ran and it succeeded anyway (a slow mount): not placed, so the name
         // goes, while it is still the temp's inode (a link shares it; a file someone put there after

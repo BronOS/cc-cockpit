@@ -11,7 +11,9 @@
 //     `0644` under the umask, at the first chunk. Its path goes into `<data>/uploads/temps.json`, on
 //     disk, before the temp exists: a crash between the two leaves an entry with no file, never a file
 //     with no entry (a hidden partial of up to 2 GiB nobody would find). The folder is resolved again
-//     first, so a folder swapped for a link since begin never receives the bytes.
+//     first, and again after the create with the temp's `lstat` against the descriptor's `fstat`
+//     (Node has no openat): a folder swapped for a link since begin, or in the window of the record's
+//     fsync, gets at most an empty file, removed, never the bytes.
 //   - Chunks of one file run one at a time (a chain per token): a client's retry can arrive while the
 //     request it gave up on is still being cut (Chromium resends after the request bound's 408, plan
 //     Task 1), and the offset check must see what the earlier one left. `offset` must be exactly what
@@ -21,12 +23,17 @@
 //     is truncated back to `offset` and the token stays live for the retry; `written` moves only once
 //     the whole chunk is on disk. Each piece read restarts the upload's idle clock (`touch`).
 //   - Commit after the last byte (a declared-empty file on its one zero-length chunk): the folder must
-//     still resolve to begin's real path, and the temp's `lstat` be the descriptor's file (dev, ino),
-//     so the file placed is the one written. New and Keep both: an exclusive `link` (EEXIST on any
-//     entry, a link included, never followed: the next number), or on a filesystem with no hard links
-//     an exclusive copy (`copyExclusive`). Replace: the target must still be a regular file; the temp
-//     takes its permission bits minus setuid, setgid and sticky, then `rename` (atomic, and it replaces
-//     the entry, never following a link).
+//     still resolve to begin's real path, and the temp's `lstat` be the descriptor's file (dev, ino).
+//     Every placement acts on the temp's path again, so each is checked after it too: the name placed
+//     must `lstat` as that file (a temp swapped for a link meanwhile: macOS's `link` follows a link in
+//     its source, Linux's links the link itself), and the copy opens the temp `O_NOFOLLOW` and checks
+//     its `fstat` before reading. New and Keep both: an exclusive `link` (EEXIST on any entry, a link
+//     included, never followed: the next number), or on a filesystem with no hard links an exclusive
+//     copy (`copyExclusive`, which restarts the idle clock per chunk: a 2 GiB copy on a slow mount is not
+//     idle). A cancel or a drop that lands while the link or copy ran removes what it placed (404), as
+//     the copy does on its own. Replace: the target must still be a regular file; the temp takes its
+//     permission bits minus setuid, setgid and sticky, then `rename` (atomic, and it replaces the entry,
+//     never following a link): past it the file is placed, whatever an abort says.
 //   - Abort (a cancel, the idle clock, a drop: `abortUpload`) destroys the body being read, waits for
 //     the chunk to stop, then closes and deletes every temp of the upload. A failed file (ENOSPC, a
 //     commit refused) deletes its temp at once and settles with its reason.
@@ -34,15 +41,16 @@
 // message (it names the absolute path). No Electron (the plan's rule).
 import { randomBytes } from 'node:crypto'
 import { constants as fsConstants, type Stats } from 'node:fs'
-import { link as fsLink, lstat, open as fsOpen, rename as fsRename, type FileHandle } from 'node:fs/promises'
-import { basename, isAbsolute, join } from 'node:path'
+import { link as fsLink, lstat, open as fsOpen, realpath, rename as fsRename, unlink, type FileHandle } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { Readable } from 'node:stream'
 import { codeOf, errorText } from '../../shared/error-text'
 import { numberedUploadName, UPLOAD_CHUNK_MAX_BYTES, UPLOAD_MAX_NAME_NUMBER, UPLOAD_TEMP_PREFIX, type UploadChunkReply } from '../../shared/uploads'
 import { displayText } from '../plugins/link-request'
+import { within } from '../path-within'
 import { JsonFile, type Versioned } from '../store/json-file'
 import { sameFile } from '../verified-read'
-import { copyExclusive, NO_HARD_LINKS, remove, removeIfOwn } from './copy-exclusive'
+import { copyExclusive, NO_HARD_LINKS, remove, removeIfOwn, type CopyOptions } from './copy-exclusive'
 import { resolveProjectEntry } from './system-files'
 import { numberingRefusal, type UploadFileOutcome, type UploadGrant } from './uploads'
 
@@ -58,6 +66,8 @@ export interface UploadWriterFs {
   open(path: string, flags: number, mode: number): Promise<FileHandle>
   link(existing: string, newPath: string): Promise<void>
   rename(from: string, to: string): Promise<void>
+  /** The no-hard-link fallback; default `copyExclusive`. */
+  copy(temp: string, final: string, mode: number, opts: CopyOptions): Promise<Stats>
 }
 
 export interface UploadWriterDeps {
@@ -91,8 +101,21 @@ export const UPLOAD_DISK_FULL_TEXT = "the server's disk is full"
 /** A temp's name as this writer makes it; the sweep deletes nothing else, whatever the record says. */
 const TEMP_NAME = /^\.cc-upload-[0-9a-f]{16}$/
 
+/** A temp on the record: its path, and the project folder it was made in (the sweep stays inside it). */
+interface TempEntry {
+  path: string
+  root: string
+}
+
 interface TempsRecord extends Versioned {
-  temps: string[]
+  temps: TempEntry[]
+}
+
+/** An entry as this writer writes it: a hand-edited record may hold anything. */
+function isTempEntry(entry: unknown): entry is TempEntry {
+  if (typeof entry !== 'object' || entry === null) return false
+  const { path, root } = entry as Record<string, unknown>
+  return typeof path === 'string' && typeof root === 'string' && isAbsolute(path) && isAbsolute(root) && TEMP_NAME.test(basename(path))
 }
 
 /** A file whose first chunk came: its temp, what is written, and the chain its chunks run on. */
@@ -136,6 +159,7 @@ export class UploadWriter {
       open: deps.fs?.open ?? ((path, flags, mode) => fsOpen(path, flags, mode)),
       link: deps.fs?.link ?? fsLink,
       rename: deps.fs?.rename ?? fsRename,
+      copy: deps.fs?.copy ?? copyExclusive,
     }
     this.temps = new JsonFile<TempsRecord>({ filePath: deps.tempsFile, defaults: () => ({ schemaVersion: 1, temps: [] }), log: this.log })
     // A record damaged by hand: nothing in it is trusted as a list.
@@ -144,25 +168,31 @@ export class UploadWriter {
 
   /**
    * At start, before the gateway takes a PUT: every temp the record lists is deleted (none can be live
-   * after a restart: tokens live in memory only), then the record emptied. Only a regular file named as
-   * this writer names temps is deleted, so a record edited by hand cannot make main unlink anything
-   * else. Answers how many were deleted. Never throws.
+   * after a restart: tokens live in memory only). Only a regular file named as this writer names temps,
+   * in a folder whose real path is inside the project folder recorded with it, is deleted, so a record
+   * edited by hand cannot make main unlink anything else. An entry that could not be dealt with (its
+   * project folder not there, a volume not mounted yet; an lstat or unlink refused) stays for the next
+   * start: those are the hidden partials of up to 2 GiB the record exists for. Answers how many were
+   * deleted. Never throws.
    */
   async sweepTemps(): Promise<number> {
-    const live = new Set([...this.files.values()].map((f) => f.temp))
+    const live = (): Set<string> => new Set([...this.files.values()].map((f) => f.temp))
+    const now = live()
+    const retry: TempEntry[] = []
     let removed = 0
-    for (const path of this.temps.data.temps) {
-      if (typeof path !== 'string' || !isAbsolute(path) || live.has(path) || !TEMP_NAME.test(basename(path))) continue
-      const st = await lstat(path).catch(() => undefined)
-      if (!st?.isFile()) continue
-      await remove(path)
-      removed++
+    for (const entry of this.temps.data.temps as unknown[]) {
+      if (!isTempEntry(entry) || now.has(entry.path)) continue
+      const outcome = await sweepOne(entry)
+      if (outcome === 'removed') removed++
+      else if (outcome === 'retry') retry.push(entry)
     }
     this.temps.update((d) => {
-      d.temps = d.temps.filter((p) => live.has(p))
+      const still = live()
+      d.temps = [...(d.temps as unknown[]).filter((e): e is TempEntry => isTempEntry(e) && still.has(e.path)), ...retry]
     })
     this.temps.flush()
     if (removed > 0) this.log(`uploads: deleted ${removed} temp file(s) a previous run left`)
+    if (retry.length > 0) this.log(`uploads: ${retry.length} temp file(s) a previous run left could not be reached, kept for the next start`)
     return removed
   }
 
@@ -250,7 +280,8 @@ export class UploadWriter {
 
   /** The temp made, recorded first; a refusal answer, or undefined when it is open. */
   private async openTemp(file: LiveFile, grant: UploadGrant): Promise<UploadChunkResult | undefined> {
-    if (!(await this.folderStill(grant))) {
+    const root = await this.folderStill(grant)
+    if (root === undefined) {
       if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
       return this.fail(file, 500, 'the folder changed since the upload began')
     }
@@ -259,7 +290,7 @@ export class UploadWriter {
     // crash after the temp was made). Not saved (a full data disk, a record from a newer version left
     // read-only): no temp either, since a crash would leave it where no sweep looks.
     this.temps.update((d) => {
-      d.temps.push(file.temp)
+      d.temps.push({ path: file.temp, root })
     })
     this.temps.flush()
     if (this.temps.pending || this.temps.readOnly) return this.fail(file, 500, 'the upload could not be recorded on the server')
@@ -274,6 +305,14 @@ export class UploadWriter {
     file.handle = handle
     file.st = await handle.stat()
     if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
+    // Again after the create, before any byte: the folder swapped for a link to somewhere outside while
+    // the record was fsynced or the open ran would otherwise take every chunk (up to 2 GiB) until the
+    // commit's check. The temp's path must still lead to the file opened; the fail removes it (through
+    // that path, so the empty file made outside goes too).
+    const still = (await this.folderStill(grant)) !== undefined
+    const at = await lstat(file.temp).catch(() => undefined)
+    if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
+    if (!still || !at?.isFile() || !sameFile(at, file.st)) return this.fail(file, 500, 'the folder changed since the upload began')
     return undefined
   }
 
@@ -290,7 +329,7 @@ export class UploadWriter {
     try {
       for await (const piece of body as AsyncIterable<Buffer | string>) {
         const buf = typeof piece === 'string' ? Buffer.from(piece) : piece
-        this.deps.grants().touch(file.uploadId)
+        this.touch(file)
         if (at + buf.length > end) {
           over = true
           break
@@ -328,7 +367,8 @@ export class UploadWriter {
   private async commit(file: LiveFile, grant: UploadGrant): Promise<UploadChunkResult> {
     const handle = file.handle as FileHandle
     const st = file.st as Stats
-    if (!(await this.folderStill(grant))) {
+    this.touch(file)
+    if ((await this.folderStill(grant)) === undefined) {
       if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
       return this.fail(file, 500, 'the folder changed since the upload began')
     }
@@ -350,11 +390,25 @@ export class UploadWriter {
       if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
       // Past this the file is placed: an abort that comes now finds it settled.
       await this.fs.rename(file.temp, target)
+      // The rename moved whatever was at the temp's path: it must have been the file written.
+      const after = await lstat(target).catch(() => undefined)
+      if (!after || !sameFile(after, st)) {
+        this.log(`upload ${grant.uploadId.slice(0, 8)}: file ${grant.index}: what replaced the target is not the file written`)
+        if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
+        return this.fail(file, 500, 'the file changed on the server while it was written')
+      }
       placed = grant.name
     } else {
-      const name = await this.placeNew(file, grant, now.mode & 0o666)
-      if (typeof name !== 'string') return name
-      placed = name
+      const done = await this.placeNew(file, grant, st, now.mode & 0o666)
+      if ('status' in done) return done
+      // A cancel or a drop that landed while the link or the copy ran: what was placed goes (it is this
+      // call's, checked by identity), as a copy cancelled midway removes itself, and nothing reports a
+      // file the person cancelled as written.
+      if (!this.current(file)) {
+        await removeIfOwn(done.final, done.st)
+        return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
+      }
+      placed = done.name
     }
     // Settled in the same step as the entry goes: a PUT for this token while the close below runs must
     // find no grant (404), never a fresh entry that would make a second temp nothing deletes.
@@ -369,13 +423,20 @@ export class UploadWriter {
   /**
    * A new name or Keep both: the planned name, else numbered from it (a name that appeared since begin is
    * numbered too, never overwritten), by exclusive link, or exclusive copy where hard links are refused.
+   * Answers the name, its path and the placed entry's identity, or the answer that ends the chunk.
    */
-  private async placeNew(file: LiveFile, grant: UploadGrant, mode: number): Promise<string | UploadChunkResult> {
+  private async placeNew(
+    file: LiveFile,
+    grant: UploadGrant,
+    st: Stats,
+    mode: number
+  ): Promise<{ name: string; final: string; st: Stats } | UploadChunkResult> {
     for (let n = 0; n <= UPLOAD_MAX_NAME_NUMBER; n++) {
       const name = n === 0 ? grant.name : numberedUploadName(grant.name, n)
       if (name === null) break
       if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
       const final = join(grant.folderReal, name)
+      let placedSt: Stats
       try {
         await this.fs.link(file.temp, final)
       } catch (err) {
@@ -383,7 +444,7 @@ export class UploadWriter {
         if (code === 'EEXIST') continue
         if (!NO_HARD_LINKS.has(code ?? '')) throw err
         try {
-          await copyExclusive(file.temp, final, mode, file.stop.signal)
+          placedSt = await this.fs.copy(file.temp, final, mode, { signal: file.stop.signal, source: st, onChunk: () => this.touch(file) })
         } catch (copyErr) {
           // Aborted mid-copy: the copy removed its own file, the abort deletes the temp.
           if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
@@ -391,23 +452,40 @@ export class UploadWriter {
           if (codeOf(copyErr) === 'ENOSPC') return this.fail(file, 507, UPLOAD_DISK_FULL_TEXT)
           throw copyErr
         }
+        await removeIfOwn(file.temp, st)
+        return { name, final, st: placedSt }
       }
-      // Placed (the link shares the temp's inode; a copy is its own file): the temp's name goes.
-      await removeIfOwn(file.temp, file.st as Stats)
-      return name
+      // The link acted on the temp's path: the name must hold the file written. A temp swapped for a
+      // link meanwhile made it a hard link to that link's target (macOS) or the link itself (Linux); the
+      // name is one this call made, so it goes.
+      const linked = await lstat(final).catch(() => undefined)
+      if (!linked || !sameFile(linked, st)) {
+        if (linked) await removeIfOwn(final, linked)
+        this.log(`upload ${grant.uploadId.slice(0, 8)}: file ${grant.index}: what was linked is not the file written`)
+        if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
+        return this.fail(file, 500, 'the file changed on the server while it was written')
+      }
+      // Placed (the link shares the temp's inode): the temp's name goes.
+      await removeIfOwn(file.temp, st)
+      return { name, final, st: linked }
     }
     return this.fail(file, 500, numberingRefusal(grant.name, 'in this folder'))
   }
 
-  /** The folder still resolves, inside the project, to the real path begin checked (§2.4). */
-  private async folderStill(grant: UploadGrant): Promise<boolean> {
+  /** The upload's idle clock starts again (a body piece read, a commit's copy chunk written). */
+  private touch(file: LiveFile): void {
+    this.deps.grants().touch(file.uploadId)
+  }
+
+  /** The folder still resolves, inside the project, to the real path begin checked (§2.4): the project folder, or undefined. */
+  private async folderStill(grant: UploadGrant): Promise<string | undefined> {
     const root = this.deps.projectRoot(grant.windowId)
-    if (!root) return false
+    if (!root) return undefined
     try {
       const entry = await resolveProjectEntry(root, grant.folderRel, true)
-      return entry.real === grant.folderReal && (await lstat(entry.real)).isDirectory()
+      return entry.real === grant.folderReal && (await lstat(entry.real)).isDirectory() ? root : undefined
     } catch {
-      return false
+      return undefined
     }
   }
 
@@ -440,9 +518,9 @@ export class UploadWriter {
 
   /** The entry goes lazily (a debounced save): a stale one costs the next sweep a missing file, no more. */
   private dropRecord(temp: string): void {
-    if (!this.temps.data.temps.includes(temp)) return
+    if (!this.temps.data.temps.some((e) => e.path === temp)) return
     this.temps.update((d) => {
-      d.temps = d.temps.filter((p) => p !== temp)
+      d.temps = d.temps.filter((e) => e.path !== temp)
     })
   }
 }
@@ -458,4 +536,37 @@ async function writeAt(handle: FileHandle, buf: Buffer, position: number): Promi
   } catch (err) {
     throw new WriteError(err)
   }
+}
+
+/**
+ * One record entry at the sweep: 'removed', 'drop' (nothing of ours there: gone, not a regular file, or
+ * a folder whose real path left the project), or 'retry' (could not be reached: kept for the next start).
+ */
+async function sweepOne(entry: TempEntry): Promise<'removed' | 'drop' | 'retry'> {
+  // The project folder itself not there (a volume not mounted yet, a network share down): nothing can
+  // be said about the temp, so it waits.
+  const realRoot = await realpath(entry.root).catch(() => undefined)
+  if (realRoot === undefined) return 'retry'
+  let realDir: string
+  try {
+    realDir = await realpath(dirname(entry.path))
+  } catch (err) {
+    return codeOf(err) === 'ENOENT' ? 'drop' : 'retry'
+  }
+  // Never outside the project it was made in, whatever the record says.
+  if (!within(realRoot, realDir)) return 'drop'
+  const path = join(realDir, basename(entry.path))
+  let st: Stats
+  try {
+    st = await lstat(path)
+  } catch (err) {
+    return codeOf(err) === 'ENOENT' ? 'drop' : 'retry'
+  }
+  if (!st.isFile()) return 'drop'
+  try {
+    await unlink(path)
+  } catch (err) {
+    return codeOf(err) === 'ENOENT' ? 'removed' : 'retry'
+  }
+  return 'removed'
 }

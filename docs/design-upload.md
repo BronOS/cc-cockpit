@@ -106,9 +106,12 @@ extension kept), **Cancel** (nothing written). One answer covers the whole uploa
     replaced script keeps its exec bit), then `rename(temp, final)`: atomic, and it replaces the entry, never following a
     link.
   - A new file never gets an exec bit (a `File` carries no mode). The mtime is the write's own.
-- **Temps record.** Main records each live temp's path in `<data>/uploads/temps.json` when it creates it and drops it at
-  commit or deletion. At start, main deletes every temp listed (none can be live after a restart), then empties the
-  record. Every abort (§3.4) deletes its temp at once. The Files tree hides `.cc-upload-*` (§5.1).
+- **Temps record.** Main records each live temp's path, with its project folder, in `<data>/uploads/temps.json` before
+  it creates it and drops it at commit or deletion. At start, main deletes every temp listed (none can be live after a
+  restart): only a regular file named as a temp whose folder's real path is inside its recorded project folder. An entry
+  it could not reach (the project folder missing, a volume not mounted yet, an lstat or unlink refused) stays for the next
+  start; the rest of the record is emptied. Every abort (§3.4) deletes its temp at once. The Files tree hides
+  `.cc-upload-*` (§5.1).
 
 ### 2.5 Caps and limits
 
