@@ -353,7 +353,7 @@ for a retry only from the accepting device.
 
 ## 9. Not in this version
 
-Upload from the device; outside paths from the Files panel or any plugin; several files at once; resumable or ranged
+Upload from the device (built since: `docs/design-upload.md`); outside paths from the Files panel or any plugin; several files at once; resumable or ranged
 downloads; `tar.gz`; `.gitignore`-aware zips and other include choices; in-page progress; a plugin offering bytes it made
 (`ctx.files.offerBytes`, later); downloads started by a streamed webview page or a URL overlay (still cancelled); sharing
 a download link with another person (guest access is its own design); telling Claude the answer; `ccc download --project`

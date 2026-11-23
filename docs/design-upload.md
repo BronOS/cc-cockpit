@@ -1,6 +1,6 @@
 # Uploads from the person's device — design
 
-Status: designed (2026-11-22, with the owner, section by section; revision 2 after a review pass, its eleven fixes applied); not implemented. The reverse of
+Status: designed (2026-11-22, with the owner, section by section; revision 2 after a review pass, its eleven fixes applied); implemented (2026-11-23, plan `docs/plans/completed/20261122-upload.md`; §13 lists where the build differs). The reverse of
 `docs/design-download.md`, which it reuses where the same rule fits and departs from where it does not (§3, §10). Extends
 `docs/design-web.md` (web access, §9 server mode), `docs/design-remote-desktop.md` (remote windows) and
 `docs/design-guests.md`; read `design-download.md` first.
@@ -468,3 +468,130 @@ Folders; `ccc upload` (Claude asking the person for a file); uploads on the loca
 path, a Files drop copying in); the streamed Browser panel's own file inputs (still cancelled); resuming after the page
 reloads; uploads from overlays, slots or page tabs; a plugin learning an upload's outcome; keeping the device's mtime;
 outside paths.
+
+## 13. As built
+
+What the build decided or changed beyond the text above; each line is what the code does, with the reason where it is not
+obvious. The sections above were edited where a deviation changed their rule; this list is the rest.
+
+**Spike (Task 1).** An unhandled `Files` drop's navigation could not be reproduced through a DevTools drag (no `drop`
+without a cancelled `dragover`, no `will-navigate`), so §3.6's cancel is kept and checked by hand. A chunk cut by the
+request bound reached `fetch` as a 408 after Chromium's resend (about 119 s), not as a network error (§3.3). Firefox and
+WebKit ran through Playwright's older installed revisions (`executablePath`), not the expected ones.
+
+**Shared rules (`shared/uploads.ts`, `numbered-name.ts`).**
+- A refusal of a whole upload is `UploadBeginReply = UploadBegun | {error}`; `UploadResolveReply` is `{tokens, refused} |
+  {error}` (Keep both's numbering has to say why it failed; Replace on a clash that is not a regular file answers `{error}`).
+- `dedupeNames` and `numberedUploadName` return `null` when ` (99)` is taken or the name would pass 255 bytes; names compare
+  NFC-normalized and lowercase (APFS is case and normalization insensitive). `numberedName` and `MAX_NAME_NUMBER` moved to
+  `shared/numbered-name.ts`, one source with the remote window's saves.
+- `checkUploadName` and `pasteText` use `HIDDEN_TEXT`, not control characters alone: the text lands in Claude's prompt (tag
+  characters can hide text), at the cost of refusing a name with a soft hyphen or a subdivision-flag emoji. A tab is a
+  control character, so `pasteText` returns `null` (held) instead of dropping a path. A file over 2 GiB refuses the whole
+  upload; `pasted: true` gets only `checkUploadName` in main (the device's clock names the file).
+- Added as named constants: `UPLOAD_PATH_PREFIX`, `UPLOAD_TEMP_PREFIX`, `UPLOAD_CHUNK_FAST_MS` / `SLOW_MS`,
+  `UPLOAD_BEGINS_MAX` / `WINDOW_MS`, `UPLOAD_NAME_MAX_BYTES`, `UPLOAD_PENDING_MS`, `UPLOAD_FINISHED_KEPT` (20).
+
+**Core (`main/files/uploads.ts`).**
+- A pending upload (clashes unanswered) holds no place and lasts `UPLOAD_PENDING_MS` (10 min; the 60 s idle clock is for
+  bytes, a person reads 100 names slowly). `resolve` checks the 2 and 6 limits again; a refusal after `resolving` (disk)
+  reverts to pending under the original deadline. Keep both lstats each candidate at `resolve`.
+- The free-space check runs after the clash lstats, the last await before the token mint, so check and mint are one
+  synchronous step; the reservation counts every running upload's unsettled sizes, on any device of the disk.
+- `.git` is refused by name in `begin` (platform-aware, `insideGit`), not in the shared `checkUploadName`, which has no
+  platform. `folders()` lists real directories only (links left out), sorted by code unit.
+- Finished uploads are kept per device (20) for the paste. `RateWindow` moved to `main/rate-window.ts`, re-exported from
+  `host-api.ts`, so `uploads.ts` does not pull in HostApi's imports. The API for the rest of main: `begin`, `resolve`,
+  `cancel`, `grant(token)`, `touch`, `settle`, `outcome`, `dropWindow`.
+- Main's cancel finishes (not removes) a running upload with at least one settled file; one with none settled is removed.
+
+**Writer (`main/files/upload-writer.ts`).**
+- The no-hard-link fallback is `copyExclusive` (`main/files/copy-exclusive.ts`: `O_EXCL` create, removes only its own
+  file, abortable), moved from `remote-downloads.ts` and shared; `copyFile(COPYFILE_EXCL)` cannot say whether it made the
+  destination, so its cleanup could delete another's file. A cancel during link or copy removes the placed name and answers
+  404 for New and Keep both; Replace keeps "placed once renamed".
+- `writeChunk(token, offset, body, length)` never rejects and answers `{status: 200, reply}` or `{status, error,
+  expected?, failed?}`; `failed: true` means the file is settled and its temp deleted, so the client must not retry it (a
+  retry meets 404 and loses the reason). Chunks of one token run on a promise chain, offset check inside it (a retry can
+  arrive while the cut request is still being truncated). A refusal before the body's turn leaves the body unread.
+- A numbered name on `EEXIST` starts from the planned name (Keep both's `a (1).txt` can become `a (1) (1).txt`). Replace
+  whose target is gone fails the file ("changed meanwhile"), as a folder or a link does. A temps record that cannot be
+  saved fails the file before any temp. A temp whose folder was swapped away is truncated to 0 through the descriptor and
+  left, its record entry dropped.
+- The record's entries are `{path, root}` with no schema bump (new on this branch); a string entry is dropped. The sweep
+  keeps an entry whose root cannot be `realpath`ed (an unmounted volume says ENOENT, which "drop on ENOENT" would lose).
+  `UploadWriterFs` has a `copy` seam for tests. `DataPaths.uploadTempsJson` is `<data>/uploads/temps.json`.
+- The sweep is awaited in the `whenReady` chain before `runStartOrder`, not inside `applyWebAccess` (on the desktop
+  `runStartOrder` does not await the gateway); its failure only logs.
+
+**Gateway and router.**
+- `connectionsCheckingInterval` is 5 s server-wide (`CONNECTIONS_CHECKING_MS`), see §3.3. The `clientError` listener
+  answers `ERR_HTTP_REQUEST_TIMEOUT` with 408 (it had answered every client error 400).
+- A `Sec-Fetch-Site` refusal is 403 JSON, an unsigned `/u/` request 401, both with `Connection: close`. A refusal after
+  the token is live and `Content-Length` is at most 8 MiB keeps the connection and reads the body off, so a 409 reaches the
+  client with its `expected`.
+- Window and project close reach `Uploads.dropWindow` from `main/index.ts`'s wiring (the gateway knows no windows); a read
+  guest's role change ends its upload through `GuestStore`'s `dropUploads`, not at the route. `GuestStore.end()` drops the
+  guest's uploads before `revokeGuest`; `dropDownloadsOf` became `dropTransfersOf` and drops both. `guest-wiring.ts` needed
+  no change.
+- `uploads.begin` for a `{panel}` source needs the panel in a zone of the reconciled layout: a hidden panel has no frame, so
+  it is refused. A source that does not resolve (panel not placed, tab not a Claude or shell tab of the project) answers
+  `{error}` with a fixed text; a malformed source, a non-browser view, no device or a guest's out-of-reach target throws
+  `refused`.
+- `uploads.paste` throws one text for an unknown id, another device's or window's, a panel source, an unfinished upload
+  and one with nothing uploaded (`UPLOAD_UNKNOWN_TEXT`): §3.1 wants them indistinguishable.
+
+**Client and shell.**
+- The chunk size grows only after a full-size chunk (a short last chunk is fast by being short) and carries across files.
+  A 409 whose `expected` differs from the offset resumes without using a retry (50 per file at most); one pointing at the
+  same offset ends the file. After a fetch rejection a one-byte slice probe tells an unreadable `File` (Chromium's
+  `NotReadableError`) from a dead link; that probe was not run in a real browser, so the one attempt for the next file is
+  the guarantee. An abort seen after an attempt cancels the file unless the answer was a whole commit (`done: true`). The
+  client takes `sleep` as an option beside `fetch`, `signal`, `onProgress`, `now` (the backoff's test seam).
+- `ccPanel.upload` is in any page of a remote non-read view (the SDK cannot tell a panel from an overlay); the shell takes
+  a request only from a panel frame: `PluginFrame` hands `onPageMessage` `{source, frame}`, the filter re-checks
+  `event.source`, and a source-scan test keeps overlays, slots, settings and page tabs out. A file list over 100 passes
+  as it is (main's refusal is the visible one); a non-`File` entry drops the whole message. `onUploadRequest` is one
+  module-level sink. The SDK sets `dropEffect: 'none'` on an unhandled `Files` dragover, not only `preventDefault`; a page's
+  own drag listeners must set `dropEffect` synchronously, so the guide says to register before the SDK's. `types.ts` did
+  not change (the `ccPanel` types live in `panel-core.ts`), so there is no example copy.
+- The controller is made in `web/main.tsx`'s `startShell`: React remounts `<App>` on every reconnect and a reconnect must
+  not end an upload. The notice, chooser and clash state live in `UploadUi` (`upload-model.ts`, module-level,
+  `useSyncExternalStore`); `notice-state.ts` did not change. Keep both is `ApprovalBox`'s optional `alsoAllow` button,
+  armed like Allow; Replace is the Allow and is hidden when a clash is not replaceable. A clash arriving over an open
+  chooser unmounts the chooser (one dialog at a time; its selection is lost). The chooser's Upload is disabled until the
+  preset's folder listing resolves.
+- A `resolve` that errors cancels and shows "Nothing uploaded: <reason>" instead of asking again. After a run that left
+  files not done the controller sends `uploads.cancel` once the paste is tried (a client-side failure leaves a token live
+  on main for the idle minute). The folder preset is written only for a chooser (terminal) upload. The person's own Cancel
+  in the chooser or the clash dialog shows no notice unless refused files or folders need naming.
+- The shell cancels every `Files` drag nobody cancelled, whatever its target (`cancelUnhandledFileDrops`, installed in
+  `startShell`; §3.6), not the SDK's `cancelsFilesDrag`, which spares inputs: a file dropped on a shell text field would
+  open in the tab. `pagehide` leaves through `leaveThenClose` (its order is tested).
+
+**Terminal entry and paste.**
+- The entry is opt-in from `TerminalView` (it knows `tab.kind`; overlay terminals never get it) through
+  `attach(container, entry)`; its seams (`onTerminalUpload`, `registerTerminalPane`) are module-level, as the panel's.
+  `TerminalSession.paste` calls `io.act` before xterm's `paste`, so a write guest's held size goes first, as before a key.
+- Keys-off is view-wide (`TabsState.keysOff`); with no tab pane mounted the shell counts it as keys-off, and it is read
+  again at the xterm paste itself.
+- Paste path (manual) needs the tab alive and selected in the calling view; only the status rule is relaxed. A held
+  automatic call uses up the one automatic paste (a later one answers held "offered once already"). A Claude tab with no
+  session-registry entry is held for both: no status is not "at the prompt". The paths come from the record's `folderReal`
+  (owner absolute, guest relative to `TabInfo.cwd`), so a folder reached through a link pastes as its real target.
+- A held text's Copy is shown only when the shell's `stripUnsafe` would not change it (`heldCopyable`); Paste path stays
+  and main checks again.
+
+**Files plugin (0.6.0).** The drop rules are in `dist/lib/drop.js` (global `ccFilesDrop`, its own script tag), not in
+`menu.js`, which is the menu's items. A drag is taken only when `ccPanel.upload.files` is a function and `access` is not
+`read`. `isUploadTemp` is an anchored regex mirroring the writer's `TEMP_NAME`; uppercase hex or a suffix stays listed. The
+version is only in `plugin.json`.
+
+**Bench and e2e.** `web-terminal-bench.mjs` phase 9 drives `writeChunk` through a plain loopback http server, not the
+gateway (devices, cookies and hashed secrets are not cheap to stand up); its window ends with the upload; its temp dir is
+`realpath`ed (in a worktree `node_modules` is a symlink and phase 7's zip failed with all files unreadable). The e2e specs
+share `test/e2e/upload-fixtures.ts`; a guessed PUT is compared with a GET of a missing route, since the gateway answers a
+PUT to any other route 405 for everyone; "drop outside every target" asserts a cancelled `dragover` with `dropEffect: 'none'`
+(Chromium then delivers no `drop`). The browser half of the terminal entry ran against fakes first, and `index.ts`'s paste
+wiring has no unit test: the e2e is their first real run. In a full `npm run test:e2e` six tests that depend on OS window
+focus failed (none touches uploads; `files-menu:226` passes alone), not compared against the base commit.
