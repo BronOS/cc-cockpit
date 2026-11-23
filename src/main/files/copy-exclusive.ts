@@ -25,10 +25,19 @@ export type RemoveOutcome = 'removed' | 'absent' | 'other' | 'failed'
 
 /**
  * Remove `path` only while it is still the entry `own` names (same dev and inode): what this placement
- * linked or created there, never a file another process put at the name meanwhile. `own` must come from
- * the caller's own descriptor (an `fstat`), never from a later `lstat` of the path: that would name
- * whatever is there now, another process's file included. Never throws.
+ * linked or created there, not a file another process had put at the name before the check. `own` must
+ * come from the caller's own descriptor (an `fstat`), never from a later `lstat` of the path: that would
+ * name whatever is there now, another process's file included. Never throws.
  * `unlinkPath`: a test seam (an unlink refused), default `unlink`.
+ *
+ * Not atomic, and accepted (design-upload.md §13 "Name-based deletes"): POSIX has no "unlink only if this
+ * inode", so an entry renamed over `path` between the `lstat` and the `unlink` (two syscalls) is deleted.
+ * Every caller's name is one this run made a moment before with an exclusive create or link (so it was
+ * free then) and goes only on a cancel or a failure, or is a random hidden temp name: winning needs a
+ * process of the same OS user (CLAUDE.md: a tab's processes are, and not a boundary) aiming a rename at
+ * that name inside that gap, which could unlink the file itself. Moving the name aside first (a rename
+ * to a fresh name, then the check) only moves the gap to the new name, and the not-ours restore cannot
+ * work where `copyExclusive` runs (no hard links), stranding another's file under a hidden name.
  */
 export async function removeIfOwn(
   path: string,

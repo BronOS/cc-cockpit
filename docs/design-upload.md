@@ -535,14 +535,38 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
   whose target is gone fails the file ("changed meanwhile"), as a folder or a link does. A temps record that cannot be
   saved fails the file before any temp. A temp whose folder was swapped away is truncated to 0 through the descriptor and
   left, its record entry dropped. A temp whose delete is refused (anything but ENOENT: `removeIfOwn` answers `removed`,
-  `absent`, `other` or `failed`) is truncated the same way and keeps its record entry for the next start's sweep, at an
-  abort and after a commit alike (a hard link's second name, or the copy fallback's whole source). A start sweep still
-  running replaces only the entries it walked, so one kept meanwhile stays.
+  `absent`, `other` or `failed`) keeps its record entry for the next start's sweep, at an abort and after a commit alike,
+  but only the abort's (`discard`) truncates it through the descriptor: after a commit the temp is left whole, because a
+  hard link's temp shares the placed file's inode, and truncating it would empty the uploaded file (the copy fallback's
+  temp is a separate whole copy). The sweep later unlinks only the temp's name, which leaves a linked final whole.
+  `discard` truncates whenever its delete did not remove the name (`absent` and `other` included), so at a cancel that
+  lands after a link placed the file, the temp's name already gone, the inode is emptied: when the cancel's removal of
+  the placed name was itself refused, that name stays as an empty file of the cancelled upload (never another's bytes:
+  the descriptor is the written file). A start sweep still running replaces only the entries it walked, so one kept
+  meanwhile stays.
 - Every delete is checked against the written file's identity (the descriptor's `fstat`, or the copy's own), never against a
   later `lstat` of the name: a name the link made that does not hold the written file (the temp swapped for a link) is
   left and logged, and the file fails. An `lstat` taken after the link names whatever is there now, so a delete checked
   against it could take a file another process put at the name meanwhile (external review); whoever swapped the temp could
   have made that link themselves.
+- Name-based deletes (an accepted limit, external review iteration 2). The identity check and the `unlink` are two
+  syscalls, and POSIX has no "unlink only if this inode", so an entry renamed over the name in the gap between them is
+  deleted. The deletes this applies to: `copyExclusive`'s cleanup of its own partial copy (`removeIfOwn(final, made)`),
+  the commit's removal of a name it placed when a cancel landed during the link or copy, `placeNew`'s two deletes of the
+  temp's name after a placement, `discard`'s delete of the temp (`removeIfOwn`, or `unlinkName` when the create's `fstat`
+  failed), the start sweep's `sweepOne` (which has no identity at all after a restart: a regular file at a recorded
+  `.cc-upload-<16 hex>` name, inside its recorded root), and on the download side `placeDownload`'s removal of a name a
+  cancelled placement made and its `finally`'s `remove(temp)` (`.cc-download-<hex>` in Downloads). Who can win the gap:
+  for a temp, only a process aiming at a random hidden name made `O_EXCL` by this run; for a final name, only one that
+  renames something over a name this call made a moment before with an exclusive link or create (so it was free), in
+  the microseconds between the `lstat` and the `unlink`, on a cancel or a failed copy. Either is a process of the same
+  OS user with write access to the folder (CLAUDE.md: a tab's processes are, and that is not a boundary), which could
+  delete the file itself. A plain write into the name is not a replacement: it writes into our inode, and that goes.
+  Moving the name aside first (a rename to a fresh hidden name, checked there, then unlinked) was weighed and left out: it
+  only moves the gap to the new name, it needs the record to name the new path before every rename (a synchronous flush
+  that can fail on every delete path), and its not-ours restore (an exclusive `link` back) can never work where
+  `copyExclusive` runs (no hard links), so another's file would be stranded under a name the Files tree hides and the
+  sweep deletes.
 - The record's entries are `{path, root}` with no schema bump (new on this branch); a string entry is dropped. The sweep
   keeps an entry whose root cannot be `realpath`ed (an unmounted volume says ENOENT, which "drop on ENOENT" would lose).
   `UploadWriterFs` has `copy` and `unlink` seams for tests. `DataPaths.uploadTempsJson` is `<data>/uploads/temps.json`.

@@ -354,6 +354,11 @@ the pasted path, clipboard cases (Excel, Word, Copy image), a 1 GiB upload over 
   for Replace; no-hard-link volumes use `copyExclusive`), and records each temp with its project root in
   `<data>/uploads/temps.json` before creating it; the start sweep deletes only what that record names and still lies in its
   root. Names are checked in main (`HIDDEN_TEXT`, `.git` refused); never trust a name, size or folder from the page.
+  Deletes are checked against the written file's identity (`removeIfOwn`, its `fstat`), but check and `unlink` are two
+  syscalls: an entry renamed over the name in between is deleted. Accepted (design-upload.md §13 "Name-based deletes"):
+  the names are random hidden temps or ones this call just made exclusively, deleted on a cancel or a failure, and only
+  a same-user process aiming at that name in that gap wins, which could delete the file itself; an aside rename does not
+  close it. A committed temp is never truncated (a hard link's temp is the placed file); only an abort's `discard` truncates.
 - `ccPanel.upload` (`src/sdk/panel*.ts`) posts `cc-plugin.upload` to the parent only, and the shell accepts it from a mounted
   panel frame alone (`PluginFrame`, checked against `event.source`; overlays, slots and page tabs never), then names the panel
   key in `uploads.begin`, which main resolves against the layout. A file is read only in the page (the `File` goes to
