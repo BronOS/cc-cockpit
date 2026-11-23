@@ -24,6 +24,8 @@ import { constants as fsConstants, type Stats } from 'node:fs'
 import { join } from 'node:path'
 import { DESKTOP_DOWNLOAD_MAX_BYTES, downloadSizeText } from '../../shared/downloads'
 import { codeOf, errorText } from '../../shared/error-text'
+// One numbering rule with uploads' Keep both (design-upload.md §2.3), not two.
+import { MAX_NAME_NUMBER, numberedName } from '../../shared/numbered-name'
 
 /** What a download is, as the adapter hands it over (Electron's DownloadItem, wrapped). */
 export interface RemoteDownloadItem {
@@ -50,18 +52,6 @@ export interface RemoteDownloadItem {
 
 /** The temp name's prefix in Downloads: hidden (a leading dot), and never a name `desktopSaveName` makes. */
 export const DOWNLOAD_TEMP_PREFIX = '.cc-download-'
-/** Numbered names tried after the plain one: `name (1).ext` up to this. */
-export const MAX_NAME_NUMBER = 99
-
-/**
- * `name` with ` (n)` before its last extension (`report (1).pdf`, `notes (2)`); n = 0 is the name
- * itself. A leading dot is not an extension's (`desktopSaveName` drops them anyway).
- */
-export function numberedName(name: string, n: number): string {
-  if (n === 0) return name
-  const dot = name.lastIndexOf('.')
-  return dot > 0 ? `${name.slice(0, dot)} (${n})${name.slice(dot)}` : `${name} (${n})`
-}
 
 /** A refusal of our own, whose text the notice shows as is (a system error's would name the temp path). */
 class PlaceError extends Error {}
