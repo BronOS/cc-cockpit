@@ -5519,6 +5519,17 @@ ul.settings-alert {
 .upload-file-name {
   overflow-wrap: anywhere;
 }
+/* The clash dialog's full list of names: its own scroll, so up to 100 long names never push the buttons off screen. */
+.upload-clash-names {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 4px;
+  max-height: 24vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+}
 .upload-notice-body {
   flex: 1;
   min-width: 0;

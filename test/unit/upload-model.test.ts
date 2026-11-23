@@ -1,11 +1,18 @@
+import { createElement, type FunctionComponent } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import {
   ancestorsOf,
   chooserHeading,
+  chooserKey,
   clashText,
+  copyLabel,
   heldButtons,
+  heldCopyable,
   heldText,
+  noticeHides,
   nothingUploadedText,
+  shownDialogs,
   presetKey,
   progressFraction,
   progressText,
@@ -163,5 +170,105 @@ describe('UploadUi store', () => {
     ui.clear()
     expect(ui.get().notices).toEqual([])
     off()
+  })
+})
+
+describe('review fixes (task 9)', () => {
+  it('the clash title names at most three files; the full list is kept for the scrolling body', () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ index: i, name: `file-${i}.txt`, replaceable: true }))
+    const t = clashText('src', many)
+    expect(t.title).toBe('40 files already exist in src: file-0.txt, file-1.txt, file-2.txt and 37 more')
+    expect(t.names).toHaveLength(40)
+    expect(t.names[39]).toBe('file-39.txt')
+  })
+
+  it('a held paste never hides, whatever sticky says; only a clean result does', () => {
+    expect(noticeHides({ kind: 'result', id: 'a', text: 't', sticky: false })).toBe(true)
+    expect(noticeHides({ kind: 'result', id: 'a', text: 't', sticky: true })).toBe(false)
+    expect(noticeHides({ kind: 'result', id: 'a', text: 't', sticky: false, held: { reason: 'r', text: '/p/a ' } })).toBe(false)
+    expect(noticeHides({ kind: 'progress', id: 'a', folder: '', fileNo: 1, fileCount: 1, sent: 0, total: 1, onCancel: () => {} })).toBe(false)
+  })
+
+  it('Copy is offered only for text stripUnsafe would keep as it is', () => {
+    expect(heldCopyable({ reason: 'r', text: '/p/a.png ' })).toBe(true)
+    expect(heldCopyable({ reason: 'r', text: '' })).toBe(false)
+    expect(heldCopyable({ reason: 'r', text: '/p/x\u001b[201~/a.png ' })).toBe(false)
+    expect(heldCopyable({ reason: 'r', text: '/p/a‮gnp.exe ' })).toBe(false)
+    expect(heldButtons({ held: { reason: 'r', text: '/p/x\u001b[201~ ' } })).toEqual({ paste: 'Paste path' })
+    expect(copyLabel(undefined)).toBe('Copy')
+    expect(copyLabel(true)).toBe('Copied')
+    expect(copyLabel(false)).toBe('Copy failed')
+  })
+
+  it('fileCount includes main refusals; a cancel still names the files main refused', () => {
+    // 3 dropped, 1 refused at begin, 2 uploaded.
+    const partial = resultText({ folder: 'd', fileCount: 3, done: ['a', 'b'], failed: [{ name: 'x', reason: 'too big' }] })
+    expect(partial.text).toBe('Uploaded 2 of 3 to d; not uploaded: x (too big)')
+    expect(resultText({ folder: 'd', fileCount: 3, done: ['a'], failed: [{ name: 'x', reason: 'too big' }], cancelled: true }).text).toBe(
+      'Cancelled after 1 of 3 to d; not uploaded: x (too big)'
+    )
+    expect(resultText({ folder: 'd', fileCount: 3, done: [], failed: [{ name: 'x', reason: 'too big' }], cancelled: true })).toEqual({
+      text: 'Upload cancelled; not uploaded: x (too big)',
+      sticky: true
+    })
+  })
+
+  it('the chooser: Enter uploads from the box or a folder name once ready and on top; Esc cancels', () => {
+    expect(chooserKey('Enter', 'dialog', true, true)).toBe('upload')
+    expect(chooserKey('Enter', 'folder', true, true)).toBe('upload')
+    expect(chooserKey('Enter', 'other', true, true)).toBe('pass')
+    // Before the preset's listing is in, Enter would send to the project folder.
+    expect(chooserKey('Enter', 'dialog', false, true)).toBe('pass')
+    expect(chooserKey('Escape', 'other', false, true)).toBe('cancel')
+    // Covered by an approval: no key answers.
+    expect(chooserKey('Enter', 'dialog', true, false)).toBe('pass')
+    expect(chooserKey('Escape', 'dialog', true, false)).toBe('pass')
+    expect(chooserKey('y', 'dialog', true, true)).toBe('pass')
+  })
+
+  it('one dialog at a time: a clash first, the chooser only when no clash is up', () => {
+    const chooser = { id: 'c', tab: 't', files: [], preset: '', onAnswer: () => {} }
+    const clash = { id: 'k', folder: '', clashes: [], onAnswer: () => {} }
+    expect(shownDialogs({ choosers: [chooser], clashes: [clash] })).toEqual({ clash })
+    expect(shownDialogs({ choosers: [chooser], clashes: [] })).toEqual({ chooser })
+    expect(shownDialogs({ choosers: [], clashes: [] })).toEqual({})
+  })
+})
+
+describe('clash dialog markup', () => {
+  type Req = { id: string; folder: string; clashes: { index: number; name: string; replaceable: boolean }[]; onAnswer(c: string): void }
+  async function render(clashes: Req['clashes']): Promise<string> {
+    // A .tsx module, loaded by a path the node typecheck does not follow (it has no JSX or DOM lib).
+    const file = '../../src/renderer/notices/UploadClashDialog.tsx'
+    const { UploadClashBox } = (await import(file)) as { UploadClashBox: FunctionComponent<{ request: Req }> }
+    return renderToStaticMarkup(createElement(UploadClashBox, { request: { id: 'r', folder: 'src', clashes, onAnswer: () => {} } }))
+  }
+
+  it('Keep both and Replace are plain buttons, disabled until armed; names are text', async () => {
+    const html = await render([{ index: 0, name: '<img src=x onerror=alert(1)>.png', replaceable: true }])
+    expect(html).not.toContain('<form')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;.png')
+    for (const b of html.match(/<button[^>]*>/g) ?? []) expect(b).toContain('type="button"')
+    expect(html).toMatch(/<button type="button" data-testid="upload-clash-keep-both" disabled="">Keep both<\/button>/)
+    expect(html).toMatch(/<button type="button" class="confirm-danger" data-testid="upload-clash-replace" disabled="">Replace<\/button>/)
+    expect(html).not.toContain('upload-clash-names')
+  })
+
+  it('a clash that is not replaceable shows no Replace, still a guarded Keep both', async () => {
+    const html = await render([
+      { index: 0, name: 'a.txt', replaceable: true },
+      { index: 1, name: 'icons', replaceable: false }
+    ])
+    expect(html).not.toContain('upload-clash-replace"')
+    expect(html).toMatch(/data-testid="upload-clash-keep-both" disabled="">Keep both</)
+    expect(html).toContain('Replace is off: icons is a folder or a link')
+  })
+
+  it('many clashes: the title is capped and every name is in the scrolling list', async () => {
+    const html = await render(Array.from({ length: 10 }, (_, i) => ({ index: i, name: `f${i}`, replaceable: true })))
+    expect(html).toContain('and 7 more')
+    expect(html).toContain('data-testid="upload-clash-names"')
+    expect(html).toContain('<li>f9</li>')
   })
 })

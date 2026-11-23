@@ -42,7 +42,8 @@ import { AcceptedOffers, downloadOfferOf, offerAcceptPayload } from './download-
 import type { DownloadOffer } from '../../shared/downloads'
 import { UploadDialog } from './UploadDialog'
 import { UploadClashDialog } from './UploadClashDialog'
-import { heldButtons, heldText, progressFraction, progressText, RESULT_NOTICE_MS, uploadUi, type UploadNotice } from './upload-model'
+import { copyLabel, heldButtons, heldText, noticeHides, progressFraction, progressText, RESULT_NOTICE_MS, shownDialogs, uploadUi, type UploadNotice } from './upload-model'
+import { copyText } from '../guests/copy-text'
 
 /**
  * What the shell shows for things only the desktop can do, or that need the person's own screen
@@ -694,14 +695,13 @@ function LinkDialog(props: { ask: LinkAsk; canAllow: boolean; onAnswer: (allow: 
 
 /**
  * The upload UI (design-upload.md §4.2, §5.3), driven by the page's upload controller through `uploadUi`
- * (upload-model.ts): the folder chooser, then the clash dialog, one of each at a time (oldest first),
- * and a notice per upload. Only the uploading view has any (nothing is broadcast), so the other views
- * of the owner see the files appear through the Files watcher.
+ * (upload-model.ts): the folder chooser and the clash dialog, one dialog at a time (a clash first,
+ * `shownDialogs`; oldest first), and a notice per upload. Only the uploading view has any (nothing is
+ * broadcast), so the other views of the owner see the files appear through the Files watcher.
  */
 function UploadUiLayer(): React.JSX.Element | null {
   const state = useSyncExternalStore(uploadUi.subscribe, uploadUi.get)
-  const chooser = state.choosers[0]
-  const clash = state.clashes[0]
+  const { chooser, clash } = shownDialogs(state)
   return (
     <>
       {chooser !== undefined ? <UploadDialog key={chooser.id} request={chooser} /> : null}
@@ -720,7 +720,8 @@ function UploadUiLayer(): React.JSX.Element | null {
 function UploadNoticeRow(props: { notice: UploadNotice }): React.JSX.Element {
   const { notice } = props
   // A clean result hides itself; a partial one or a held paste stays until dismissed.
-  const hides = notice.kind === 'result' && !notice.sticky
+  const hides = noticeHides(notice)
+  const [copied, setCopied] = useState<boolean | undefined>(undefined)
   useEffect(() => {
     if (!hides) return
     const timer = setTimeout(() => uploadUi.dropNotice(notice.id), RESULT_NOTICE_MS)
@@ -753,16 +754,18 @@ function UploadNoticeRow(props: { notice: UploadNotice }): React.JSX.Element {
               {buttons.paste}
             </button>
           ) : null}
-          <button
-            type="button"
-            data-testid="upload-copy"
-            onClick={() => {
-              // The held answer's own text; a browser without the async clipboard (or a refusal) copies nothing.
-              navigator.clipboard?.writeText(notice.held?.text ?? '').catch(() => {})
-            }}
-          >
-            {buttons.copy}
-          </button>
+          {buttons.copy !== undefined ? (
+            <button
+              type="button"
+              data-testid="upload-copy"
+              // The held answer's own text, through the selection and the editing command inside this
+              // click (copy-text.ts): the app page has no clipboard permission, and `navigator.clipboard`
+              // is absent in a browser view over plain http. A failure says so.
+              onClick={() => setCopied(copyText(notice.held?.text ?? ''))}
+            >
+              {copyLabel(copied)}
+            </button>
+          ) : null}
         </>
       ) : null}
       <button type="button" className="link-notice-close" aria-label="Dismiss" onClick={() => uploadUi.dropNotice(notice.id)}>

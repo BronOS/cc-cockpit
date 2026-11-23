@@ -303,7 +303,8 @@ non-ASCII letters and spaces included (a macOS screenshot name's U+202F), is kep
 stays readable, and an escape inside it could defeat Claude Code's image detection). The file name was checked (§2.2),
 but the project root and the folders were not: a path with a control, bidi or invisible format character or a lone
 surrogate anywhere in it is never pasted (a tab is one; xterm's `paste` keeps an ESC, so an `ESC [201~` in a folder
-name would end the bracketed paste early), it is held with that reason. Paths separated by a space, one trailing space.
+name would end the bracketed paste early), it is held with that reason, and the shell offers no Copy for such text (the
+person's own Cmd+V would deliver it through xterm's paste just the same): only Paste path, which main refuses again. Paths separated by a space, one trailing space.
 
 Whether Claude Code attaches an image from both forms is checked by hand after the build (Post-Completion), not before it:
 the escaping follows what Terminal.app and iTerm already paste for a drop, which Claude Code attaches in a local terminal,

@@ -117,17 +117,23 @@ export function moreFoldersText(): string {
 // The clash dialog (design §2.3, §5.3).
 
 export interface ClashDialogText {
+  /** Names at most MAX_RESULT_NAMES files, then "and N more": up to 100 long names would push the buttons off screen. */
   title: string
+  /** Every clashing name (design §6: the dialog names every file it would replace), for the dialog's own scrolling list. */
+  names: string[]
   /** Replace is off: a folder or a link sits at one of the names. */
   replaceOff?: string
 }
 
-/** "2 files already exist in src/assets: logo.png, README.md", and why Replace is off, if it is. */
+/** "2 files already exist in src/assets: logo.png, README.md", every name, and why Replace is off, if it is. */
 export function clashText(folder: string, clashes: readonly UploadClash[]): ClashDialogText {
   const n = clashes.length
-  const names = clashes.map((c) => stripUnsafe(c.name)).join(', ')
+  const names = clashes.map((c) => stripUnsafe(c.name))
+  const more = n - MAX_RESULT_NAMES
+  const shown = `${names.slice(0, MAX_RESULT_NAMES).join(', ')}${more > 0 ? ` and ${more} more` : ''}`
   const text: ClashDialogText = {
-    title: `${n} ${n === 1 ? 'file already exists' : 'files already exist'} in ${folderLabel(folder)}: ${names}`
+    title: `${n} ${n === 1 ? 'file already exists' : 'files already exist'} in ${folderLabel(folder)}: ${shown}`,
+    names
   }
   const blocker = clashes.find((c) => !c.replaceable)
   if (blocker !== undefined) text.replaceOff = `Replace is off: ${stripUnsafe(blocker.name)} is a folder or a link`
@@ -157,7 +163,10 @@ export interface UploadProgressNotice {
 /** What a finished upload says; the controller fills it from the run's per-file results. */
 export interface UploadOutcome {
   folder: string
-  /** Files the upload meant to send (after main's refusals): `done.length + failed.length` unless cancelled. */
+  /**
+   * Every file the upload meant to send, main's refusals at begin included: `done.length + failed.length`
+   * when it ran to the end, plus the files never reached when it was cancelled.
+   */
   fileCount: number
   done: readonly string[]
   /** Skipped or failed files with the reason (main's refusals at begin, the run's failures). */
@@ -198,6 +207,25 @@ export function progressFraction(n: Pick<UploadProgressNotice, 'sent' | 'total'>
   return n.total <= 0 ? 1 : Math.min(1, Math.max(0, n.sent / n.total))
 }
 
+/**
+ * Whether a result notice hides itself after RESULT_NOTICE_MS: a clean result only. A held paste stays
+ * whatever `sticky` says (design §5.3), so a controller that forgets to mark it sticky cannot take its
+ * Paste path and Copy away.
+ */
+export function noticeHides(n: UploadNotice): boolean {
+  return n.kind === 'result' && !n.sticky && n.held === undefined
+}
+
+/**
+ * Whether Copy may put the held text on the clipboard. A paste held because a path carries a control,
+ * bidi or invisible character (design §4.3: an `ESC [201~` in a folder name would end the bracketed
+ * paste early) must not reach the terminal through the person's own Cmd+V either, so text that
+ * `stripUnsafe` would change is never copied (and no Copy is shown for it).
+ */
+export function heldCopyable(held: HeldPaste): boolean {
+  return held.text !== '' && stripUnsafe(held.text) === held.text
+}
+
 /** "folders can't be uploaded: photos, raw". */
 export function foldersText(folders: readonly string[]): string {
   return `folders can't be uploaded: ${folders.map(stripUnsafe).join(', ')}`
@@ -228,7 +256,7 @@ export function resultText(o: UploadOutcome): { text: string; sticky: boolean } 
   let sticky = o.failed.length > 0 || o.cancelled === true || folders !== undefined
   if (o.done.length === 0) {
     sticky = true
-    if (o.cancelled === true) head = 'Upload cancelled'
+    if (o.cancelled === true) head = `Upload cancelled${o.failed.length > 0 ? `; not uploaded: ${failedList(o.failed)}` : ''}`
     else if (o.failed.length > 0) head = nothingUploadedText(failedList(o.failed))
     else head = folders !== undefined ? 'Nothing uploaded' : `Uploaded nothing to ${where}`
   } else {
@@ -237,16 +265,51 @@ export function resultText(o: UploadOutcome): { text: string; sticky: boolean } 
         ? o.done.map(stripUnsafe).join(', ')
         : plural(o.done.length, 'file', 'files')
     if (o.failed.length === 0 && o.cancelled !== true) head = `Uploaded ${names} to ${where}`
-    else if (o.cancelled === true) head = `Cancelled after ${o.done.length} of ${total} to ${where}`
+    else if (o.cancelled === true)
+      // A file main refused at begin is named even when the rest was cancelled: the person would never learn it was too big.
+      head = `Cancelled after ${o.done.length} of ${total} to ${where}${o.failed.length > 0 ? `; not uploaded: ${failedList(o.failed)}` : ''}`
     else head = `Uploaded ${o.done.length} of ${total} to ${where}; not uploaded: ${failedList(o.failed)}`
   }
   const text = folders !== undefined ? `${head}${o.done.length === 0 && o.failed.length === 0 && o.cancelled !== true ? ': ' : '; '}${folders}` : head
   return { text, sticky }
 }
 
-/** The held paste's buttons (design §4.3): Paste path (the person's own click) and Copy. */
-export function heldButtons(n: Pick<UploadResultNotice, 'held'>): { paste: string; copy: string } | undefined {
-  return n.held === undefined ? undefined : { paste: 'Paste path', copy: 'Copy' }
+/** The held paste's buttons (design §4.3): Paste path (the person's own click) and Copy (not for unsafe text, `heldCopyable`). */
+export function heldButtons(n: Pick<UploadResultNotice, 'held'>): { paste: string; copy?: string } | undefined {
+  if (n.held === undefined) return undefined
+  return heldCopyable(n.held) ? { paste: 'Paste path', copy: 'Copy' } : { paste: 'Paste path' }
+}
+
+/** Copy's label after a click, as the invite dialog's: Copied, or Copy failed (no clipboard in this page). */
+export function copyLabel(copied: boolean | undefined): string {
+  return copied === undefined ? 'Copy' : copied ? 'Copied' : 'Copy failed'
+}
+
+/**
+ * What a key does in the folder chooser (design §4.2: Enter uploads, Esc cancels). `on` is where the
+ * key was pressed: the dialog box itself or a folder's name (a click there selects, so after any click
+ * in the tree the focus sits on a name and Enter must still upload), or another control (the twist,
+ * Cancel, Upload: their own Enter presses them). Nothing answers before the preset's listing is in
+ * (`ready`: an Enter then would send to the project folder) or while an approval covers the chooser
+ * (`top`); Tab is kept inside the box by the caller.
+ */
+export function chooserKey(key: string, on: 'dialog' | 'folder' | 'other', ready: boolean, top: boolean): 'upload' | 'cancel' | 'pass' {
+  if (!top) return 'pass'
+  if (key === 'Escape') return 'cancel'
+  if (key === 'Enter' && ready && on !== 'other') return 'upload'
+  return 'pass'
+}
+
+/**
+ * Which queued dialog is drawn: the clash first, the chooser only when no clash is up. Both at once
+ * would put one over the other (each portal joins `document.body` as it mounts), and a double click on
+ * a chooser over an armed clash dialog could land its second click on Replace.
+ */
+export function shownDialogs(s: Pick<UploadUiState, 'choosers' | 'clashes'>): { chooser?: ChooserRequest; clash?: ClashRequest } {
+  const clash = s.clashes[0]
+  if (clash !== undefined) return { clash }
+  const chooser = s.choosers[0]
+  return chooser !== undefined ? { chooser } : {}
 }
 
 /** "Not pasted: <reason>", under the result's text. */
