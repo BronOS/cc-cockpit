@@ -36,7 +36,8 @@
 //     never following a link): past it the file is placed, whatever an abort says.
 //   - Abort (a cancel, the idle clock, a drop: `abortUpload`) destroys the body being read, waits for
 //     the chunk to stop, then closes and deletes every temp of the upload. A failed file (ENOSPC, a
-//     commit refused) deletes its temp at once and settles with its reason.
+//     commit refused) deletes its temp at once and settles with its reason; a write failing mid-body
+//     leaves the rest of the body unread, not destroyed, so the route can still deliver that reason.
 // Reasons reach the view (a guest's too, D-33): fixed words and display-safe names, never an fs error's
 // message (it names the absolute path). No Electron (the plan's rule).
 import { randomBytes } from 'node:crypto'
@@ -198,7 +199,9 @@ export class UploadWriter {
 
   /**
    * One PUT's body for `token` at `offset`, `length` bytes (the request's Content-Length). Refusals
-   * before the body is read leave `body` untouched (the route drains or closes it). Never rejects.
+   * before the body is read leave `body` untouched, and one partway through it (a failed write) leaves
+   * the rest unread, never destroyed: the route reads off what is left so its answer arrives. Only an
+   * abort destroys the body. Never rejects.
    */
   async writeChunk(token: string, offset: number, body: Readable, length: number): Promise<UploadChunkResult> {
     const grant = this.deps.grants().grant(token)
@@ -327,7 +330,10 @@ export class UploadWriter {
     let over = false
     let broken = false
     try {
-      for await (const piece of body as AsyncIterable<Buffer | string>) {
+      // Never destroyed by leaving the loop: a write failing mid-body (ENOSPC) left a destroyed request,
+      // Node then reset the socket, and the 507 was lost (the retry found 404, the reason gone). What is
+      // left unread is the route's to read off before it answers; only an abort destroys the body.
+      for await (const piece of body.iterator({ destroyOnReturn: false }) as AsyncIterable<Buffer | string>) {
         const buf = typeof piece === 'string' ? Buffer.from(piece) : piece
         this.touch(file)
         if (at + buf.length > end) {

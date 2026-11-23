@@ -172,8 +172,18 @@ An `uploadId` answers only to the device that began it (another device's, or an 
 The body is written to the temp as it arrives (`fs.write` at its position, back-pressure by pausing the request). A body
 that ends short is truncated back to `offset` (`ftruncate`) and the token stays live for a retry from there. Each chunk
 answers `200 {received}`; the last one commits (§2.4) and answers `{done: true, name, path}` (`path` project-relative).
-Refusals answer a JSON `{error}`: 400 (shape), 409 with `expected` (offset), 413 (over a cap), 507 (disk full); a guest's
-refusal is 404, as every guest refusal on the gateway. The 204-only rule of `/d/` does not apply: a `fetch` is not a
+Refusals answer a JSON `{error}`: 400 (shape, or a body that ended short), 409 with `expected` (offset), 413 (over a cap),
+507 (disk full), 500 (the temp, the record or the commit failed). A guest with no right to the token gets the guest block's
+404, the same status, headers and plain-text body as a route that does not exist (D-26): a read guest whatever it sends,
+a method other than PUT, and a token unknown, another device's or ended. So such a guest cannot tell a live token from a
+guess, nor `/u/` from a route that does not exist; like the guest block's, that 404 keeps the connection and Node reads
+the body off under the request bound. A write guest holding its own live token gets the owner's answers above (400, 409
+with `expected`, 413, 507, 500): without the 409 a Chromium resend (§3.3) would end its file. Its own token once ended
+gets the plain-text 404 too, so the client goes by the status, never the body. Every answer after the writer's goes once
+the rest of the body is read off (at most 8 MiB, under the request bound): a write failing mid-body (ENOSPC) stops
+writing but leaves the body unread, never destroyed, since an answer sent while the client is still sending is lost to
+the reset when the connection closes on unread bytes, and the client would see a network error, then a 404 on its retry,
+with the reason gone (§3.3). The 204-only rule of `/d/` does not apply: a `fetch` is not a
 navigation, so a body cannot replace the page. Headers: `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`.
 One line per file in `web-access.log`: device, display-safe name, bytes, completed or cut (the route sees chunks only, so
 a file whose upload ends with no chunk in flight, by the idle clock, a cancel or a window closing between chunks, has no
@@ -184,7 +194,9 @@ line).
 The web shell's upload client (`src/renderer/web/upload-client.ts`): files one at a time, chunks one at a time, each a
 `fetch` PUT through `keyedFetch` with the body `file.slice(o, o + chunk)` and an `AbortController` (Cancel aborts it and
 posts `uploads.cancel`). A failed chunk is retried 3 times with backoff; a 409 resumes at `expected`. Progress counts
-acknowledged bytes.
+acknowledged bytes. A network error or a 408 on a chunk followed by a 404 on its retry may be a file the server failed
+whose answer a link dropped (§3.2): the file ends as failed with a generic reason, never retried past the 404 and never
+shown as completed; a 404 is told by its status, never its body.
 
 **Chunk size adapts.** The gateway's listener bounds a whole request, body included, at 30 s
 (`server.requestTimeout = REQUEST_TIMEOUT_MS`, `gateway.ts:125,665`, server-wide), so a fixed 8 MiB chunk would die and

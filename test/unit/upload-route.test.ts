@@ -9,11 +9,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { request } from 'node:http'
 import { connect, createServer, type AddressInfo } from 'node:net'
+import { open } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
-import { UploadWriter } from '../../src/main/files/upload-writer'
+import { UPLOAD_DISK_FULL_TEXT, UploadWriter, type UploadWriterFs } from '../../src/main/files/upload-writer'
 import { Uploads } from '../../src/main/files/uploads'
 import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { AccessLog } from '../../src/main/web/access-log'
@@ -87,7 +88,7 @@ function send(port: number, opts: { method: string; path: string; headers: Recor
   })
 }
 
-async function setup(opts: { mode?: 'link' | 'none'; deps?: Partial<GatewayDeps>; noUploads?: boolean } = {}): Promise<Setup> {
+async function setup(opts: { mode?: 'link' | 'none'; deps?: Partial<GatewayDeps>; noUploads?: boolean; writerFs?: Partial<UploadWriterFs> } = {}): Promise<Setup> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-upload-route-')))
   dirs.push(root)
   const proj = join(root, 'proj')
@@ -100,7 +101,8 @@ async function setup(opts: { mode?: 'link' | 'none'; deps?: Partial<GatewayDeps>
     grants: () => ref.uploads as Uploads,
     projectRoot: () => proj,
     tempsFile: join(data, 'uploads', 'temps.json'),
-    log: (line) => logs.push(line)
+    log: (line) => logs.push(line),
+    ...(opts.writerFs ? { fs: opts.writerFs } : {})
   })
   const uploads = new Uploads({
     projectRoot: (id) => (id === WINDOW ? proj : undefined),
@@ -169,8 +171,8 @@ async function signIn(s: Setup, name: string): Promise<Browser> {
 }
 
 /** A guest of p1 with `role`, signed in through its invite. */
-async function guestOf(s: Setup, role: 'read' | 'write'): Promise<Browser & { guestId: string }> {
-  const a = await s.guests.invite('p1', { name: 'Bob', role, scope: 'all', lifetime: 'forever' })
+async function guestOf(s: Setup, role: 'read' | 'write', name = 'Bob'): Promise<Browser & { guestId: string }> {
+  const a = await s.guests.invite('p1', { name, role, scope: 'all', lifetime: 'forever' })
   if (!a.ok) throw new Error(a.error)
   const res = await send(s.port, {
     method: 'POST',
@@ -211,19 +213,31 @@ function rawHead(s: Setup, method: string, path: string, extra: string[] = [], a
 
 /**
  * A raw request whose body goes out a piece at a time (`pieces`, `gapMs` apart) and may stop short:
- * `text()` is everything the server sent until it closed; `cut()` closes the client's side.
+ * `text()` is everything the server sent until it closed; `cut()` closes the client's side; `errors` the
+ * socket's error codes (a reset shows as ECONNRESET or EPIPE); `sentAtAnswer()` how many pieces had gone
+ * out when the server's first byte came.
  */
-function rawPut(s: Setup, head: string, pieces: Buffer[] = [], gapMs = 0): { text: Promise<string>; cut: () => void } {
+function rawPut(
+  s: Setup,
+  head: string,
+  pieces: Buffer[] = [],
+  gapMs = 0
+): { text: Promise<string>; cut: () => void; errors: string[]; sentAtAnswer: () => number | undefined } {
   const socket = connect(s.port, '127.0.0.1')
   let out = ''
+  const errors: string[] = []
+  let i = 0
+  let sentAtAnswer: number | undefined
   const text = new Promise<string>((resolve) => {
-    socket.on('data', (d: Buffer) => (out += d.toString()))
+    socket.on('data', (d: Buffer) => {
+      sentAtAnswer ??= i
+      out += d.toString()
+    })
     socket.on('close', () => resolve(out))
-    socket.on('error', () => undefined)
+    socket.on('error', (err: NodeJS.ErrnoException) => errors.push(err.code ?? 'error'))
   })
   socket.once('connect', () => {
     socket.write(head)
-    let i = 0
     const next = (): void => {
       if (i >= pieces.length || socket.destroyed) return
       socket.write(pieces[i++] as Buffer)
@@ -232,7 +246,32 @@ function rawPut(s: Setup, head: string, pieces: Buffer[] = [], gapMs = 0): { tex
     }
     next()
   })
-  return { text, cut: () => socket.destroy() }
+  return { text, cut: () => socket.destroy(), errors, sentAtAnswer: () => sentAtAnswer }
+}
+
+/**
+ * One raw request on a connection the client keeps open (no `Connection: close` of its own, unlike
+ * `agent: false`): the answer's status line and headers, `Date` left out, and its body, read to its
+ * Content-Length. What a guest could compare byte for byte.
+ */
+function rawAnswer(s: Setup, request: string): Promise<{ head: string[]; body: string }> {
+  const socket = connect(s.port, '127.0.0.1')
+  let out = ''
+  return new Promise((resolve, reject) => {
+    socket.on('data', (d: Buffer) => {
+      out += d.toString()
+      const end = out.indexOf('\r\n\r\n')
+      if (end < 0) return
+      const head = out.slice(0, end).split('\r\n')
+      const length = Number(head.find((h) => h.toLowerCase().startsWith('content-length:'))?.split(':')[1] ?? 0)
+      const body = out.slice(end + 4)
+      if (body.length < length) return
+      socket.destroy()
+      resolve({ head: head.filter((h) => !h.toLowerCase().startsWith('date:')), body })
+    })
+    socket.on('error', reject)
+    socket.once('connect', () => socket.write(request))
+  })
 }
 
 function tempsIn(dir: string): string[] {
@@ -382,6 +421,18 @@ describe('the /u/ route: admission and the checks before a byte', () => {
     expect(JSON.parse(res.body)).toEqual({ done: true, name: 'a.txt', path: 'a.txt' })
   })
 
+  it('the Origin and Sec-Fetch-Site checks come before the cookie: with no cookie either is 403, not 401', async () => {
+    const s = await setup()
+    const { token } = await mint(s, 'a.txt', 3)
+    const site = await put(s, token, 0, 'abc', null, { 'Sec-Fetch-Site': 'cross-site' })
+    expect(site.status).toBe(403)
+    expect(JSON.parse(site.body)).toEqual({ error: 'the request came from another site' })
+    const origin = await put(s, token, 0, 'abc', null, { Origin: 'http://evil.example' })
+    expect(origin.status).toBe(403)
+    expect(origin.body).toBe('origin not allowed')
+    expect(tempsIn(s.proj)).toEqual([])
+  })
+
   it('needs the cookie and its key: neither, or a cookie with no key, is 401', async () => {
     const s = await setup()
     const { token } = await mint(s, 'a.txt', 3)
@@ -511,6 +562,42 @@ describe('the /u/ route: guests', () => {
     expect(tempsIn(s.proj)).toEqual([])
   })
 
+  it("every guest refusal on /u/ is the guest block's 404 to the header, the connection kept as there", async () => {
+    const s = await setup()
+    const reader = await guestOf(s, 'read')
+    const writer = await guestOf(s, 'write', 'Carol')
+    const head = (g: Browser, method: string, path: string, body: string): string =>
+      [`${method} ${path} HTTP/1.1`, `Host: ${s.host}`, `Origin: ${s.origin}`, `Cookie: ${g.cookie}`, `${DEVICE_KEY_HEADER}: ${g.key}`, `Content-Length: ${body.length}`, '', body].join('\r\n')
+    const nowhere = await rawAnswer(s, head(reader, 'POST', '/api/nothing', 'abc'))
+    expect(nowhere.head[0]).toBe('HTTP/1.1 404 Not Found')
+    expect(nowhere.head.map((h) => h.toLowerCase())).toContain('connection: keep-alive')
+    const { token: readLive } = await mint(s, 'r.txt', 3, reader.deviceId)
+    const { token: writerDone } = await mint(s, 'w.txt', 3, writer.deviceId)
+    expect((await put(s, writerDone, 0, 'abc', writer)).status).toBe(200)
+    const answers = [
+      // A read guest: its own live token, a guess, another method.
+      await rawAnswer(s, head(reader, 'PUT', `/u/${readLive}?offset=0`, 'abc')),
+      await rawAnswer(s, head(reader, 'PUT', `/u/${'A'.repeat(43)}?offset=0`, 'abc')),
+      await rawAnswer(s, head(reader, 'POST', `/u/${readLive}?offset=0`, 'abc')),
+      // A write guest: a guess, another method, its own token once the file is over.
+      await rawAnswer(s, head(writer, 'PUT', `/u/${'A'.repeat(43)}?offset=0`, 'abc')),
+      await rawAnswer(s, head(writer, 'POST', `/u/${writerDone}?offset=0`, 'abc')),
+      await rawAnswer(s, head(writer, 'PUT', `/u/${writerDone}?offset=0`, 'abc'))
+    ]
+    // A write guest's own token that ends while its chunk waits behind another (the window closed): the
+    // writer's 404 goes out as the same bytes.
+    const { token: held } = await mint(s, 'h.bin', 8, writer.deviceId)
+    expect((await put(s, held, 0, 'abcd', writer)).status).toBe(200)
+    rawPut(s, rawHead(s, 'PUT', `/u/${held}?offset=4`, ['Content-Length: 4'], writer), [Buffer.from('ef')])
+    await vi.waitFor(() => expect(tempSize(s)).toBe(6))
+    const queued = rawAnswer(s, head(writer, 'PUT', `/u/${held}?offset=4`, 'efgh'))
+    await new Promise((r) => setTimeout(r, 50))
+    await s.uploads.dropWindow(WINDOW)
+    answers.push(await queued)
+    for (const a of answers) expect(a).toEqual(nowhere)
+    expect(tempsIn(s.proj)).toEqual([])
+  })
+
   it('a write guest changed to read mid-upload: its next chunk is a 404, nothing more written', async () => {
     const s = await setup()
     const g = await guestOf(s, 'write')
@@ -540,6 +627,16 @@ describe('the /u/ route: cut bodies', () => {
     expect(readFileSync(join(s.proj, 'c.txt'), 'utf8')).toBe('abcdefgh')
   })
 
+  it('the listener runs with the production bound: 30 s per request, checked every 5 s', async () => {
+    // The 408 case below shortens both; without them the defaults are what design §3.3 and the client's
+    // halving after a cut rely on (Node's own 30 s check interval would cut anywhere in 30-60 s).
+    const s = await setup()
+    const server = (s.gw as unknown as { server: { connectionsCheckingInterval: number; requestTimeout: number; headersTimeout: number } }).server
+    expect(server.connectionsCheckingInterval).toBe(5_000)
+    expect(server.requestTimeout).toBe(30_000)
+    expect(server.headersTimeout).toBeLessThanOrEqual(30_000)
+  })
+
   it('a body trickled past the request bound is cut with 408, truncated back, and the retry completes', async () => {
     // The bound and Node's check interval shortened: the cut falls within bound + interval, never before.
     const s = await setup({ deps: { requestTimeoutMs: 800, connectionsCheckingMs: 100 } })
@@ -556,6 +653,49 @@ describe('the /u/ route: cut bodies', () => {
     const retry = await put(s, token, 20, Buffer.alloc(100, 2))
     expect(JSON.parse(retry.body)).toEqual({ done: true, name: 't.bin', path: 't.bin' })
     expect(readFileSync(join(s.proj, 't.bin'))).toEqual(Buffer.concat([Buffer.alloc(20, 1), Buffer.alloc(100, 2)]))
+  })
+})
+
+describe('the /u/ route: a write that fails mid-body', () => {
+  it('disk full on a write: the 507 arrives once the rest of the body is read off, the temp goes, one line', async () => {
+    // A write fails past the first 64 KiB of a 4 MiB chunk while most of the body is still on its way.
+    // The writer used to leave its loop destroying the request, Node reset the socket, and the client saw
+    // a network error, then a 404 on its retry: the reason (the disk is full) never reached the person.
+    const s = await setup({
+      writerFs: {
+        open: async (path, flags, mode) => {
+          const handle = await open(path, flags, mode)
+          const real = handle.write.bind(handle) as (...args: unknown[]) => Promise<{ bytesWritten: number }>
+          let written = 0
+          ;(handle as unknown as { write: (...args: unknown[]) => Promise<{ bytesWritten: number }> }).write = async (...args) => {
+            if (written >= 64 * 1024) throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
+            const done = await real(...args)
+            written += done.bytesWritten
+            return done
+          }
+          return handle
+        }
+      }
+    })
+    const size = 4 * MiB
+    const { token, uploadId } = await mint(s, 'full.bin', size)
+    const pieces = Array.from({ length: 64 }, () => Buffer.alloc(64 * 1024, 7))
+    const sent = rawPut(s, rawHead(s, 'PUT', `/u/${token}?offset=0`, [`Content-Length: ${size}`, 'Connection: close']), pieces, 5)
+    const text = await sent.text
+    expect(text.startsWith('HTTP/1.1 507')).toBe(true)
+    expect(text).toContain(JSON.stringify({ error: UPLOAD_DISK_FULL_TEXT }))
+    // Closed after the whole body was read, never reset under a client still sending (over a real link
+    // a reset can drop the answer that loopback still delivered).
+    expect(sent.errors).toEqual([])
+    expect(sent.sentAtAnswer()).toBe(pieces.length)
+    expect(tempsIn(s.proj)).toEqual([])
+    expect(existsSync(join(s.proj, 'full.bin'))).toBe(false)
+    expect(uploadLines(s)).toEqual([expect.objectContaining({ file: 'full.bin', bytes: 0, detail: `cut: ${UPLOAD_DISK_FULL_TEXT}` })])
+    expect(s.uploads.outcome({ deviceId: s.owner.deviceId, windowId: WINDOW }, uploadId)?.results.get(0)).toEqual({ ok: false, reason: UPLOAD_DISK_FULL_TEXT })
+    // The file is over: a retry finds no such upload (which is why the 507 itself must arrive).
+    const retry = await put(s, token, 0, 'x')
+    expect(retry.status).toBe(404)
+    expectClean(s, [retry], [token])
   })
 })
 

@@ -468,7 +468,6 @@ function protocolKeys(header: string | undefined): string[] {
   return out
 }
 
-/** A refused-origin log line's origin: quoted and cut, never the whole header. */
 /**
  * A count as a header or a query sends it: decimal digits only (no sign, exponent or spaces, which
  * `Number` would take), at most 15 of them; undefined otherwise. No regex (the gateway's rule).
@@ -490,6 +489,27 @@ function offsetOf(url: string): number | undefined {
   return values.length === 1 ? decimalCount(values[0]) : undefined
 }
 
+/**
+ * Reads what is left of a request's body and drops it: resolves when it ended, or the request went (an
+ * end destroyed it, the request bound cut it). Resolves at once when nothing is left.
+ */
+function readOff(req: IncomingMessage): Promise<void> {
+  if (req.readableEnded || req.destroyed) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = (): void => {
+      req.off('end', done)
+      req.off('close', done)
+      req.off('error', done)
+      resolve()
+    }
+    req.on('end', done)
+    req.on('close', done)
+    req.on('error', done)
+    req.resume()
+  })
+}
+
+/** A refused-origin log line's origin: quoted and cut, never the whole header. */
 function originText(origin: string | undefined): string {
   return JSON.stringify((origin ?? 'none').slice(0, 100))
 }
@@ -1163,11 +1183,15 @@ export class WebGateway {
    * `Content-Length` given (no chunked body) and at most UPLOAD_CHUNK_MAX_BYTES, `offset` a count. The
    * writer checks the rest (the offset against what is written, the size, the empty file) and writes;
    * its answer goes back as JSON.
-   * A guest not entitled (the read role; a token unknown, another device's or ended) gets the gateway's
-   * one 404, the same bytes as a route that does not exist (D-26): a read guest cannot tell a live token
-   * from a guess. A write guest holding its own live token gets the protocol's answers (409 with
-   * `expected`, 413, 507): without the 409 a Chromium resend would end its file. Answers carry fixed
-   * words and project-relative names only (D-33). A line per file in the access log, never the token.
+   * A guest not entitled (the read role, a method other than PUT, a token unknown, another device's or
+   * ended) gets the guest block's 404, the same status, headers and body as a route that does not exist
+   * (D-26): a read guest cannot tell a live token from a guess, nor `/u/` from a missing route. A write
+   * guest holding its own live token gets the protocol's answers (400, 409 with `expected`, 413, 507,
+   * 500): without the 409 a Chromium resend would end its file. Answers carry fixed words and
+   * project-relative names only (D-33). A line per file in the access log, never the token.
+   * Every answer after the writer's goes once the body is read off (`readOff`): a writer that failed
+   * mid-body (ENOSPC) leaves the rest unread, and an answer sent over a request still being sent is lost
+   * to the reset that follows when the connection closes on unread bytes.
    */
   private async upload(
     req: IncomingMessage,
@@ -1179,9 +1203,9 @@ export class WebGateway {
     guest: GuestOnlyAccess | undefined
   ): Promise<void> {
     // Read live for this request (guestOf just now): a role changed to read refuses the next chunk.
-    if (guest && guest.role !== 'write') return this.notFound(res, host, { Connection: 'close' })
+    if (guest && guest.role !== 'write') return this.notFound(res, host)
     if (method !== 'PUT') {
-      if (guest) return this.notFound(res, host, { Connection: 'close' })
+      if (guest) return this.notFound(res, host)
       return this.json(res, host, 405, { error: 'method not allowed' }, { Allow: 'PUT', Connection: 'close' })
     }
     const uploads = this.deps.uploads
@@ -1189,7 +1213,7 @@ export class WebGateway {
     const grant = shaped ? uploads?.grant(token) : undefined
     // Another device's token answers as an unknown one (§3.1): nobody learns that it exists.
     if (!uploads || !grant || grant.deviceId !== device.id) {
-      if (guest) return this.notFound(res, host, { Connection: 'close' })
+      if (guest) return this.notFound(res, host)
       return this.json(res, host, 404, { error: UPLOAD_TOKEN_UNKNOWN_TEXT }, { Connection: 'close' })
     }
     // A chunked body has no length to hold against the cap before it is read.
@@ -1215,6 +1239,9 @@ export class WebGateway {
     // The file is over: failed (its temp deleted), or the upload ended while this chunk waited or ran.
     if (result.failed === true) this.logUpload(grant, device, offset, `cut: ${result.error}`)
     else if (result.status === 404) this.logUpload(grant, device, offset, 'cut: ended')
+    // The rest of the body read off first (at most 8 MiB, under the request bound), so the answer comes
+    // after the request as the client expects it, never into a reset.
+    await readOff(req)
     // An end (a revoke, a cancel, a stop) destroyed the request: nobody to answer.
     if (res.destroyed || res.headersSent) return
     if (guest && result.status === 404) return this.notFound(res, host)
@@ -1232,9 +1259,14 @@ export class WebGateway {
     this.deps.accessLog.write({ event: 'upload', device: device.id, name: device.name, file: grant.name, bytes, detail })
   }
 
-  /** The gateway's 404 for a route that does not exist; a guest's refusal is these same bytes (D-26). */
-  private notFound(res: ServerResponse, host: string, extra: Record<string, string> = {}): void {
-    this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found', extra)
+  /**
+   * The guest block's 404 for a route that does not exist; a guest's refusal on `/u/` is these same bytes,
+   * headers included (D-26). So no `Connection: close` on it: Node reads the body off and keeps the
+   * connection, as for a guest's POST to an unknown route, and the request bound (REQUEST_TIMEOUT_MS)
+   * caps how long a body is read off.
+   */
+  private notFound(res: ServerResponse, host: string): void {
+    this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found')
   }
 
   /** A refused download: 204 with no body and nothing a browser could render. */
