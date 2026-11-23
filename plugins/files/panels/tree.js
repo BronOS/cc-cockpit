@@ -379,7 +379,7 @@ function menuItems(target) {
   const remote = ccPanel.view?.remote === true
   // Who looks (a guest's role or the owner): a hint to leave out what the host would refuse.
   const access = ccPanel.view?.access === 'read' || ccPanel.view?.access === 'write' ? ccPanel.view.access : 'owner'
-  const entries = ccFilesMenu.menuEntries({ kind, rules: kind === 'file' ? rulesFor(rel) : [], system: env.system, shell: env.shell, remote, download: env.download, access })
+  const entries = ccFilesMenu.menuEntries({ kind, rules: kind === 'file' ? rulesFor(rel) : [], system: env.system, shell: env.shell, remote, download: env.download, upload: typeof ccPanel.upload?.pick === 'function', access })
   const items = []
   for (const e of entries) {
     if (e === 'sep') items.push('sep')
@@ -396,6 +396,8 @@ function menuItems(target) {
     else if (e === 'terminal') items.push(['Open terminal here', post('terminal')])
     else if (e === 'new-file') items.push(['New file…', () => askName({ action: 'create', kind: 'file', rel })])
     else if (e === 'new-folder') items.push(['New folder…', () => askName({ action: 'create', kind: 'dir', rel })])
+    // Inside this click: a browser opens its chooser only on the person's gesture.
+    else if (e === 'upload') items.push(['Upload here…', () => ccPanel.upload.pick({ folder: rel })])
     else if (e === 'copy-path') items.push(['Copy path', () => copy(absolutePath(rel))])
     else if (e === 'copy-relative') items.push(['Copy relative path', () => copy(rel)])
     else if (e === 'rename') items.push(['Rename…', () => askName({ action: 'rename', rel, kind })])
@@ -507,6 +509,51 @@ list.addEventListener('contextmenu', (ev) => {
   }
 })
 list.addEventListener('scroll', () => closeMenu(false))
+
+// ---- drops of files from the device (browser views only: ccPanel.upload) ----
+
+/** The project-relative folder a drop over `el` goes to (the rule: dist/lib/drop.js). */
+function dropFolder(el) {
+  const rowEl = el instanceof Element ? el.closest('.row') : null
+  return ccFilesDrop.dropFolder(rowEl ? rows.find((r) => r.el === rowEl) : null)
+}
+
+/** A drag that carries device files; the page takes only those (the SDK cancels the rest). */
+function takesDrag(ev) {
+  return ccFilesDrop.takesDrag({ types: ev.dataTransfer?.types, upload: typeof ccPanel.upload?.files === 'function', access: ccPanel.view?.access })
+}
+
+let dropMark = null // the row or the list showing where a drop would go
+function markDrop(folder) {
+  const row = folder === '' ? null : rows.find((r) => r.rel === folder && r.kind === 'dir')
+  const el = row ? row.el : list
+  if (el === dropMark) return
+  clearDrop()
+  dropMark = el
+  el.classList.add('drop-target')
+}
+function clearDrop() {
+  if (dropMark) dropMark.classList.remove('drop-target')
+  dropMark = null
+}
+
+list.addEventListener('dragover', (ev) => {
+  if (!takesDrag(ev)) return
+  ev.preventDefault()
+  ev.dataTransfer.dropEffect = 'copy'
+  markDrop(dropFolder(ev.target))
+})
+list.addEventListener('dragleave', (ev) => {
+  if (!ev.relatedTarget || !list.contains(ev.relatedTarget)) clearDrop()
+})
+list.addEventListener('drop', (ev) => {
+  if (!takesDrag(ev)) return
+  ev.preventDefault()
+  const folder = dropFolder(ev.target)
+  clearDrop()
+  // Inside the handler: after it the DataTransfer's items are gone.
+  ccPanel.upload.files(ev.dataTransfer, { folder })
+})
 window.addEventListener('blur', () => closeMenu(false))
 
 // ---- the name bar: Rename…, New file…, New folder… ----

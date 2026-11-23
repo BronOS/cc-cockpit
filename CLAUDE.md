@@ -62,6 +62,16 @@ implemented; design in `docs/design-overlay-views.md` (D-1 to D-4), plan in `doc
 user docs in `docs/features.md` ("Web access" › "Guests", the Reviewer entry). Three external review passes (sol/high);
 the guest e2e (`guest-overlay-views.spec.ts`) has run on macOS only.
 
+Uploads from the person's device (Files' Upload here and drops, a drop or paste of files onto a Claude or shell tab with the
+paths pasted into the prompt; owner and write guests, browser views and the desktop's remote window: `main/files/uploads.ts`,
+`upload-writer.ts`, the gateway's `/u/<token>`, `renderer/web/upload-*.ts`, `ccPanel.upload`) are implemented; design in
+`docs/design-upload.md` (§13 "As built"), plan in `docs/plans/completed/20261122-upload.md`, user docs in `docs/features.md`
+("Web access" › "Uploads", "Remote servers" › "Uploads"). Run: unit tests (Node, vitest), e2e in Electron's Chromium on macOS only (browser views, guests, server mode through darwin's
+`--server` start, never Linux; the remote window one case, Upload here over Direct, no drop or tab paste) and the bench's 1 GiB phase
+through the real writer; Firefox and WebKit ran only the spike harness, never the app. Not run: the app on Firefox, Safari and iOS, a real
+Finder drop, a packaged Mac's remote window (native chooser, SSH tunnel, My own tunnel), Claude Code attaching an image from
+the pasted path, clipboard cases (Excel, Word, Copy image), a 1 GiB upload over the internet (the plan's Post-Completion list).
+
 ## Commands
 
 - `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright). The OAuth spec and the
@@ -89,10 +99,10 @@ the guest e2e (`guest-overlay-views.spec.ts`) has run on macOS only.
   Electron main (build first, headless on Linux), with a packaged executable it runs that as Node (`ELECTRON_RUN_AS_NODE`);
   exits 1 on failure. Run it after changing `ssh-client.ts`, the ssh2 version or the bundling in `electron.vite.config.ts`.
 - `node --expose-gc scripts/web-terminal-bench.mjs [tabs] [seconds] [p99ms]`: the headless terminals' cost to main's event
-  loop, plus a streamed animated off-screen page (1280x800, then 1920x1080) through the real `FrameStream`, and a 1 GiB zip through the real zip writer; it re-runs itself
+  loop, plus a streamed animated off-screen page (1280x800, then 1920x1080) through the real `FrameStream`, a 1 GiB zip through the real zip writer, and a 1 GiB upload through the real upload writer; it re-runs itself
   as Electron's main (headless on Linux, no `npm run build` needed) and exits 1 when a phase's p99 is over the limit (parsing
   back on main, or encoding frames stalling it). Run it after changing `main/terminals/mirror.ts`, `mirror-worker.ts`,
-  `main/webview/frame-stream.ts` or `main/files/zip-writer.ts` / `downloads.ts`.
+  `main/webview/frame-stream.ts` or `main/files/zip-writer.ts` / `downloads.ts` or `main/files/upload-writer.ts`.
 
 ## Implementation patterns
 
@@ -332,6 +342,36 @@ the guest e2e (`guest-overlay-views.spec.ts`) has run on macOS only.
   server's `/d/` origin only, a click within 5 s, one at a time and 3 per 10 s per server, 4 GiB cap, sanitised name, a hidden
   `.cc-download-*` temp then an exclusive `fs.link` (never overwrite or follow), never opened. Its `setSavePath` must be called
   inside the event (else Electron shows a dialog), and nothing there may call `dialog`.
+- Uploads (design-upload.md, `main/files/uploads.ts`, `upload-writer.ts`): `/u/<token>` is the one route that takes a PUT, admitted
+  before the guest 404 block and behind the full cookie-and-key check (`/d/` skips the device key; in None mode both are the token alone); a token is per file and
+  multi-use (chunks at `offset`), minted by `uploads.begin` / `resolve` for the device and bound to it, one idle clock (60 s of
+  body bytes) per upload, chunks sized to finish inside the 30 s request bound (`connectionsCheckingInterval` 5 s, a cut is a
+  408). Answers are JSON with real statuses; a guest not entitled gets the guest block's 404 byte for byte. Teardowns are
+  revoke, disconnect, leaving None mode, gateway stop, window close, every narrowing of a guest (`dropTransfersOf`; a widening's reconnect leaves it running); each
+  deletes its temp (a cancel or the idle clock of an upload with a settled file finishes it instead, so its paths still
+  paste). While the writer holds a chunk the socket's idle timeout is ignored (a no-hard-link commit copies with nothing
+  on the socket). The writer writes `.cc-upload-<hex>` beside the target, then commits by exclusive `link` (`rename` only
+  for Replace; no-hard-link volumes use `copyExclusive`), and records each temp with its project root in
+  `<data>/uploads/temps.json` before creating it; the start sweep deletes only what that record names and still lies in its
+  root. Names are checked in main (`HIDDEN_TEXT`, `.git` refused); never trust a name, size or folder from the page.
+  Deletes are checked against the written file's identity (`removeIfOwn`, its `fstat`) and unlink through `unlinkInDir`,
+  which re-reads the folder's real path (against one read before the check, never the lexical `dirname`) just before the `unlink`
+  and refuses a moved one; Node has no `unlinkat`, so a rename over the name or an ancestor swapped for a link between
+  that re-check and the `unlink` still wins (for `removeIfOwn` an ancestor swap's gap moved to `realpath`..`unlink`; a file replaced at the name keeps `lstat`..`unlink`). Accepted (design-upload.md §13 "Name-based deletes", its threat model): it covers the
+  owner's own OS user only; another OS user who can write the project folder or an ancestor is not covered, by these
+  deletes or by any name-based write in the app; an aside rename does not close it. A committed temp is never truncated (a hard link's temp is the placed file); only an abort's `discard` truncates.
+- `ccPanel.upload` (`src/sdk/panel*.ts`) posts `cc-plugin.upload` to the parent only, and the shell accepts it from a mounted
+  panel frame alone (`PluginFrame`, checked against `event.source`; overlays, slots and page tabs never), then names the panel
+  key in `uploads.begin`, which main resolves against the layout. A file is read only in the page (the `File` goes to
+  `fetch` PUT as `slice`, never XHR: an XHR PUT of a whole `File` failed in the spike; slices because the chunk size adapts).
+- The terminal paste after an upload (`uploads.paste`): main checks and writes in one synchronous step (`Uploads.paste` calls
+  `facts.input`): the text goes in as the calling view's own `tabs.input` (the owner's or the write guest's handler, after
+  `IpcRouter.writesTabNow`, so the tab is `typed`), wrapped for bracketed paste when the page says its terminal is in that
+  mode; the shell types nothing (typing main's answer itself left a round trip in which Claude could reach a permission
+  dialog). Main allows the automatic one only for a shown, live tab at `waiting` (a shell tab needs no status), once per
+  upload; otherwise it is held and the person's Paste path click is the retry. Never an `await` between the check and the
+  write (the router's `paste` dep is synchronous). A path with a control, bidi or invisible character is never pasted. The five `uploads.*` invoke channels are all `adapted` (served only to `view.remote`) with `GUEST_CLASS` `write`; there
+  is no upload event channel.
 - `ctx.processes` (host-local, design.md §4 "Processes"): argv only, bytes not text, 16 live children per plugin, process
   groups SIGKILLed on `kill`, when the leader exits, on plugin dispose and on host stop; not a capability (the host could `ctx.exec` anyway), so the cap and the kill are the control.
 - Editor host rules (`plugins/editor`): saves are compare-and-swap against what was last read, so a write Claude made

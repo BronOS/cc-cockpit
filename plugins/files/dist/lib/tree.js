@@ -31,6 +31,12 @@ function normalizeRelative(rel) {
   return parts.join('/')
 }
 
+/**
+ * A writer's temp in an upload's target folder: exactly `.cc-upload-` plus 16 lowercase hex, the
+ * shape main makes (upload-writer.ts `TEMP_NAME`), so a person's own `.cc-upload-notes.txt` stays
+ * listed.
+ */
+const isUploadTemp = (name) => /^\.cc-upload-[0-9a-f]{16}$/.test(name)
 const joinRel = (dir, name) => (dir === '' ? name : `${dir}/${name}`)
 
 /** Inside `root` (a real path) or `root` itself. */
@@ -84,6 +90,8 @@ async function listDir(root, rel, { exec, hideHidden = false, hideIgnored = fals
   let entries = []
   for (const d of dirents) {
     if (d.name === '.git') continue
+    // An upload's temp (design-upload §3): never shown, whatever the hidden setting says.
+    if (isUploadTemp(d.name)) continue
     if (hideHidden && d.name.startsWith('.')) continue
     const e = { name: d.name, kind: d.isDirectory() ? 'dir' : d.isFile() ? 'file' : 'other' }
     if (d.isSymbolicLink()) {
@@ -211,7 +219,8 @@ function rankMatches(paths, query, { hideHidden = false } = {}) {
 async function searchablePaths(exec, root) {
   try {
     const r = await exec(['git', 'ls-files', '-z', '-c', '-o', '--exclude-standard'], { timeoutMs: 15000 })
-    if (r.code === 0) return [...new Set(String(r.stdout).split('\0').filter(Boolean))]
+    // An in-flight upload's temp is an untracked, unignored file to git, so it is dropped here too.
+    if (r.code === 0) return [...new Set(String(r.stdout).split('\0').filter((p) => p && !isUploadTemp(p.slice(p.lastIndexOf('/') + 1))))]
   } catch {
     // not git: walk below
   }
@@ -226,7 +235,7 @@ async function searchablePaths(exec, root) {
       continue
     }
     for (const d of ds) {
-      if (d.name === '.git') continue
+      if (d.name === '.git' || isUploadTemp(d.name)) continue
       const rel = joinRel(dir, d.name)
       if (d.isDirectory()) stack.push(rel)
       else if (d.isFile()) out.push(rel)
@@ -238,6 +247,7 @@ async function searchablePaths(exec, root) {
 
 module.exports = {
   MAX_ENTRIES,
+  isUploadTemp,
   MAX_RESULTS,
   normalizeRelative,
   joinRel,

@@ -285,6 +285,7 @@ export function SplitArea(props: {
                   onRestart={() => props.onRestart(tab.id)}
                   onClose={() => props.onClose(tab.id)}
                   canWrite={allows.write}
+                  onSelect={() => props.onPanePress(tab.id)}
                 />
               </div>
             )}

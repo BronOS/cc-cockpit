@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react'
 import type { TabInfo } from '../../shared/ipc'
-import { isOwnView } from '../shell-kind'
+import { isOwnView, isWebShell, viewAccessHint } from '../shell-kind'
 import { ExitedBanner } from './ExitedBanner'
+import { takesUploads } from './terminal-drop'
 import type { SessionRegistry } from './terminal-session'
 
 /**
@@ -20,17 +21,31 @@ export function TerminalView(props: {
   onClose: () => void
   /** Restart and Close on the exited banner (default): not for a read-only guest. */
   canWrite?: boolean
+  /**
+   * Selects this pane, as a press on it does (SplitArea's onPanePress): a file drop on the terminal
+   * counts as a click there (design-upload.md §4.1).
+   */
+  onSelect?: () => void
 }): React.JSX.Element {
   const { tab, shown, focused, sessions } = props
   const host = useRef<HTMLDivElement>(null)
+  // Read at the drop, so the attach below does not run again on every render's new callback.
+  const select = useRef(props.onSelect)
+  useEffect(() => {
+    select.current = props.onSelect
+  }, [props.onSelect])
+  const kind = tab.kind
 
   useEffect(() => {
     const el = host.current
     if (!el) return
     const session = sessions.get(tab.id)
-    session.attach(el)
+    // Uploads from this device (design-upload.md §4.1): a Claude or shell tab of the web shell, not a
+    // read guest's view (a UI hint: main refuses by the view's role); command and page tabs take nothing.
+    const entry = takesUploads(kind, isWebShell(), viewAccessHint()) ? { tabId: tab.id, select: () => select.current?.() } : undefined
+    session.attach(el, entry)
     return () => session.detach()
-  }, [sessions, tab.id])
+  }, [sessions, tab.id, kind])
 
   useEffect(() => {
     if (focused) sessions.get(tab.id).focus()

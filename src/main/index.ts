@@ -87,6 +87,7 @@ import {
   registerGroupHandlers,
   registerWebviewHandlers,
   registerGuestHandlers,
+  registerUploadHandlers,
   summary
 } from './ipc/router'
 import { registerRoomStripHandlers, registerRoomViewHandlers } from './ipc/room-handlers'
@@ -133,6 +134,8 @@ import { bundledPluginSpecs, bundledRoot } from './plugins/bundled'
 import { electronConfirmLink, QueuedLinkConfirm } from './plugins/link-dialog'
 import { LINK_ASK_MS, LinkAsks } from './plugins/link-asks'
 import { Downloads } from './files/downloads'
+import { Uploads } from './files/uploads'
+import { UploadWriter } from './files/upload-writer'
 import { electronSystemShell } from './files/electron-shell'
 import { SystemFiles } from './files/system-files'
 import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
@@ -481,6 +484,9 @@ function start(server: boolean): void {
   // A forgotten project ends its guests and drops its invites (GuestStore.projectRemoved, design-guests §4). Set
   // once the guest store exists (below); a forget before that (none at start) has no guests to end.
   const guestsForget: { project?: (id: string) => void } = {}
+  // The uploads are made after the GuestStore, whose constructor already ends the guests that lapsed while the app
+  // was off: that early `end()` must find nothing to drop (no upload can exist yet), not a `const` in its dead zone.
+  const uploadsRef: { current?: Uploads } = {}
   const registry = new ProjectRegistry({
     dataDir,
     onForget: (id) => {
@@ -1064,6 +1070,9 @@ function start(server: boolean): void {
       trashAsks.windowClosed(windowId)
       // Its `ccc download` offers end (settled for every view) and an accepted one's Try again with them.
       downloads.windowClosed(windowId)
+      // Its uploads end (design-upload.md §3.4): the live request cut, every temp deleted (by the writer's own
+      // descriptors and paths, not through the project folder, which this window no longer has).
+      void uploads.dropWindow(windowId).catch((err: unknown) => warnLog(`uploads: ending a closed window's uploads failed: ${errorText(err)}`))
       roomRemoveAsks.windowClosed(windowId)
       // Its in-page notices end as dismissed (server mode; a plugin waiting on one is told now).
       pageNotices?.windowClosed(windowId)
@@ -2511,6 +2520,8 @@ function start(server: boolean): void {
     dropPageTokens: (deviceId) => pluginPages.tokens.dropDevice(deviceId),
     // Created further down (it needs the gateway's view lookups); only called once guests act, long after.
     dropDownloads: (deviceId) => downloads.dropDevice(deviceId),
+    // The same for uploads (design-upload.md §3.4); never a rejection in main.
+    dropUploads: (deviceId) => void uploadsRef.current?.dropDevice(deviceId).catch((err: unknown) => warnLog(`guests: ending uploads failed: ${errorText(err)}`)),
     pluginShown: (projectId, pluginId) => pluginGuestAccess.visible(projectId, pluginId),
     // A role downgrade warns about the guest's own unsaved pages only.
     unsavedOf: guestUnsavedOf((viewId) => views.whoOf(viewId), { access: (who) => guestStore.access(who) }, (projectId, inView) =>
@@ -2650,12 +2661,36 @@ function start(server: boolean): void {
     dataDir,
     log: warnLog
   })
+  // Uploads from a browser view's device (design-upload.md): uploads.ts decides (folder, names, caps,
+  // tokens, limits) and the writer puts the bytes on disk (temps in the target folder, the record in
+  // <data>/uploads/temps.json, swept at start before the gateway takes a PUT). The project folder is the
+  // window's own project's (main's window table): a window that is closing has none, so a commit then fails.
+  const uploadProjectRoot = (windowId: number): string | undefined => {
+    const projectId = projectOfWindow(windowId)
+    return projectId === undefined ? undefined : registry.get(projectId)?.path
+  }
+  const uploadWriter: UploadWriter = new UploadWriter({
+    grants: () => uploads,
+    projectRoot: uploadProjectRoot,
+    tempsFile: paths.uploadTempsJson,
+    log: warnLog
+  })
+  const uploads: Uploads = new Uploads({ projectRoot: uploadProjectRoot, dataDir, writer: uploadWriter, log: warnLog })
+  uploadsRef.current = uploads
   const webGateway = new WebGateway({
     log: warnLog,
     auth: webAuth,
     accessLog: webAccessLog,
     pages: pluginPages,
     downloads,
+    // `/u/<token>` (design-upload.md §3.2): the grants are uploads.ts's, the bytes the writer's; the gateway
+    // ends a device's uploads on its revoke, disconnect and leaving None mode, and all of them at its stop.
+    uploads: {
+      grant: (token) => uploads.grant(token),
+      writeChunk: (token, offset, body, length) => uploadWriter.writeChunk(token, offset, body, length),
+      dropDevice: (deviceId) => uploads.dropDevice(deviceId),
+      dropAll: () => uploads.dropAll()
+    },
     // The invite redeem route, guest sessions and the guests' 404s (design-guests §4, §5).
     guests: guestStore,
     // The renderer build next to main's (out/renderer): the web shell and its shared assets.
@@ -3670,6 +3705,24 @@ function start(server: boolean): void {
     input: webviewInput
   })
 
+  // A view's keys into a tab: the owner's and a write guest's (tabs/view-input.ts, guest-wiring.ts). Named here
+  // because the upload paste (design-upload.md §4.3) writes through the very same two, as the view's own input.
+  const ownerTabInput = viewInputHandler({
+    viewInput: (projectId, tabId, data, viewId) => tabs.viewInput(projectId, tabId, data, viewId),
+    userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
+    acted: (projectId, tabId, viewId) => {
+      selections.typed(projectId, viewId, tabId)
+      presence.typed(viewId, tabId)
+    }
+  })
+  const guestTabs = guestTabDeps({
+    presence,
+    tabExists: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
+    selections,
+    tabs,
+    userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
+    closeAsks: guestCloseAsks
+  })
   registerTabHandlers(router, {
     // The first attach of a restored window starts its saved tabs (restore.ts says why only
     // now); the renderer subscribed to tabs.data before asking, so no early output is lost. Then,
@@ -3696,15 +3749,10 @@ function start(server: boolean): void {
     // means "the person typed" because nothing main or a plugin types ever comes through here.
     // With web access on, the view's own query replies are stripped (main's copy answers them,
     // TabManager.viewInput); the registry sees what reached the pty. A browser's keys take this
-    // same path (tabs/view-input.ts): `typed` and the send gate apply unchanged.
-    input: viewInputHandler({
-      viewInput: (projectId, tabId, data, viewId) => tabs.viewInput(projectId, tabId, data, viewId),
-      userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
-      acted: (projectId, tabId, viewId) => {
-        selections.typed(projectId, viewId, tabId)
-        presence.typed(viewId, tabId)
-      }
-    }),
+    // same path (tabs/view-input.ts): `typed` and the send gate apply unchanged. The one other writer
+    // through it is the upload paste (registerUploadHandlers below): the paths of the person's own drop
+    // or file paste, from that view's own call, checked and written in one step (design-upload.md §4.3).
+    input: ownerTabInput,
     // Per view (main/tabs/terminal-sizes.ts): the pty takes a view's size only while it sizes the tab.
     resize: (projectId, tabId, cols, rows, viewId) => tabs.resize(projectId, tabId, cols, rows, viewId),
     fit: (projectId, tabId, viewId) => tabs.fit(projectId, tabId, viewId),
@@ -3729,14 +3777,7 @@ function start(server: boolean): void {
     everyone: (windowId, event) => views.toWindow(windowId, event.channel, event.payload),
     // A guest's terminal acts (design-guests §7, §8): its own selection and presence, sizes by explicit take only,
     // keys that set `typed`, and a close of a tab it did not open asked of the owner's views (D-9).
-    guest: guestTabDeps({
-      presence,
-      tabExists: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
-      selections,
-      tabs,
-      userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
-      closeAsks: guestCloseAsks
-    }),
+    guest: guestTabs,
     // A view's tab pane selection, for SessionInfo.active (the view that acted last,
     // tabs/view-selections.ts). Only a tab of the sender's project counts: anything else (a tab
     // closed while the message travelled, a foreign id) leaves it as it was.
@@ -3992,6 +4033,39 @@ function start(server: boolean): void {
       return downloads.accept({ viewId, windowId, deviceId }, requestId, all)
     },
     downloadDecline: (windowId, requestId) => downloads.decline(windowId, requestId)
+  })
+  // Uploads (design-upload.md §3.1): the view's device is main's own (the connection's sign-in, `none` in None
+  // mode), as the gateway keys `/u/`; the source panel through the layout's zones now, the tab through main's
+  // tab table, both in the caller's own project. The terminal entry's paste (§4.3) reads, at the call, the
+  // source tab in main's tab table (its starting folder, its exit), its Claude status in the session registry
+  // and the calling view's selection (ViewSelections), never the payload, and writes the text through the
+  // view's own input path (the owner's or the write guest's, as `tabs.input` would) in that same step.
+  registerUploadHandlers(router, {
+    deviceOf: (viewId, windowId) => webConnections.deviceIdOf(viewId, windowId),
+    placedPanel: (projectId, panelKey) => layouts.placedPanel(projectId, panelKey),
+    tabKind: (projectId, tabId) => tabs.list(projectId).find((t) => t.id === tabId)?.kind,
+    begin: (caller, source, folder, files) => uploads.begin(caller, source, folder, files),
+    resolve: (caller, uploadId, choice) => uploads.resolve(caller, uploadId, choice),
+    cancel: (caller, uploadId) => uploads.cancel(caller, uploadId),
+    folders: (windowId, path) => uploads.folders(windowId, path),
+    paste: (call) =>
+      uploads.paste(call.caller, call.uploadId, call.manual, {
+        guest: call.guest,
+        bracketed: call.bracketed,
+        input: (tabId, data) => {
+          if (!call.mayType(tabId)) return false
+          if (call.guest) guestTabs.input(call.projectId, tabId, data, call.viewId)
+          else ownerTabInput(call.projectId, tabId, data, call.viewId)
+          return true
+        },
+        selected: selections.selectionOf(call.viewId),
+        tab: (tabId) => {
+          const tab = tabs.list(call.projectId).find((t) => t.id === tabId)
+          if (!tab) return undefined
+          const status = tab.kind === 'claude' ? sessions.get(tabId)?.status : undefined
+          return { kind: tab.kind, cwd: tab.cwd, exited: tab.exit !== undefined, ...(status !== undefined ? { status } : {}) }
+        }
+      })
   })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.
@@ -4436,6 +4510,22 @@ function start(server: boolean): void {
     .whenReady()
     .then(async () => {
       serverHold = holdForRun(platformRow, powerHolds)
+      // The temps a crash left mid-upload go before the gateway can take a `/u/` PUT (design-upload.md §2.4):
+      // on the desktop `runStartOrder` does not await the gateway, so the sweep is awaited here, first. Never a
+      // reason not to start (the writer logs what it could not delete and keeps it for the next sweep).
+      // A deadline (5 s): a stale temp under an unreachable network share must not hold the start. The sweep goes on
+      // after it (its final update keeps entries live by then), and the gateway starts anyway.
+      let sweepTimer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        uploadWriter.sweepTemps().catch((err: unknown) => warnLog(`uploads: the temps sweep failed: ${errorText(err)}`)),
+        new Promise<void>((resolve) => {
+          sweepTimer = setTimeout(() => {
+            warnLog('uploads: the temps sweep is still running after 5 s; starting anyway')
+            resolve()
+          }, 5000)
+        })
+      ])
+      clearTimeout(sweepTimer)
       // server-start.ts has the order. The socket first, so the first Claude tab already has a live
       // socket to report to (milliseconds; the stale probe is capped at 500 ms; on the desktop false
       // only logs and its tabs get no CC_COCKPIT_SOCK, see the TabManager `sock` above). In server

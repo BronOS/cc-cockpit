@@ -61,6 +61,25 @@ test('listDir: folders first, natural order, .git never listed, dotfiles shown',
   assert.equal(l.more, 0)
 })
 
+test('listDir and the filter walk never show an upload temp (.cc-upload-*)', async () => {
+  const p = project()
+  for (const f of ['a.txt', '.cc-upload-0123456789abcdef', 'sub/b.txt', 'sub/.cc-upload-fedcba9876543210', '.env']) p.write(f)
+  assert.deepEqual(names(await tree.listDir(p.root, '', { exec: p.exec })), ['sub', '.env', 'a.txt'])
+  assert.deepEqual(names(await tree.listDir(p.root, 'sub', { exec: p.exec })), ['b.txt'])
+  assert.deepEqual(names(await tree.listDir(p.root, '', { exec: p.exec, hideHidden: false })), ['sub', '.env', 'a.txt'])
+})
+
+test('isUploadTemp: only the shape main makes; a similar name of the person stays listed', async () => {
+  assert.equal(tree.isUploadTemp('.cc-upload-0123456789abcdef'), true)
+  for (const name of ['.cc-upload-notes.txt', '.cc-upload-', '.cc-upload-0123456789ABCDEF', '.cc-upload-0123456789abcdef0', '.cc-upload-0123456789abcde', 'x.cc-upload-0123456789abcdef', '.cc-upload-0123456789abcdef.txt']) {
+    assert.equal(tree.isUploadTemp(name), false, name)
+  }
+  const p = project()
+  for (const f of ['.cc-upload-notes.txt', '.cc-upload-0123456789abcdef']) p.write(f)
+  assert.deepEqual(names(await tree.listDir(p.root, '', { exec: p.exec })), ['.cc-upload-notes.txt'])
+  assert.deepEqual(await tree.searchablePaths(p.exec, p.root), ['.cc-upload-notes.txt'])
+})
+
 test('listDir: hideHidden drops dot names', async () => {
   const p = project()
   p.write('.env')
@@ -164,10 +183,15 @@ test('searchablePaths: git files without ignored ones, walk outside git', async 
   p.write('.gitignore', 'node_modules/\n')
   p.write('node_modules/x/index.js')
   p.write('src/a.js')
+  // An in-flight upload's temp is untracked and not ignored: git lists it, the filter must not.
+  p.write('.cc-upload-0123456789abcdef')
+  p.write('src/.cc-upload-fedcba9876543210')
+  p.run('add', 'src/a.js')
   const got = (await tree.searchablePaths(p.exec, p.root)).sort()
   assert.deepEqual(got, ['.gitignore', 'src/a.js'])
   const q = project({ git: false })
   q.write('a/b.txt')
   q.write('c.txt')
+  q.write('a/.cc-upload-0123456789abcdef')
   assert.deepEqual((await tree.searchablePaths(q.exec, q.root)).sort(), ['a/b.txt', 'c.txt'])
 })

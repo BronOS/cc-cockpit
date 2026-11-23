@@ -11,7 +11,8 @@
 // Chromium lets a frame open a popup only with transient user activation (a real click or Enter on the link, about
 // 5 s), so no click means no request at all; a mail has no script to ask without one anyway.
 import { checkWebUrl, MAX_PLUGIN_URL_LENGTH } from '../../shared/web-url'
-import { EXTERNAL_OPEN_WINDOW_MS, MAX_EXTERNAL_OPENS_PER_WINDOW, RateWindow } from '../plugins/host-api'
+import { EXTERNAL_OPEN_WINDOW_MS, MAX_EXTERNAL_OPENS_PER_WINDOW } from '../plugins/host-api'
+import { RateWindow } from '../rate-window'
 import { warnLog } from '../warn-log'
 
 /** The part of Electron's WebFrameMain this rule reads (a fake in the unit test). */

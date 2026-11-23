@@ -54,9 +54,9 @@ module.exports = tseslint.config(
   },
   {
     // The files plugin's panel page: a classic script in a sandboxed frame, with the panel SDK's global
-    // and the plugin's menu helper (dist/lib/menu.js), loaded first by the page.
+    // and the plugin's helpers (dist/lib/menu.js, dist/lib/drop.js), loaded first by the page.
     files: ['plugins/files/panels/**/*.js'],
-    languageOptions: { globals: { ...globals.browser, ccPanel: 'readonly', ccFilesMenu: 'readonly' }, sourceType: 'script' }
+    languageOptions: { globals: { ...globals.browser, ccPanel: 'readonly', ccFilesMenu: 'readonly', ccFilesDrop: 'readonly' }, sourceType: 'script' }
   },
   {
     // The sessions plugin's panel and slot pages: classic scripts with the panel SDK's global and the

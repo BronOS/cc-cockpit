@@ -65,6 +65,7 @@ import {
   touchRecent,
   type SwitcherState
 } from './tab-switcher'
+import { registerTerminalPane, terminalPaneOf } from './terminal-drop'
 import { SessionRegistry, tabIo } from './terminal-session'
 import { checkFrameFocus, pageFrames, setFrameFocusHandler } from './PageTabArea'
 import { chordTarget, type ChordSource } from './frame-focus'
@@ -249,6 +250,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     viewRef.current = view
     autoZoomRef.current = autoZoom
   }, [state, view, autoZoom])
+  // The terminal entry of uploads (terminal-drop.ts, design-upload.md §4.3): the upload controller lives
+  // outside React and asks this view, at the paste, whether its keys are off (D3's or a refused frame's:
+  // no command, and no paste, acts on a pane then) and this view's terminal of the tab, for the paste main
+  // writes (its act and its bracketed-paste mode), only while that tab is the one selected here (`terminalPaneOf`).
+  useEffect(
+    () => registerTerminalPane(terminalPaneOf(() => stateRef.current, (tabId) => sessions.pasteMode(tabId))),
+    [sessions]
+  )
   // "Close <tab>?" (close-confirm.ts): the question shown, null when no dialog is up.
   const [confirm, setConfirm] = useState<CloseQuestion | null>(null)
   // The start-up "Install the ccc command?" (main decides once per launch, ccc-offer.ts): the link's

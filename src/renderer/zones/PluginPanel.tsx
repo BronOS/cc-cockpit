@@ -7,6 +7,7 @@ import { SlotFrames } from './SlotFrame'
 import { WebviewPanel } from './WebviewPanel'
 import { viewAccessHint } from '../shell-kind'
 import { shellAllows } from '../tabs/guest-shell'
+import { panelUploadMessage } from '../web/upload-request'
 
 /** `<pluginId>/<panelId>` -> the plugin id (plugin ids hold no slash, so the last one splits). */
 function pluginOf(panelKey: string): string {
@@ -99,6 +100,9 @@ export function PluginPanel(props: { info: PanelInfo }): React.JSX.Element {
           title={title}
           className="plugin-frame"
           connect={(deliver) => requestPanelPort(panelKey, deliver)}
+          // `ccPanel.upload` (design-upload.md §5.2): taken from a panel frame in a zone only, this
+          // one; overlays, slots, the settings page and page tabs never route here.
+          onPageMessage={(data, from) => panelUploadMessage(panelKey, { source: from.source, data }, from.frame)}
         />
       ) : (
         <p className="panel-placeholder">{title} has no page</p>

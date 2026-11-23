@@ -1113,6 +1113,12 @@ body.shell-dragging .page-tab-frame {
    axis only and is kept at the bottom and the cursor (terminal-session.ts). The other axis stays
    hidden: a scaled font's cell rounding can overshoot it by a pixel or two, which is no reason for a
    scrollbar. */
+/* A `Files` drag over a terminal that takes uploads (terminal-drop.ts, design-upload.md §4.1): the drop
+   lands in this pane. Inset, so a split's neighbour keeps its own edge. */
+.terminal-host.terminal-drop-target {
+  box-shadow: inset 0 0 0 2px var(--cc-accent);
+  background: color-mix(in srgb, var(--cc-accent) 10%, var(--cc-terminal-bg));
+}
 .terminal-host.terminal-crop-cols {
   overflow-x: auto;
 }
@@ -5464,4 +5470,83 @@ ul.settings-alert {
   cursor: pointer;
   font-size: 16px;
   line-height: 1;
+}
+/* Uploads (UploadDialog, UploadClashDialog, ShellNotices UploadUiLayer): the chooser's tree and file list, and the progress bar. */
+.upload-dialog {
+  width: min(520px, 92vw);
+}
+.upload-folder-tree,
+.upload-folder-tree ul,
+.upload-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.upload-folder-tree {
+  max-height: 32vh;
+  overflow: auto;
+  margin-bottom: 10px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  padding: 4px;
+}
+.upload-folder-row {
+  display: flex;
+  align-items: center;
+}
+.upload-folder-row.selected {
+  background: var(--cc-bg-hover, rgba(127, 127, 127, 0.2));
+}
+.upload-folder-twist,
+.upload-folder-name {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 2px 4px;
+  text-align: left;
+}
+.upload-folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.upload-folder-more {
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-sm, 12px);
+}
+.upload-files {
+  max-height: 18vh;
+  overflow: auto;
+  margin-bottom: 10px;
+  color: var(--cc-fg-muted);
+}
+.upload-file-name {
+  overflow-wrap: anywhere;
+}
+/* The clash dialog's full list of names: its own scroll, so up to 100 long names never push the buttons off screen. */
+.upload-clash-names {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 4px;
+  max-height: 24vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+}
+.upload-notice-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.upload-bar {
+  width: 100%;
+  height: 6px;
+}
+.upload-held {
+  color: var(--cc-fg-muted);
 }

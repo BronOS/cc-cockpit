@@ -27,8 +27,9 @@ tested).
 - **Web access.** Open a project in a browser on your phone or another computer, live on both screens: the same tabs,
   terminals and panels. On by default, listening on this computer only (127.0.0.1); sign in by link, password or a
   desktop confirm (Settings > General). Files >
-  Download and `ccc download` send a file, or a folder as a streamed .zip, to the device you are on
-  ([docs/features.md](docs/features.md#web-access)).
+  Download and `ccc download` send a file, or a folder as a streamed .zip, to the device you are on; Upload sends files
+  from that device into the project (drop on a Files folder or a Claude or shell tab, Files > Upload here, or paste
+  into a tab), with a name-clash dialog ([docs/features.md](docs/features.md#web-access)).
 - **Server mode (Linux, and macOS).** Run it on a machine with no display (`cc-cockpit --server`, or just start it with no
   `DISPLAY`), or on a Mac under a LaunchAgent with no window shown, and use it only from browsers: sign-in is managed from a shell with `ccc web`, secrets live in a key file,
   and approvals happen in the browser. Not tested beyond the unpacked build on Linux and the repo's own Electron on a Mac; see

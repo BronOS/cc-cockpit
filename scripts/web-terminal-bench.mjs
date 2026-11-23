@@ -41,7 +41,14 @@
 //      and bytes per second. With the 4th argument `sweep` it first prints the table without the
 //      budget (N = 1, 4, 8, 12 at 1280x800 and 1920x1080, informational); always it runs 12 pages
 //      at 1920x1080 under the real FrameBudget (src/main/webview/frame-budget.ts), which must pass.
-// Exits 1 when phase 1's, 5's, 6's, 7's or 8's p99 delay is over the limit, so a change that puts parsing back
+//   9. upload (design-upload.md §7, plan 20261122-upload.md Task 13): the flood again while the real
+//      UploadWriter (src/main/files/upload-writer.ts) takes a 1 GiB file in 8 MiB PUTs (the chunk cap) over
+//      loopback, from a client in this process to a plain http server that hands each request to
+//      `writeChunk` as the gateway's `/u/` route does. The real gateway needs a device store, cookies and
+//      secret hashes, which are not cheap to stand up here, so the route itself is not in the loop; the
+//      request parsing, the socket and the writer's body loop with its fs writes and commit are. The file
+//      lives in a temp dir that is deleted at the end; the phase throws when 1 GiB is not at its name.
+// Exits 1 when phase 1's, 5's, 6's, 7's, 8's or 9's p99 delay is over the limit, so a change that puts parsing back
 // on main, or lets frames take main from the terminals, fails the bench.
 //
 // It runs as Electron's main process (the off-screen page needs Electron): started with node, it
@@ -49,7 +56,8 @@
 // `--ozone-platform=headless --disable-gpu`, so no display is needed) and exits with its status.
 import { spawn } from 'node:child_process'
 import { build } from 'esbuild'
-import { mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { request as httpRequest, createServer, Agent } from 'node:http'
 import { Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createRequire } from 'node:module'
@@ -361,6 +369,97 @@ async function zipDownload(lib, tmp) {
   return r
 }
 
+/**
+ * Phase 9: the flood beside a 1 GiB upload through the real UploadWriter, in 8 MiB PUTs over loopback,
+ * one at a time as the page sends them. The writes are fs calls on the libuv pool; what could reach
+ * main is the request's data events, the per-piece awaits and the commit's link. Not measured: the
+ * temps record's synchronous flush at a file's first chunk (mkdir, open, write, fsync, rename on main),
+ * which runs once per file, so one 1 GiB file never shows it in a p99 (an upload of many files pays it each).
+ * The measured window is the upload's own (it ends when the last PUT is answered): a longer window
+ * would be flood alone and dilute the p99 the gate reads.
+ */
+async function uploadPhase(lib, tmp) {
+  const TOTAL = 1024 * 1024 * 1024
+  const CHUNK = 8 * 1024 * 1024
+  // Under the bench's own tmp (a real path, as phase 7's zip-tree), so main's finally and the next run
+  // remove a leftover; a stale big.bin would pass the size check while the new file took a numbered name.
+  const dir = join(tmp, 'upload-tree')
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const token = 'bench-token'
+  const grant = { token, uploadId: 'bench-upload-0000', deviceId: 'bench', windowId: 1, index: 0, folderReal: dir, folderRel: '', name: 'big.bin', choice: 'new', size: TOTAL }
+  let outcome
+  const writer = new lib.UploadWriter({
+    grants: () => ({
+      grant: (t) => (t === token && !outcome ? grant : undefined),
+      touch() {},
+      settle(_t, o) {
+        outcome = o
+      }
+    }),
+    projectRoot: () => dir,
+    tempsFile: join(tmp, 'upload-temps.json'),
+    log: (m) => console.log(m)
+  })
+  const server = createServer(async (req, res) => {
+    const offset = Number(req.headers['x-offset'])
+    const r = await writer.writeChunk(token, offset, req, Number(req.headers['content-length']))
+    res.writeHead(r.status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(r))
+  })
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok))
+  const port = server.address().port
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 })
+  const body = Buffer.alloc(CHUNK)
+  for (let at = 0; at < CHUNK / 2; ) at += body.write(text.slice(0, CHUNK / 2 - at), at, 'latin1')
+  for (let i = CHUNK / 2; i < CHUNK; i++) body[i] = Math.floor(rand() * 256)
+  const put = (offset) =>
+    new Promise((ok, fail) => {
+      const req = httpRequest({ host: '127.0.0.1', port, method: 'PUT', agent, headers: { 'content-length': CHUNK, 'x-offset': offset } }, (res) => {
+        let out = ''
+        res.setEncoding('utf8')
+        res.on('data', (d) => (out += d))
+        res.on('end', () => (res.statusCode === 200 ? ok(JSON.parse(out)) : fail(new Error(`PUT at ${offset}: ${res.statusCode} ${out}`))))
+      })
+      req.on('error', fail)
+      req.end(body)
+    })
+  let done = false
+  let sent = 0
+  const t0 = performance.now()
+  let uploadEnd = t0
+  const upload = (async () => {
+    try {
+      for (let off = 0; off < TOTAL; off += CHUNK) {
+        await put(off)
+        sent += CHUNK
+      }
+    } finally {
+      uploadEnd = performance.now()
+      done = true
+    }
+  })()
+  const count = { posted: 0 }
+  let r
+  try {
+    // 0 s: the window ends with the upload (see the header comment), never at SECONDS.
+    r = await measure(0, () => floodTick(count), () => done)
+    await upload
+    const seconds = (uploadEnd - t0) / 1000
+    const size = statSync(join(dir, 'big.bin')).size
+    if (!outcome?.ok || size !== TOTAL) throw new Error(`9. upload: ${mib(size)} MiB at big.bin, outcome ${JSON.stringify(outcome)}: not the 1 GiB upload`)
+    console.log(`\n9. upload + flooded: ${mib(sent)} MiB in ${sent / CHUNK} PUTs of ${mib(CHUNK)} MiB in ${seconds.toFixed(1)} s = ${(sent / 1024 / 1024 / seconds).toFixed(0)} MiB/s; ${mib(count.posted)} MiB parsed meanwhile`)
+    console.log(`   ${line(r)}`)
+  } finally {
+    agent.destroy()
+    await new Promise((ok) => server.close(ok))
+    // Flush the temps record first: its debounced save would re-create the deleted folder's parent later.
+    await writer.sweepTemps()
+    rmSync(dir, { recursive: true, force: true })
+  }
+  return r
+}
+
 /** Phase 5 at one page size: the flood with the page streaming to one viewer. */
 async function streamed(lib, width, height) {
   const { FrameStream, WebviewViewers, FRAME_DRAINED_BYTES } = lib
@@ -534,8 +633,10 @@ async function streamedMany(lib, n, width, height, budgeted) {
 async function main() {
   // --- the real mirror and worker, the real frame stream ------------------------------------------
   // Under node_modules so the bundles' require('@xterm/...') resolves from the repo.
-  const tmp = join(root, 'node_modules', '.cache', 'web-terminal-bench')
-  mkdirSync(tmp, { recursive: true })
+  // Its real path: in a worktree node_modules is a link, and phase 7's zip refuses a path with a link above it.
+  const tmp0 = join(root, 'node_modules', '.cache', 'web-terminal-bench')
+  mkdirSync(tmp0, { recursive: true })
+  const tmp = realpathSync(tmp0)
   await bundle(tmp, 'mirror.cjs', 'src/main/terminals/mirror.ts')
   await bundle(tmp, 'mirror-worker.js', 'src/main/terminals/mirror-worker.ts')
   await bundle(tmp, 'frames.cjs', {
@@ -548,6 +649,8 @@ async function main() {
   })
   await bundle(tmp, 'zip.cjs', "src/main/files/zip-writer.ts")
   const zipLib = createRequire(join(tmp, 'zip.cjs'))(join(tmp, 'zip.cjs'))
+  await bundle(tmp, 'upload.cjs', "src/main/files/upload-writer.ts")
+  const uploadLib = createRequire(join(tmp, 'upload.cjs'))(join(tmp, 'upload.cjs'))
   const { TerminalMirror, nodeMirrorWorker } = createRequire(join(tmp, 'mirror.cjs'))(join(tmp, 'mirror.cjs'))
   const frames = createRequire(join(tmp, 'frames.cjs'))(join(tmp, 'frames.cjs'))
 
@@ -561,7 +664,7 @@ async function main() {
   ids = Array.from({ length: TABS }, (_, i) => `tab${i}`)
   for (const id of ids) mirror.spawned(id, COLS, ROWS)
 
-  let flood, streams, joins, zipRun, many
+  let flood, streams, joins, zipRun, uploadRun, many
   try {
     // 1. flooded
     const count = { posted: 0 }
@@ -609,6 +712,9 @@ async function main() {
     if (SWEEP) for (const [w, h] of [[1280, 800], [1920, 1080]]) for (const n of [1, 4, 8, 12]) await streamedMany(frames, n, w, h, false)
     many.push(await streamedMany(frames, 12, 1920, 1080, true))
 
+    // 9. a 1 GiB upload through the real writer beside the flooded tabs
+    uploadRun = await uploadPhase(uploadLib, tmp)
+
   } finally {
     mirror.stop()
     rmSync(tmp, { recursive: true, force: true })
@@ -630,6 +736,11 @@ async function main() {
     const pass = zipRun.p99 / 1e6 <= P99_LIMIT_MS
     ok &&= pass
     console.log(`${pass ? 'PASS' : 'FAIL'}: flooded with a 1 GiB zip download p99 ${ms(zipRun.p99)} ms ${pass ? '<=' : '>'} ${P99_LIMIT_MS} ms`)
+  }
+  {
+    const pass = uploadRun.p99 / 1e6 <= P99_LIMIT_MS
+    ok &&= pass
+    console.log(`${pass ? 'PASS' : 'FAIL'}: flooded with a 1 GiB upload p99 ${ms(uploadRun.p99)} ms ${pass ? '<=' : '>'} ${P99_LIMIT_MS} ms`)
   }
   for (const r of many) {
     // A crashed or stalled page must not pass by leaving only the flood to measure: every page needs

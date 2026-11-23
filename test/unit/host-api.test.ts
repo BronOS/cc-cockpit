@@ -37,7 +37,6 @@ import {
   MAX_SENDS_PER_WINDOW,
   MAX_ROOM_LOG_ENTRIES,
   MAX_ROOM_LOG_PAGE_BYTES,
-  RateWindow,
   SESSIONS_EVENT_INTERVAL_MS,
   type HostApiDeps,
   type HostScope,
@@ -61,6 +60,7 @@ import type { RpcMeta } from '../../src/host/rpc'
 import { DEFAULT_PLUGIN_LIMITS, type PluginLimits } from '../../src/shared/plugin-limits'
 import { MAX_OVERLAY_SOURCES } from '../../src/shared/overlay-buttons'
 import { PluginLimitsStore } from '../../src/main/plugins/plugin-limits'
+import { RateWindow } from '../../src/main/rate-window'
 
 const A = 'aaaaaaaaaaaaaaaa'
 const B = 'bbbbbbbbbbbbbbbb'

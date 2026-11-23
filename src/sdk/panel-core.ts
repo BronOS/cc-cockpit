@@ -46,6 +46,12 @@
 //                                                 (`code`: the key's physical code, held after a pane chord)
 //   { type: 'cc-plugin.tab-discuss' }              `ccPanel.tab.discuss()`: Ask Claude from this page tab;
 //                                                 the shell draws its question box (design-editor.md §4)
+//   { type: 'cc-plugin.upload', folder, files, folders }   `ccPanel.upload.pick` / `files` (design-upload.md
+//                                                 §5.2): `files` the chosen or dropped `File`s, `folders` the
+//                                                 names of dropped folders (skipped: no folder uploads).
+//                                                 The shell takes it only from a panel frame in a zone
+//                                                 (renderer/web/upload-request.ts) and names that panel in
+//                                                 `uploads.begin`; main checks the folder and every name
 //
 // Messages on the port are ONE JSON string each, the format of the host side (host/ctx/ui.ts), with
 // the same 1 MiB cap. A page may post before its port arrived (it usually does, at load): those
@@ -67,6 +73,10 @@ export const READY_MESSAGE = 'cc-plugin.ready'
 export const TAB_DIRTY_MESSAGE = 'cc-plugin.tab-dirty'
 export const TAB_KEY_MESSAGE = 'cc-plugin.tab-key'
 export const TAB_DISCUSS_MESSAGE = 'cc-plugin.tab-discuss'
+/** `ccPanel.upload.pick` / `files`: the files for core's upload flow (design-upload.md §5.2). */
+export const UPLOAD_MESSAGE = 'cc-plugin.upload'
+/** A `folder` longer than this is no project path (main checks the real one); refused at the call. */
+export const MAX_UPLOAD_FOLDER_LENGTH = 4096
 /**
  * A page tab's window got the focus (design-split-pages.md §4): a hint for the shell to read which
  * frame holds the keyboard, since a move from frame to frame fires no event in the shell. The shell
@@ -198,6 +208,108 @@ export interface PanelViewApi {
   readonly access: 'owner' | 'read' | 'write'
 }
 
+/**
+ * `ccPanel.upload` (design-upload.md §5.2): hand files from the person's device to core's upload flow,
+ * which asks main and shows the clash dialog, the progress and the result. Present only in the web shell
+ * for a view that is not a read guest's (a UI hint, as `view`: main refuses by the view it bound); read
+ * it at use time, as it appears with the page's connection. Only a panel page's request is taken (the
+ * shell ignores an overlay's, a slot's and a page tab's). Both return nothing: core shows the outcome.
+ */
+export interface PanelUploadApi {
+  /**
+   * Open the device's file chooser (several files) and upload what the person picks into `folder`
+   * (project-relative, `''` the project folder). Call it inside a click or key handler: a browser
+   * opens a chooser only on a person's gesture.
+   */
+  pick(options: { folder: string }): void
+  /**
+   * Upload `source` into `folder`: a drop's `DataTransfer`, read inside the `drop` handler (after the
+   * event its items are gone, and only then can a dropped folder be told from a file: folders are
+   * skipped and named by core), or a `FileList` / `File[]`.
+   */
+  files(source: UploadFilesSource, options: { folder: string }): void
+}
+
+/** The fields of a DataTransferItem the SDK reads (a fake in tests). */
+export interface UploadItemLike {
+  readonly kind: string
+  getAsFile(): unknown
+  webkitGetAsEntry?: () => { readonly isDirectory?: boolean; readonly name?: string } | null
+}
+
+/** A drop's `DataTransfer` as the SDK reads it: its items (the file list alone cannot tell a folder). */
+export interface UploadTransferLike {
+  readonly items: ArrayLike<UploadItemLike>
+  /** A real one has its file list too; never read (see splitTransfer). */
+  readonly files?: ArrayLike<unknown>
+}
+
+/** What `ccPanel.upload.files` takes: a drop's `DataTransfer`, a `FileList` or an array of `File`s. */
+export type UploadFilesSource = UploadTransferLike | ArrayLike<unknown>
+
+/**
+ * The page's file chooser, from panel.ts: makes a hidden `<input type=file multiple>`, clicks it at once
+ * (inside the caller's gesture) and calls `onFiles` with what the person chose (not on a cancel).
+ */
+export type UploadChooser = (onFiles: (files: unknown[]) => void) => void
+
+/** Whether a drag carries files from the device (`dataTransfer.types` holds `Files`). */
+export function isFilesDrag(types: ArrayLike<string> | null | undefined): boolean {
+  if (!types) return false
+  for (let i = 0; i < types.length; i++) if (types[i] === 'Files') return true
+  return false
+}
+
+/**
+ * Whether the SDK's window-level cancel applies to a drag: a `Files` drag no handler took, whose target
+ * is not an element that takes a drop by the browser's own default action (a file input, a text field,
+ * a contenteditable: none of them cancels `dragover`, and `dropEffect = 'none'` would kill their drop).
+ */
+export function cancelsFilesDrag(
+  event: { defaultPrevented: boolean; target: unknown; dataTransfer?: { types?: ArrayLike<string> } | null }
+): boolean {
+  if (event.defaultPrevented || !isFilesDrag(event.dataTransfer?.types)) return false
+  const closest = (event.target as { closest?: (selector: string) => unknown } | null)?.closest
+  if (typeof closest !== 'function') return true
+  return !closest.call(event.target, 'input, textarea, [contenteditable]:not([contenteditable="false"])')
+}
+
+// A DataTransfer by its shape, not `instanceof` (unit tests run without a DOM): it has `items`, a
+// FileList and an array do not.
+const isTransfer = (source: unknown): source is UploadTransferLike =>
+  typeof source === 'object' && source !== null && typeof (source as { items?: unknown }).items === 'object' && (source as { items?: unknown }).items !== null
+
+/**
+ * A drop's files and folders, read now (the caller is inside the `drop` event). Items, not `files`: a
+ * string item (a dragged link's text) has no file, so the two lists' indexes differ. A folder's own
+ * `File` has a size and rejects every read (upload plan, Task 1), so it is told by its entry and only
+ * named. No entry API (an older browser) or no entry: the item counts as a file, and a folder then fails
+ * at its first read in the upload client, with a reason.
+ */
+export function splitTransfer(transfer: UploadTransferLike): { files: unknown[]; folders: string[] } {
+  const files: unknown[] = []
+  const folders: string[] = []
+  const items = transfer.items
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    if (!item || item.kind !== 'file') continue
+    const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
+    const file = item.getAsFile()
+    if (entry?.isDirectory === true) {
+      const name = typeof entry.name === 'string' ? entry.name : (file as { name?: unknown } | null)?.name
+      if (typeof name === 'string') folders.push(name)
+    } else if (file) files.push(file)
+  }
+  return { files, folders }
+}
+
+function uploadFolderOf(options: unknown, member: string): string {
+  const folder = (options as { folder?: unknown } | null | undefined)?.folder
+  if (typeof folder !== 'string') throw new TypeError(`upload.${member} needs { folder } (project-relative, '' the project folder)`)
+  if (folder.length > MAX_UPLOAD_FOLDER_LENGTH) throw new RangeError(`upload.${member}: folder longer than ${MAX_UPLOAD_FOLDER_LENGTH}`)
+  return folder
+}
+
 export interface PanelApi {
   /** Send to the plugin (JSON, at most 1 MiB as text). Queued until the page is connected. */
   post(message: JsonValue): void
@@ -223,6 +335,11 @@ export interface PanelApi {
   readonly tab: TabPageApi | undefined
   /** Where the page is drawn and who looks at it (a frozen object; `remote` and `access` are read-only). */
   readonly view: PanelViewApi
+  /**
+   * Upload files from the person's device (design-upload.md §5.2): only in a web access browser view
+   * that is not a read guest's, once the page is connected; undefined elsewhere. A panel page's only.
+   */
+  readonly upload: PanelUploadApi | undefined
   /**
    * An html overlay's page has drawn what it shows: the app's loader over it goes. Needed only for
    * an overlay opened with `ready: 'manual'` (the default loader goes at load); harmless elsewhere.
@@ -325,6 +442,8 @@ export class PanelClient {
   /** From the shell's port message only (receive); nothing the page can call sets it. */
   private remote = false
   private access: 'owner' | 'read' | 'write' = 'owner'
+  /** `ccPanel.upload`, made once; the getter shows it only while the view may upload. */
+  private readonly uploadApi: PanelUploadApi
   readonly api: PanelApi
 
   /**
@@ -347,9 +466,14 @@ export class PanelClient {
       chord?: string
       code?: string
       early?: true
+      folder?: string
+      files?: unknown[]
+      folders?: string[]
     }) => void,
     /** macOS only: whether the bars are classic, which turns the scrollbar sheet on (see installBaseStyles). */
-    private readonly classicBars?: ClassicBarsWatch
+    private readonly classicBars?: ClassicBarsWatch,
+    /** The page's file chooser for `ccPanel.upload.pick` (panel.ts); without one, pick only warns. */
+    private readonly chooseFiles?: UploadChooser
   ) {
     const theme = {
       onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
@@ -397,6 +521,19 @@ export class PanelClient {
     // A getter: the page learns it is a slot after load, and `slot` must then appear on the same object.
     Object.defineProperty(api, 'slot', { enumerable: true, get: (): SlotPageApi | undefined => this.slotApi })
     Object.defineProperty(api, 'tab', { enumerable: true, get: (): TabPageApi | undefined => this.tabApi })
+    this.uploadApi = Object.freeze({
+      pick: (options: { folder: string }): void => this.pickUpload(options),
+      files: (source: UploadFilesSource, options: { folder: string }): void => this.filesUpload(source, options)
+    })
+    // A getter: the shell says remote and access with the port, after the page's script started. The
+    // desktop and a read guest's view get none, so a page that tests for it offers nothing there (main
+    // refuses by the view it bound anyway).
+    Object.defineProperty(api, 'upload', {
+      enumerable: true,
+      get: (): PanelUploadApi | undefined =>
+        // Not in a slot or a page tab: the shell takes a panel frame's upload only (a post from those is dropped).
+        this.remote && this.access !== 'read' && !this.slotApi && !this.tabApi ? this.uploadApi : undefined
+    })
     this.api = Object.freeze(api) as PanelApi
   }
 
@@ -517,6 +654,42 @@ export class PanelClient {
         this.warn(`an onConnect listener threw: ${errorText(err)}`)
       }
     }
+  }
+
+  /** `ccPanel.upload.pick`: the chooser opens now, in the caller's gesture; the choice is posted when made. */
+  private pickUpload(options: unknown): void {
+    const folder = uploadFolderOf(options, 'pick')
+    if (!this.chooseFiles) {
+      this.warn('upload.pick: no file chooser in this page')
+      return
+    }
+    // The browser enforces the gesture either way; the warning is for the page's author.
+    const activation = (globalThis as { navigator?: { userActivation?: { isActive?: boolean } } }).navigator?.userActivation
+    if (activation?.isActive === false) this.warn('upload.pick: no user activation, so the browser opens no chooser (call it inside a click or key handler)')
+    this.chooseFiles((files) => {
+      if (files.length > 0) this.postUpload(folder, files, [])
+    })
+  }
+
+  /** `ccPanel.upload.files`: everything read before the call returns (a drop's items die with the event). */
+  private filesUpload(source: unknown, options: unknown): void {
+    const folder = uploadFolderOf(options, 'files')
+    let files: unknown[]
+    let folders: string[] = []
+    if (isTransfer(source)) ({ files, folders } = splitTransfer(source))
+    else if (typeof source === 'object' && source !== null && typeof (source as { length?: unknown }).length === 'number') {
+      files = Array.from(source as ArrayLike<unknown>).filter((f) => typeof f === 'object' && f !== null)
+    } else throw new TypeError('upload.files needs a DataTransfer, a FileList or an array of Files')
+    if (files.length === 0 && folders.length === 0) {
+      this.warn("upload.files: nothing to upload (pass a drop's DataTransfer inside the drop event)")
+      return
+    }
+    // Folders alone are posted too: core says they were skipped, rather than nothing happening.
+    this.postUpload(folder, files, folders)
+  }
+
+  private postUpload(folder: string, files: unknown[], folders: string[]): void {
+    this.toParent?.({ type: UPLOAD_MESSAGE, folder, files, folders })
   }
 
   /** `ccPanel.ready()`: marked `early` before the page's first port, and said again once it comes. */

@@ -18,6 +18,7 @@
 
 import { isPlainObject } from './guards'
 import type { InvokeChannel, Req } from './ipc'
+import { uploadSourceOf } from './uploads'
 import type { GuestRole } from './views'
 
 export type GuestClass = 'no' | 'read' | 'write'
@@ -128,6 +129,23 @@ export const byOverlayButton: GuestExtractor = all(byOverlay, (req) => {
   return isId(pluginId) ? [{ plugin: pluginId }] : undefined
 })
 
+/**
+ * `uploads.begin`: its `source`, a panel (its plugin must be visible to the guest) or a Claude or shell tab (in
+ * its scope). The same parser the handler acts on (shared/uploads.ts uploadSourceOf), so a source carrying both a
+ * panel and a tab is refused here rather than checked by one and acted on by the other.
+ */
+export const byUploadSource: GuestExtractor = (req) => {
+  const source = uploadSourceOf(own(req, 'source'))
+  if (!source) return undefined
+  return 'panel' in source ? [{ panel: source.panel }] : [{ tab: source.tab }]
+}
+
+/** `uploads.folders`: the terminal tab the drop or paste landed on (`tab`, not `tabId`), in the guest's scope. */
+export const byUploadTab: GuestExtractor = (req) => {
+  const tab = own(req, 'tab')
+  return isId(tab) ? [{ tab }] : undefined
+}
+
 /** Every invoke channel's guest rule (design §16.3). Default `no`. */
 export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Object.freeze({
   // read: a read-only guest may call these (a write guest too). Targets checked before the handler.
@@ -191,6 +209,14 @@ export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Obje
   // D-23: an offer from a shared tab, to this guest's own device
   'downloads.accept': { cls: 'write', target: byAsk },
   'downloads.answer': { cls: 'write', target: byAsk },
+  // design-upload.md §3.1, §6: a write guest uploads into the shared project. Begin's source and the folder
+  // chooser's tab are targets (a visible plugin's panel, a tab in scope); the id-only channels are the role alone,
+  // and main answers an upload id only to the device that began it (files/uploads.ts)
+  'uploads.begin': { cls: 'write', target: byUploadSource },
+  'uploads.folders': { cls: 'write', target: byUploadTab },
+  'uploads.resolve': { cls: 'write' },
+  'uploads.cancel': { cls: 'write' },
+  'uploads.paste': { cls: 'write' },
   // a visible plugin's command (`<pluginId>/<command>`)
   'commands.run': { cls: 'write', target: byCommand },
   'panels.action': { cls: 'write', target: byPanel },

@@ -44,11 +44,13 @@ vi.mock('node:fs/promises', async (orig) => {
       throw Object.assign(new Error('no links'), { code: state.linkCode })
     },
     open: async (p: string, flags?: string | number, mode?: number) => {
-      if (state.sourceCode && flags === 'r') throw Object.assign(new Error('source failed'), { code: state.sourceCode })
+      // The copy opens its source O_RDONLY | O_NOFOLLOW (no O_CREAT): the read side.
+      const reading = flags === 'r' || (typeof flags === 'number' && (flags & fsConstants.O_CREAT) === 0)
+      if (state.sourceCode && reading) throw Object.assign(new Error('source failed'), { code: state.sourceCode })
       const handle = await real.open(p, flags, mode)
       const creating = typeof flags === 'number' && (flags & fsConstants.O_EXCL) !== 0
       if (creating) state.onCreate?.()
-      if (flags === 'r') state.onSourceOpen?.()
+      if (reading) state.onSourceOpen?.()
       if (!creating || (!state.writeCode && !state.onWrite && !state.onClose)) return handle
       const code = state.writeCode
       return new Proxy(handle, {

@@ -64,6 +64,8 @@ export interface DataPaths {
   secretKey: string
   /** Web access devices and the access link's token record (main/web/devices.ts). */
   webAccessJson: string
+  /** The temps of uploads in flight (main/files/upload-writer.ts): swept at start, design-upload.md §2.4. */
+  uploadTempsJson: string
   binDir: string
   cccWrapper: string
   /** The default socket location; use `socketPath()` for the effective one (it may fall back). */
@@ -85,6 +87,7 @@ export function dataPaths(dataDir: string): DataPaths {
     secretsJson: join(dataDir, 'secrets.json'),
     secretKey: join(dataDir, 'secret.key'),
     webAccessJson: join(dataDir, 'web-access.json'),
+    uploadTempsJson: join(dataDir, 'uploads', 'temps.json'),
     binDir: join(dataDir, 'bin'),
     cccWrapper: join(dataDir, 'bin', 'ccc'),
     defaultSocket: join(dataDir, 'app.sock')

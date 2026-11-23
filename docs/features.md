@@ -373,7 +373,10 @@ behind it are in [design.md](design.md).
   app's own dialog and is recoverable; Open with default app refuses folders, executables, app bundles and script or
   program types (`.sh`, `.command`, `.exe`, `.js`, `.jar`...). In a browser view of the project (web access, server mode, a
   remote window) the menu also has Download on a file and, on a folder and the project folder, Download as .zip and
-  Download as .zip with .git and node_modules (both always listed); see "Downloads" under Web access.
+  Download as .zip with .git and node_modules (both always listed); see "Downloads" under Web access. For an owner or a
+  write guest the menu on a folder and the project folder also has Upload here…, and files dragged from the device onto a
+  folder row, a file row (its folder) or the empty area (the project folder) upload there; see "Uploads" under Web access.
+  Upload temps (`.cc-upload-*`) are never listed.
 - Usage (`cockpit.usage`, on by default, ships with the app): a meter at the end of the top bar (today's API-equivalent
   spend and the plan's rate-limit use) and a Usage panel with Today / 7 days / 30 days totals, tokens by kind, the plan's
   5-hour and weekly windows (as Claude Code reports them through the status line; a window past its reset is hidden),
@@ -677,6 +680,32 @@ download starts at once in the view you clicked, with no question; your browser 
   after it is saved, and the browser's and the OS's warnings about program files still apply.
 - *The desktop:* a local project's own window has no Download (the file is on that computer; Reveal is there).
 
+**Uploads.** The other direction: put files from the device you are looking at into the project (a browser view, or a
+remote server's window). In the Files panel choose Upload here… on a folder or the project folder, or drag files from
+Finder or your file manager onto a folder row, a file row (its folder) or the empty area below the rows; or drop files on,
+or paste a copied file or screenshot into, a Claude or shell tab. A paste counts only when the clipboard holds files and
+no text (a copy from Excel, Word or Copy image pastes its text as before). A tab drop or paste opens a folder chooser
+(preset to the folder this device used last for the project); Files uploads straight into the folder you named.
+- *Clashes:* a name that exists is asked about before anything is written: Replace, Keep both (`name (1).ext`) or Cancel,
+  one answer for the whole upload. Replace is not offered over a folder or a link. Replace keeps the file's permissions
+  and writes through a temp, so a half-written file never shows under the real name.
+- *A tab upload ends with the paths pasted into the prompt*, backslash-escaped for a shell, absolute for you, relative to
+  the tab's folder for a guest. Nothing presses Enter. It is pasted only when the tab is the one shown with its keys on (and, in a Claude tab, Claude is waiting for input,
+  checked by the server at the moment it writes the paths);
+  otherwise the notice holds the paths with Paste path, and Copy when there is text to copy (not with the keys off, or for a
+  path with a control or invisible character). Paste path is refused while Claude asks for a permission.
+- *What is never uploaded:* folders (named in the result, the drop's files still go), more than 100 files at once, and a file over 2 GiB (either refuses the whole upload), `.git` or anything under a `.git` folder (a `.git` file too), the app's data folder, and anything that
+  would pass the project folder or leave it through a link. The server's free disk must cover the upload plus 1 GiB. A
+  name with a control or invisible character is refused.
+- *Limits and safety:* 2 uploads at once per device and 6 in all, 20 uploads started per 10 minutes per device. The bytes go in
+  chunks that adapt to the link (1 MiB to start, 256 KiB to 8 MiB), each retried up to 3 times at 1, 5 and 20 seconds;
+  60 seconds with no bytes, Cancel, leaving the page, revoking or disconnecting the device, leaving None mode, stopping the
+  gateway, closing the window or a guest losing access end it and delete the temp (`.cc-upload-*`, swept at the next start
+  if the server died or could not delete it). After Cancel or 60 seconds with no bytes, files already placed stay and their paths still paste
+  (Paste path works once the link is back).
+  Only the owner and write guests upload; a read guest sees no menu item, and main refuses it.
+- *The desktop:* a local project's own window has no upload (the files are on that computer).
+
 **Guests.** Invite another person into one project: a friend or a colleague who watches (**Read-only**) or pairs with
 you (**Write**), from a plain browser or from their own cc-cockpit app. A guest is a web device of its own kind, bound
 to one project, a role and the tabs you share; everything else of your cockpit stays out of their reach: other
@@ -715,14 +744,15 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
   guest; a guessed address answers as if it did not exist. Tabs a hidden plugin opened are not shared even with All
   tabs. A guest has no settings, layout, flag, rename or room controls.
 - *Read-only guests* type nothing (keys, mouse and paste do not reach the terminal), never change a terminal's size,
-  get no downloads, approvals, quick chat or Ask Claude, and cannot open tabs or files (they read the page tabs you
+  get no downloads, uploads, approvals, quick chat or Ask Claude, and cannot open tabs or files (they read the page tabs you
   share). A plugin that does not check who is looking gets their clicks dropped (they see it, they cannot use it).
 - *Write guests* type into the shared tabs (which includes answering Claude's permission prompts), open Claude and
   shell tabs (at most 4 at a time; they join that guest's tabs and every all-tabs guest's, carry the guest's name in
   the tooltip, and stay when the guest leaves), close the tabs they opened (closing one of yours asks you: **Close tab**
   or **Keep open**, kept open after a minute with no answer), edit and save files, use quick chat and Ask Claude (your
-  account and quota), and download files to their own device (Files › Download while Files is shown to guests, and
-  `ccc download` offers started from a shared tab). They answer a Trash confirm in server mode; on a desktop a guest's
+  account and quota), download files to their own device (Files › Download while Files is shown to guests, and
+  `ccc download` offers started from a shared tab), and upload files from it (Files › Upload here, a drop on Files or a
+  shared tab; a tab's pasted path is relative to the tab's folder). They answer a Trash confirm in server mode; on a desktop a guest's
   Allow is ignored (Deny only, as for your own browser). Tabs a plugin opens while a guest uses it (an editor tab for a
   file they open, a Files "Open with" command) are the plugin's, not the guest's: they do not count toward the guest's
   4, carry no guest name, and join a guest's view only by its scope, so a selected-tabs guest sees a file it opened
@@ -1106,8 +1136,12 @@ No install is called supported beyond what was run.
 - A first start killed between creating `secret.key` and writing it leaves a file the app refuses (wrong length): delete
   it and enter the secrets again.
 - Relink and forget of a project are not available from the browser; open the folder by its new path instead.
-- Downloads: no upload, no several files at once, no resume or ranges, no `.tar.gz`, no `.gitignore`-aware zips and no
+- Downloads: no several files at once, no resume or ranges, no `.tar.gz`, no `.gitignore`-aware zips and no
   in-page progress; a streamed webview page's own downloads are still cancelled.
+- Uploads: no folders, no resume after the page reloads (a reload cancels), no mtime kept, no `ccc upload` (Claude cannot ask
+  for a file), no overlays or slots as a source, no uploads from the streamed Browser panel's own file inputs. Not run on
+  Firefox, Safari or iOS, with a real Finder drop, with the clipboard cases (Excel, Word, Copy image), with the unhandled-drop
+  navigation check, with a 1 GiB upload over the internet, or with Claude Code attaching an image from the pasted path.
 - A start link read by someone else, a lost device that was unlocked, and a shared server's other users are exposures
   Revoke does not undo (above).
 
@@ -1209,11 +1243,18 @@ save instead ("not saved: the Downloads folder is on a drive with no hard links,
 that makes macOS warn before opening a downloaded app or script. On a Mac, check that a saved file has the
 quarantine mark (`xattr -p com.apple.quarantine`): not yet verified on a packaged build.
 
+**Uploads.** Files › Upload here…, a drop on Files and a drop or paste on a tab work in the remote window as in a browser
+(see "Web access" › "Uploads"): the window runs the server's page, which reads the files you choose or drop and sends
+them to that server over the same connection; this app adds nothing and reads no file itself. The window's native file
+chooser is the OS's. Closing the window cancels a running upload through the page's own `pagehide` cancel (best effort,
+else the 60 s idle clock). Run: Upload here through Playwright's `filechooser` over Direct only. Not run: a drop on Files,
+a drop or paste on a tab, the built-in SSH tunnel, My own tunnel, the native chooser on a packaged Mac.
+
 **Forget vs revoke.** **Forget** removes the server from this app and drops its cookie, secrets and trusted host key
 here; the device stays listed on the server until `ccc web revoke <device id>` (or Revoke in the browsers' card) there.
 
 **Known limitations (remote servers)**
-- Files are the server's: no Reveal in folder, Open with the system or upload; Download works (see "Remote servers" › "Downloads").
+- Files are the server's: no Reveal in folder or Open with the system; Download and upload work (see "Remote servers" › "Downloads", "Uploads").
 - A server with TLS on is refused over SSH and My own tunnel (the tunnel encrypts already); connect Direct with its address.
 - No system notifications from remote sessions.
 - The server's sshd must allow TCP forwarding (`AllowTcpForwarding`); the app says so when it does not.

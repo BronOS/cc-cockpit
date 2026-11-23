@@ -119,6 +119,12 @@ export interface GuestStoreDeps {
    * downgrade to read (D-23: read guests get no downloads). Absent: none (the gateway still drops them on a revoke).
    */
   dropDownloads?(deviceId: string): void
+  /**
+   * The guest's devices' uploads end (Uploads.dropDevice, design-upload.md §3.4): when the guest ends (before its
+   * devices are revoked, so the end does not rest on the gateway's revoke listener alone), on a downgrade to read
+   * and on every narrowing of its access, as its downloads. Absent: none (the gateway still drops them on a revoke).
+   */
+  dropUploads?(deviceId: string): void
   /** Titles of this guest's page tabs with unsaved changes (TabManager's per (tab, view) dirty). Absent: none. */
   unsavedOf?(guestId: string): string[]
   /** A notice to the owner ("Bob joined"): core notices. Absent: none. */
@@ -561,7 +567,7 @@ export class GuestStore implements GuestService {
     // That fresh `ready` carries any widening still waiting too, so its 4464 is not sent after it.
     this.cancelPendingAccess(g.id)
     // A read guest has no downloads (D-23): its links and running streams end with the write role.
-    if (role === 'read') this.dropDownloadsOf(g.id)
+    if (role === 'read') this.dropTransfersOf(g.id)
     this.reconnect(g.id, CLOSE.roleChanged, 'role changed')
     this.changed()
     return true
@@ -710,7 +716,7 @@ export class GuestStore implements GuestService {
     }
     if (!widening) {
       this.cancelPendingAccess(guestId)
-      this.dropDownloadsOf(guestId)
+      this.dropTransfersOf(guestId)
       this.reconnect(guestId, CLOSE.accessChanged, 'access changed')
       return
     }
@@ -723,10 +729,21 @@ export class GuestStore implements GuestService {
       if (this.pendingAccess.get(guestId)?.timer !== timer) return
       this.pendingAccess.delete(guestId)
       if (!this.live(guestId)) return
+      // Downloads only: one is bound to a view this reconnect closes. An upload is bound to the device and its
+      // page reconnects in place, so a widening (which takes nothing away) leaves it running (design-upload.md §3.4).
       this.dropDownloadsOf(guestId)
       this.reconnect(guestId, CLOSE.accessChanged, 'access changed')
     }, wait)
     this.pendingAccess.set(guestId, { first, timer })
+  }
+
+  /**
+   * The guest's download links and running streams end (a download is bound to a view these closes end), and its
+   * uploads (design-upload.md §3.4: a read guest uploads nothing, and one whose access narrowed begins again).
+   */
+  private dropTransfersOf(guestId: string): void {
+    this.dropDownloadsOf(guestId)
+    for (const d of this.deps.devices.devicesOfGuest(guestId)) this.dropUploadsOf(d.id)
   }
 
   /** The guest's download links and running streams end (a download is bound to a view these closes end). */
@@ -737,6 +754,15 @@ export class GuestStore implements GuestService {
       } catch (err) {
         this.deps.log(`guests: dropping downloads failed: ${String(err)}`)
       }
+    }
+  }
+
+  /** One device's uploads end (Uploads.dropDevice: the live request cut, the temps deleted). */
+  private dropUploadsOf(deviceId: string): void {
+    try {
+      this.deps.dropUploads?.(deviceId)
+    } catch (err) {
+      this.deps.log(`guests: dropping uploads failed: ${String(err)}`)
     }
   }
 
@@ -787,6 +813,8 @@ export class GuestStore implements GuestService {
       this.leftAt.delete(guestId)
       this.armLifetime()
       this.save()
+      // Its uploads end on this one path (design-upload.md §3.4), while its devices are still listed.
+      for (const d of this.deps.devices.devicesOfGuest(guestId)) this.dropUploadsOf(d.id)
       this.deps.devices.revokeGuest(guestId, `guest ended: ${why}`)
       this.deps.accessLog.write({ event: 'guest', name: g.name, detail: `ended: ${why}` })
       try {

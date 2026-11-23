@@ -51,6 +51,10 @@ import '../assets/fonts/fonts.css'
 import '../styles.css'
 import './web.css'
 import { setWebviewFrameSource } from './webview-stream'
+import { leaveThenClose, UploadController } from './upload-controller'
+import { cancelUnhandledFileDrops, onTerminalUpload, terminalKeysOff, terminalPasteMode } from '../tabs/terminal-drop'
+import { onUploadRequest } from './upload-request'
+import { uploadUi, type PresetStorage } from '../notices/upload-model'
 import { startShellScrolling } from '../../sdk/scroll-edges'
 
 // Edges-only scrolling, as in the desktop shell (renderer main.tsx).
@@ -250,6 +254,21 @@ function WebRoot({ bridge, guest }: { bridge: WebBridge; guest: boolean }): Reac
   )
 }
 
+/** `localStorage` behind a getter that never throws (a private window or blocked site data). */
+function pageStorage(): PresetStorage {
+  const storage = (): Storage | undefined => {
+    try {
+      return window.localStorage
+    } catch {
+      return undefined
+    }
+  }
+  return {
+    getItem: (key) => storage()?.getItem(key) ?? null,
+    setItem: (key, value) => storage()?.setItem(key, value)
+  }
+}
+
 function startShell(reactRoot: ReturnType<typeof createRoot>, guest: SessionGuest | undefined): void {
   const bridge = createWebBridge({
     url: socketUrl(location, WS_PATH),
@@ -300,7 +319,28 @@ function startShell(reactRoot: ReturnType<typeof createRoot>, guest: SessionGues
     ev.preventDefault()
     ev.returnValue = 'unsaved'
   })
-  window.addEventListener('pagehide', () => bridge.close())
+  // Uploads (design-upload.md §5.3): one controller for the page's life, here and not in React, since
+  // `<App>` remounts on every reconnect and a reconnect does not end an upload (the token is the
+  // device's, §3.4). Panel frames' requests reach it through upload-request.ts; the terminal entry
+  // calls `startForTab`. The preset's storage is read lazily: `localStorage` itself can throw.
+  // The terminal entry (tabs/terminal-drop.ts, §4): drops and file pastes on a Claude or shell tab come
+  // through `onTerminalUpload`; keys-off and the paste are asked of the mounted tab pane at the paste.
+  const uploads = new UploadController({
+    invoke: bridge.api.invoke.bind(bridge.api),
+    ui: uploadUi,
+    projectId: project,
+    storage: pageStorage(),
+    keysOff: terminalKeysOff,
+    pasteMode: terminalPasteMode
+  })
+  onUploadRequest((request) => void uploads.start(request))
+  onTerminalUpload((tabId, files, opts) => void uploads.startForTab(tabId, files, opts))
+  // A `Files` drop nobody takes (a near miss beside a pane, the strip, a dialog) would open the file in
+  // this browser tab, replacing the shell and ending its uploads (§3.6): cancelled by default.
+  cancelUnhandledFileDrops(window)
+  // Leaving the page cancels its uploads, before the socket closes (a closed bridge refuses the
+  // cancel at once); no beforeunload prompt for them (§5.3: the remote window's close would hang).
+  window.addEventListener('pagehide', () => leaveThenClose(uploads, () => bridge.close()))
   // Closing the socket on pagehide makes the page eligible for the back/forward cache; a page
   // restored from it has a closed bridge that still says `ready`. Start over from a fresh load.
   window.addEventListener('pageshow', (ev) => {

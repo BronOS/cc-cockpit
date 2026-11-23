@@ -19,10 +19,13 @@ vi.mock('@xterm/xterm', () => ({
     // The hidden input xterm focuses (TerminalSession listens for its focus).
     textarea: EventTarget | undefined
     unicode = { activeVersion: '' }
-    modes = { synchronizedOutputMode: false }
+    modes = { synchronizedOutputMode: false, bracketedPasteMode: false }
     // What shared/terminal-screen.ts atGround reads: 0 is the parser's ground state.
     _core = { _inputHandler: { _parser: { currentState: 0 } } }
     readonly resizes: Array<[number, number]> = []
+    // What xterm's own `paste` was handed (a person's paste; the upload's paths are main's to write, design-upload.md §4.3).
+    readonly pasted: string[] = []
+    scrolledToBottom = 0
     constructor(options: Record<string, unknown>) {
       this.options = { ...options }
     }
@@ -49,6 +52,12 @@ vi.mock('@xterm/xterm', () => ({
       this.resizes.push([cols, rows])
     }
     focus(): void {}
+    paste(text: string): void {
+      this.pasted.push(text)
+    }
+    scrollToBottom(): void {
+      this.scrolledToBottom++
+    }
     dispose(): void {}
   }
 }))
@@ -150,7 +159,7 @@ function laidOutPane(): HTMLElement {
     isConnected: true,
     parentElement: null,
     appendChild: () => undefined,
-    classList: { toggle: () => undefined, remove: () => undefined, contains: () => false }
+    classList: { add: () => undefined, toggle: () => undefined, remove: () => undefined, contains: () => false }
   }) as unknown as HTMLElement
 }
 
@@ -694,5 +703,104 @@ describe("a guest view's terminal", () => {
     expect(calls).toEqual(['resize 120x40'])
     container.dispatchEvent(new Event('keydown'))
     expect(calls).toEqual(['resize 120x40'])
+  })
+})
+
+// The terminal entry of uploads (design-upload.md §4.1, §4.3; terminal-drop.ts holds the rules): attached
+// only with an entry, after the own-act listener, so a write guest's file paste is still its act; main writes
+// the paths (the terminal only reports its paste mode, as the person's act), and the registry never makes a
+// terminal to paste into.
+const drop = (await import('../../src/renderer/tabs/terminal-drop')) as {
+  onTerminalUpload(fn: (tabId: string, files: readonly unknown[], opts: unknown) => void): () => void
+}
+type EntrySession = Session & {
+  attach(container: HTMLElement, entry?: { tabId: string; select(): void }): void
+  detach(): void
+  pasteMode(): { bracketed: boolean } | undefined
+}
+
+describe('the uploads entry on a terminal', () => {
+  afterEach(() => guestKind.resetShellKindForTest())
+
+  const filePaste = (): Event => {
+    const e = new Event('paste', { cancelable: true })
+    return Object.assign(e, { clipboardData: { types: ['Files'], files: [{ name: 'image.png', size: 1, type: 'image/png', slice: () => new Blob([]) }] } })
+  }
+
+  it("a write guest's file paste uploads and still counts as its act (the own-act listener runs first)", () => {
+    guestKind.markWebShell()
+    guestKind.setGuestHint({ id: 'g1', name: 'Ana', role: 'write', ownerName: 'Host' })
+    const calls: string[] = []
+    const off = drop.onTerminalUpload((tabId) => void calls.push(`upload ${tabId}`))
+    const io = gateTerminalIo({ input: (d) => void calls.push(`input ${d}`), ack: () => undefined, resize: (c, r) => void calls.push(`resize ${c}x${r}`) }, 'write')
+    const s = new TerminalSession('t1', io) as unknown as EntrySession
+    made.push(s)
+    const container = laidOutPane()
+    s.attach(container, { tabId: 't1', select: () => undefined })
+    const e = filePaste()
+    container.dispatchEvent(e)
+    off()
+    expect(calls).toEqual(['resize 120x40', 'upload t1'])
+    expect(e.defaultPrevented).toBe(true)
+  })
+
+  it('without an entry (a command tab, a read view, the desktop) a file paste is left to xterm', () => {
+    const calls: string[] = []
+    const off = drop.onTerminalUpload(() => void calls.push('upload'))
+    const { s, container } = session(false)
+    ;(s as unknown as EntrySession).attach(container)
+    const e = filePaste()
+    container.dispatchEvent(e)
+    off()
+    expect(calls).toEqual([])
+    expect(e.defaultPrevented).toBe(false)
+  })
+
+  it('a detach takes the entry off; a reattach without one leaves it off', () => {
+    const calls: string[] = []
+    const off = drop.onTerminalUpload(() => void calls.push('upload'))
+    const { s, container } = session(false)
+    const es = s as unknown as EntrySession
+    es.attach(container, { tabId: 't1', select: () => undefined })
+    container.dispatchEvent(filePaste())
+    expect(calls).toEqual(['upload'])
+    es.detach()
+    container.dispatchEvent(filePaste())
+    es.attach(container)
+    container.dispatchEvent(filePaste())
+    off()
+    expect(calls).toEqual(['upload'])
+  })
+
+  it("a write guest's pasted paths are its act: its held size goes first, as before a key", () => {
+    guestKind.markWebShell()
+    guestKind.setGuestHint({ id: 'g1', name: 'Ana', role: 'write', ownerName: 'Host' })
+    const calls: string[] = []
+    const io = gateTerminalIo({ input: (d) => void calls.push(`input ${d}`), ack: () => undefined, resize: (c, r) => void calls.push(`resize ${c}x${r}`) }, 'write')
+    const s = new TerminalSession('t1', io) as unknown as EntrySession
+    made.push(s)
+    s.attach(laidOutPane())
+    expect(calls).toEqual([])
+    expect(s.pasteMode()).toEqual({ bracketed: false })
+    expect(calls).toEqual(['resize 120x40'])
+    // Main writes the paths (design-upload.md §4.3): nothing is typed here.
+    expect((s.term as { pasted: string[] }).pasted).toEqual([])
+  })
+
+  it("reports the terminal's bracketed-paste mode and scrolls to the prompt; types nothing; the registry answers only for a terminal it holds", () => {
+    const { s, term } = session()
+    const t = term as unknown as { pasted: string[]; scrolledToBottom: number; modes: { bracketedPasteMode: boolean } }
+    t.modes.bracketedPasteMode = true
+    expect((s as unknown as EntrySession).pasteMode()).toEqual({ bracketed: true })
+    expect(t.scrolledToBottom).toBe(1)
+    expect(t.pasted).toEqual([])
+    const reg = new SessionRegistry(() => ({ input: () => undefined, ack: () => undefined, resize: () => undefined })) as unknown as Registry & {
+      pasteMode(tabId: string): { bracketed: boolean } | undefined
+    }
+    expect(reg.pasteMode('none')).toBeUndefined()
+    reg.get('t')
+    expect(reg.pasteMode('t')).toEqual({ bracketed: false })
+    reg.disposeAll()
+    expect(reg.pasteMode('t')).toBeUndefined()
   })
 })

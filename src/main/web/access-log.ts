@@ -63,6 +63,12 @@ export type AccessEvent =
    */
   | 'download'
   /**
+   * A file uploaded through `/u/<token>` (design-upload.md §3.2), one line per file: the device, the name
+   * as planned (`file`, display-safe), the bytes on disk and `completed` or `cut: <why>` as the detail.
+   * Never the token or a host path.
+   */
+  | 'upload'
+  /**
    * A guest's life (design-guests): `invite`, `joined`, `role read|write`, `scope`, `ended: <why>` as the
    * detail; `name` is the guest's name (the owner's own text), `device` its device once it has one. Never a token.
    */
@@ -88,9 +94,9 @@ export interface AccessEntry {
   detail?: string
   /** The device that acted, when a browser did it (written as `by` and `byName`). */
   by?: AccessActor
-  /** A download's name as sent (`download` only). */
+  /** A download's name as sent, an upload's name as planned (`download` and `upload` only). */
   file?: string
-  /** A download's bytes written (`download` only). */
+  /** A download's bytes written, an upload's bytes on disk (`download` and `upload` only). */
   bytes?: number
 }
 

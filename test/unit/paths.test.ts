@@ -46,6 +46,7 @@ describe('dataPaths', () => {
       secretsJson: '/data/secrets.json',
       secretKey: '/data/secret.key',
       webAccessJson: '/data/web-access.json',
+      uploadTempsJson: '/data/uploads/temps.json',
       binDir: '/data/bin',
       cccWrapper: '/data/bin/ccc',
       defaultSocket: '/data/app.sock'

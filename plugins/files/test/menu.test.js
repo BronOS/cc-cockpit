@@ -116,6 +116,21 @@ test('menuEntries: a browser view (ccPanel.view.remote) has no Reveal nor Open w
   assert.deepEqual(root, ['new-file', 'new-folder', 'sep', 'copy-path'])
 })
 
+test('menuEntries: Upload here only for a browser view with write rights and an app that has ccPanel.upload', () => {
+  const base = { system: true, shell: true, remote: true, upload: true }
+  for (const access of ['owner', 'write']) {
+    assert.deepEqual(menuEntries({ kind: 'dir', ...base, access }).slice(0, 4), ['terminal', 'new-file', 'new-folder', 'upload'])
+    assert.deepEqual(menuEntries({ kind: 'root', ...base, access }).slice(0, 3), ['new-file', 'new-folder', 'upload'])
+    assert.ok(!menuEntries({ kind: 'file', ...base, access }).includes('upload'))
+  }
+  // Never: a read guest, the desktop, or an older app (no ccPanel.upload).
+  assert.deepEqual(menuEntries({ kind: 'root', ...base, access: 'read' }), [])
+  assert.ok(!menuEntries({ kind: 'dir', ...base, access: 'read' }).includes('upload'))
+  assert.ok(!menuEntries({ kind: 'dir', ...base, remote: false }).includes('upload'))
+  assert.ok(!menuEntries({ kind: 'dir', ...base, upload: false }).includes('upload'))
+  assert.ok(!menuEntries({ kind: 'root', system: true, shell: true, remote: true }).includes('upload'))
+})
+
 test('menuEntries: an app without ctx.files.* (system false) or openShell has none of their items', () => {
   const file = menuEntries({ kind: 'file', system: false, shell: false })
   const dir = menuEntries({ kind: 'dir', system: false, shell: false })

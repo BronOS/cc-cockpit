@@ -353,7 +353,7 @@ for a retry only from the accepting device.
 
 ## 9. Not in this version
 
-Upload from the device; outside paths from the Files panel or any plugin; several files at once; resumable or ranged
+Upload from the device (built since: `docs/design-upload.md`); outside paths from the Files panel or any plugin; several files at once; resumable or ranged
 downloads; `tar.gz`; `.gitignore`-aware zips and other include choices; in-page progress; a plugin offering bytes it made
 (`ctx.files.offerBytes`, later); downloads started by a streamed webview page or a URL overlay (still cancelled); sharing
 a download link with another person (guest access is its own design); telling Claude the answer; `ccc download --project`
@@ -377,8 +377,8 @@ No open questions are left: the owner answered the first draft's four and the re
   with a notice. The window closing or the server forgotten while the file is being placed aborts the placement too
   (checked after every filesystem call: before each name, after a link, after the copy's create, source open, chunks
   and close): the temp and whatever the placement made at the name (a link that succeeded meanwhile, the partial copy;
-  only while still the same inode) are removed and the notice names the reason; a placement that already finished stays
-  saved. The calls are not raced, so the notice comes after that cleanup.
+  only while still the same inode, a check then an unlink: design-upload.md §13 "Name-based deletes") are removed and
+  the notice names the reason; a placement that already finished stays saved. The calls are not raced, so the notice comes after that cleanup.
 - A browser close or a drop frees a stream's live slot at once even when a file read is stalled (a dead network mount):
   the read and the zip's feed are awaited only until the abort, no read starts after it, and the descriptor is closed in
   the background when the stalled read returns. The same holds for every other await once the slot is taken: the close

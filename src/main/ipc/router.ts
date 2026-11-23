@@ -54,7 +54,17 @@ import type { GlobalPluginLimitsView, PluginLimitsView } from '../../shared/plug
 import type { TabFlag } from '../../shared/tab-flag'
 import { MAX_ID_CHARS } from '../../shared/room-names'
 import type { ScreenAnswer } from '../../shared/terminal-screen'
-import type { ProjectView, TabCommandEntry } from '../../shared/types'
+import type { ProjectView, TabCommandEntry, TabKind } from '../../shared/types'
+import {
+  uploadSourceOf,
+  type UploadBeginReply,
+  type UploadError,
+  type UploadFoldersReply,
+  type UploadPasteReply,
+  type UploadResolveReply,
+  type UploadSource
+} from '../../shared/uploads'
+import type { UploadCaller } from '../files/uploads'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
 import type {
   WebAccessIndicator,
@@ -341,6 +351,21 @@ export class IpcRouter {
       throw new Error(`${channel}: refused`)
     }
     return access
+  }
+
+  /**
+   * Whether the caller may type into `tabId` now, as `tabs.input`'s own check would decide it: always for the
+   * owner; for a guest, still this project's write guest with the tab in its scope, read live. False on any
+   * doubt. For a handler whose request names no tab and that writes a tab's input itself (`uploads.paste`).
+   */
+  writesTabNow(channel: string, ctx: ProjectContext, view: CallView, tabId: string): boolean {
+    if (view.who === 'owner') return true
+    try {
+      const live = this.guestAccessNow(channel, ctx, view)
+      return live !== undefined && this.guestDeps?.guests?.tabVisible(live.id, tabId) === true
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -2422,6 +2447,147 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
     if (declined !== undefined && typeof declined !== 'boolean') throw new Error('sessions.closeAnswer: declined must be a boolean')
     if (discard !== undefined && typeof discard !== 'boolean') throw new Error('sessions.closeAnswer: discard must be a boolean')
     return deps.closeAnswer(ctx.windowId, view.viewId, requestId, { closed, declined: declined === true, discard: discard === true })
+  })
+}
+
+/** The terminal entry's paste request as the router hands it on (design-upload.md §4.3; the rule is Uploads.paste). */
+export interface UploadPasteCall {
+  caller: UploadCaller
+  projectId: string
+  /** The calling browser view (its selected tab is one of the paste's checks). */
+  viewId: ViewId
+  /** A guest's text is relative to the tab's starting folder, never a host path (D-33). */
+  guest: boolean
+  uploadId: unknown
+  manual: boolean
+  /** The page's word that its terminal is in bracketed-paste mode, absent when it shows none (UploadPasteFacts.bracketed). */
+  bracketed: boolean | undefined
+  /**
+   * Whether this view may type into the tab now (IpcRouter.writesTabNow: the owner, or a write guest with the
+   * tab in its scope): the paste writes as the view's own `tabs.input` would, so it passes that input's check.
+   */
+  mayType(tabId: string): boolean
+}
+
+/** What the upload handlers need from main (design-upload.md §3.1): files/uploads.ts and main's own tables. */
+export interface UploadHandlerDeps {
+  /**
+   * The signed-in device behind a browser view bound to `windowId` (WebConnections.deviceIdOf: `none` for every
+   * None-mode view, as the gateway keys `/u/`); undefined for a view that is gone or bound elsewhere.
+   */
+  deviceOf(viewId: ViewId, windowId: number): string | undefined
+  /** A panel the project's layout places in a zone now, any kind (LayoutService.placedPanel); undefined otherwise. */
+  placedPanel(projectId: string, panelKey: string): { pluginId: string; panelId: string } | undefined
+  /** The kind of a tab of the project (TabManager); undefined for an unknown tab or another project's. */
+  tabKind(projectId: string, tabId: string): TabKind | undefined
+  begin(caller: UploadCaller, source: UploadSource, folder: unknown, files: unknown): Promise<UploadBeginReply>
+  resolve(caller: UploadCaller, uploadId: unknown, choice: unknown): Promise<UploadResolveReply>
+  cancel(caller: UploadCaller, uploadId: unknown): Promise<void>
+  folders(windowId: number, path: unknown): Promise<UploadFoldersReply | UploadError>
+  /**
+   * The paste rule and its write (Uploads.paste: the upload's source tab, its status, the view's selection,
+   * then the text as the view's own input in the same synchronous step). Synchronous: an await between the
+   * checks and the write would reopen the window the step closes.
+   */
+  paste(call: UploadPasteCall): UploadPasteReply
+}
+
+/** A `{tab}` source that is no Claude or shell tab of the project (a page tab, a command tab, another project's). */
+export const UPLOAD_TAB_REFUSED = 'uploads go into a Claude or shell tab of this project only'
+/** A `{panel}` source the project's layout does not place now (closed meanwhile, hidden, never there). */
+export const UPLOAD_PANEL_REFUSED = 'the panel is not open in this project'
+
+/**
+ * Uploads from the person's device (design-upload.md §3.1, §6). Every channel is `adapted`, decided by the
+ * caller main bound, never by the payload:
+ *   - only a browser view (`view.remote`): the desktop page and server mode's hidden page are on that computer
+ *     already (the desktop has nothing to upload from, nobody sits at the hidden page);
+ *   - the owner, or a write guest (GUEST_CLASS `write`: the router checked the role and the targets, a visible
+ *     plugin's panel or a tab in scope, before this runs); a guest view the router bound no access to throws;
+ *   - the device and the window are the connection's (`deviceOf`), so an upload id answers only to the device
+ *     that began it (files/uploads.ts) and `/u/` takes its tokens only with that device's cookie;
+ *   - the source is resolved in the caller's own project, for the owner too (the guest check never runs for
+ *     the owner): a panel the layout places now, or a Claude or shell tab (never a page or command tab);
+ *   - after an await (begin and resolve check the disk, folders reads it), the guest's role is read again: a
+ *     guest made read-only or ended meanwhile gets a refusal, and what the await began is cancelled.
+ */
+export function registerUploadHandlers(router: IpcRouter, deps: UploadHandlerDeps): void {
+  const callerOf = (channel: string, ctx: ProjectContext, view: CallView): UploadCaller => {
+    guestCall(view, channel)
+    if (!view.remote) throw new Error(`${channel}: refused, uploads come from a browser's device`)
+    const deviceId = deps.deviceOf(view.viewId, ctx.windowId)
+    if (deviceId === undefined) throw new Error(`${channel}: refused`)
+    return { deviceId, windowId: ctx.windowId }
+  }
+  /** A Claude or shell tab of the caller's project: the terminal entry's tabs (§4.1). */
+  const terminalTab = (ctx: ProjectContext, tabId: string): boolean => {
+    const kind = deps.tabKind(ctx.projectId, tabId)
+    return kind === 'claude' || kind === 'shell'
+  }
+
+  router.handleProject('uploads.begin', async (ctx, payload, view) => {
+    const caller = callerOf('uploads.begin', ctx, view)
+    const { source: rawSource, folder, files } = fields('uploads.begin', payload)
+    const source = uploadSourceOf(rawSource)
+    if (!source) throw new Error('uploads.begin: bad source')
+    if ('panel' in source ? !deps.placedPanel(ctx.projectId, source.panel) : !terminalTab(ctx, source.tab)) {
+      return { error: 'panel' in source ? UPLOAD_PANEL_REFUSED : UPLOAD_TAB_REFUSED }
+    }
+    const reply = await deps.begin(caller, source, folder, files)
+    try {
+      router.guestAccessNow('uploads.begin', ctx, view)
+    } catch (err) {
+      if ('uploadId' in reply) await deps.cancel(caller, reply.uploadId)
+      throw err
+    }
+    return reply
+  })
+
+  router.handleProject('uploads.resolve', async (ctx, payload, view) => {
+    const caller = callerOf('uploads.resolve', ctx, view)
+    const { uploadId, choice } = fields('uploads.resolve', payload)
+    const reply = await deps.resolve(caller, uploadId, choice)
+    try {
+      router.guestAccessNow('uploads.resolve', ctx, view)
+    } catch (err) {
+      await deps.cancel(caller, uploadId)
+      throw err
+    }
+    return reply
+  })
+
+  router.handleProject('uploads.cancel', async (ctx, payload, view) => {
+    const caller = callerOf('uploads.cancel', ctx, view)
+    await deps.cancel(caller, fields('uploads.cancel', payload).uploadId)
+  })
+
+  router.handleProject('uploads.paste', async (ctx, payload, view) => {
+    const caller = callerOf('uploads.paste', ctx, view)
+    const { uploadId, manual, bracketed } = fields('uploads.paste', payload)
+    if (manual !== undefined && typeof manual !== 'boolean') throw new Error('uploads.paste: manual must be a boolean')
+    if (bracketed !== undefined && typeof bracketed !== 'boolean') throw new Error('uploads.paste: bracketed must be a boolean')
+    return deps.paste({
+      caller,
+      projectId: ctx.projectId,
+      viewId: view.viewId,
+      guest: !isOwner(view),
+      uploadId,
+      manual: manual === true,
+      bracketed,
+      mayType: (tabId) => router.writesTabNow('uploads.paste', ctx, view, tabId)
+    })
+  })
+
+  // The folder chooser's listing names the terminal tab it is for (§4.2): a write guest whose scope holds no tab
+  // cannot list the project's folders through it (the router checked the tab against its scope).
+  router.handleProject('uploads.folders', async (ctx, payload, view) => {
+    callerOf('uploads.folders', ctx, view)
+    const { tab, path } = fields('uploads.folders', payload)
+    if (typeof tab !== 'string') throw new Error('uploads.folders: tab must be a string')
+    if (!terminalTab(ctx, tab)) return { error: UPLOAD_TAB_REFUSED }
+    const reply = await deps.folders(ctx.windowId, path)
+    router.guestAccessNow('uploads.folders', ctx, view)
+    return reply
   })
 }
 

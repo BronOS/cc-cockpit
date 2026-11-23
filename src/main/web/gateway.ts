@@ -40,6 +40,13 @@
 // deviceByCookie) binds it to the browser it was minted for. downloads.ts decides everything else;
 // this routes, refuses with a bare 204 and tells it about revokes, disconnects, None mode ending and
 // its own stop, so no download outlives its device's access.
+// Uploads (`PUT /u/<token>?offset=<n>`, design-upload.md §3.2) are the one PUT the gateway takes, and
+// they sit after the cookie-and-key check: the shell sends them with `keyedFetch`, so the device key
+// comes as DEVICE_KEY_HEADER and the token is bound to that device. The route sits before the guest
+// block, so a write guest's chunk reaches it, and reads the guest's role itself on every chunk.
+// uploads.ts decides what may be written and upload-writer.ts writes it; this checks the request's
+// shape, hands the body over and tells uploads.ts about the same ends as the downloads (revoke,
+// disconnect, None mode ending, stop).
 import { open, readFile, type FileHandle } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
@@ -77,10 +84,13 @@ import {
   type WebSignInReply
 } from '../../shared/web-protocol'
 import { contentDisposition, DOWNLOAD_PATH_PREFIX } from '../../shared/downloads'
+import { UPLOAD_CHUNK_MAX_BYTES, UPLOAD_PATH_PREFIX } from '../../shared/uploads'
 import { projectColorOf } from '../../shared/project-color'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import { FAILED_SIGN_IN_WINDOW_MS, type AccessLog } from './access-log'
 import type { Downloads } from '../files/downloads'
+import { UPLOAD_TOKEN_UNKNOWN_TEXT, type UploadWriter } from '../files/upload-writer'
+import type { UploadGrant } from '../files/uploads'
 import { AttemptLimiter, cookieValues, DEVICE_COOKIE, deviceCookie, NONE_DEVICE, offeredKeys, type SignInResult, type WebAuth } from './auth'
 import {
   INVITE_ATTEMPT_CAPACITY,
@@ -122,7 +132,18 @@ export const GUEST_HEARTBEAT_MS = 10_000
 
 // Listener bounds (listen below). Generous for a phone on a slow link, small next to an fd limit.
 const HEADERS_TIMEOUT_MS = 10_000
+/**
+ * A whole request, body included (server-wide, every route): what makes an upload's chunk size adapt
+ * (design-upload.md §3.3). A request cut by it is answered 408 (the `clientError` listener below).
+ */
 const REQUEST_TIMEOUT_MS = 30_000
+/**
+ * How often Node checks the request and header bounds. Its default is 30 s, so a request bounded at
+ * 30 s was cut anywhere between 30 and 60 s (plan Task 1 measured 59 s); checked every 5 s the cut
+ * falls within 30-35 s, so the upload client's halving after a cut acts on a bound it can rely on.
+ * Cheap: one pass over at most MAX_CONNECTIONS sockets.
+ */
+const CONNECTIONS_CHECKING_MS = 5_000
 /**
  * A socket with nothing read or written this long is closed: also what ends a download the browser
  * has paused that long (design-download.md §3.1; there is no resume, Range is ignored).
@@ -131,8 +152,9 @@ export const IDLE_SOCKET_MS = 60_000
 const MAX_CONNECTIONS = 256
 /**
  * A new connection (after its TLS handshake, which has the same bound) must send a request this soon
- * or it is dropped: Node's own `headersTimeout` is only checked every 30 s, and the idle timeout is a
- * minute, so without this a silent connection held its place for up to a minute.
+ * or it is dropped: Node's own `headersTimeout` is only checked every CONNECTIONS_CHECKING_MS (Node's
+ * default was 30 s), and the idle timeout is a minute, so without this a silent connection held its place
+ * for up to a minute.
  */
 export const FIRST_REQUEST_MS = 10_000
 /**
@@ -161,6 +183,8 @@ export { FOLDERS_PATH }
 export { SESSIONS_PATH }
 /** Far above a 43-character token; a longer path segment is not one (refused unread). */
 const MAX_DOWNLOAD_TOKEN_LENGTH = 128
+/** An upload token is the same 32 bytes in base64url. */
+const MAX_UPLOAD_TOKEN_LENGTH = MAX_DOWNLOAD_TOKEN_LENGTH
 
 const DOWNLOAD_BASE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'X-Content-Type-Options': 'nosniff',
@@ -189,6 +213,17 @@ export type GatewayGuests = Pick<GuestStore, 'redeem' | 'endedCookie' | 'access'
 
 /** The part of downloads.ts the gateway uses (a fake in tests). */
 export type DownloadRoute = Pick<Downloads, 'serve' | 'refuse' | 'dropDevice' | 'dropAll'>
+
+/**
+ * What the `/u/` route uses of uploads.ts (`grant`, the drops) and upload-writer.ts (`writeChunk`): main
+ * composes the two; tests pass the real pair. The drops resolve once the temps are deleted.
+ */
+export interface UploadRoute {
+  grant(token: string): Pick<UploadGrant, 'deviceId' | 'name' | 'size'> | undefined
+  writeChunk: UploadWriter['writeChunk']
+  dropDevice(deviceId: string): Promise<void>
+  dropAll(): Promise<void>
+}
 
 /** A sign-in body is a token (or a password, or a ticket) and a device name; anything bigger is not one. */
 export const MAX_SIGN_IN_BODY = 4096
@@ -234,6 +269,8 @@ export interface GatewayDeps {
   pages?: PluginPages
   /** Downloads (`/d/<token>`, downloads.ts). Absent: every `/d/` GET is a refusal (204). */
   downloads?: DownloadRoute
+  /** Uploads (`/u/<token>`, uploads.ts and upload-writer.ts). Absent: every `/u/` PUT is a 404. */
+  uploads?: UploadRoute
   /**
    * Guests (design-guests, guests.ts). Absent: `/auth/invite` is 404 and a guest device (a record from a
    * build that had guests) is no one: every route that needs a device answers it as not signed in.
@@ -250,6 +287,9 @@ export interface GatewayDeps {
   maxUnauthenticated?: number
   /** IDLE_SOCKET_MS; tests shorten it (a stalled download). */
   idleSocketMs?: number
+  /** REQUEST_TIMEOUT_MS and CONNECTIONS_CHECKING_MS; tests shorten them (a trickled upload chunk). */
+  requestTimeoutMs?: number
+  connectionsCheckingMs?: number
 }
 
 /** What a browser may do with projects when there is no desktop (open-project.ts does the open). */
@@ -428,6 +468,47 @@ function protocolKeys(header: string | undefined): string[] {
   return out
 }
 
+/**
+ * A count as a header or a query sends it: decimal digits only (no sign, exponent or spaces, which
+ * `Number` would take), at most 15 of them; undefined otherwise. No regex (the gateway's rule).
+ */
+function decimalCount(text: string | null | undefined): number | undefined {
+  if (typeof text !== 'string' || text.length === 0 || text.length > 15) return undefined
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 48 || c > 57) return undefined
+  }
+  return Number(text)
+}
+
+/** The `offset` of an upload's URL (`?offset=<n>`): exactly one, a count. */
+function offsetOf(url: string): number | undefined {
+  const at = url.indexOf('?')
+  if (at < 0) return undefined
+  const values = new URLSearchParams(url.slice(at + 1)).getAll('offset')
+  return values.length === 1 ? decimalCount(values[0]) : undefined
+}
+
+/**
+ * Reads what is left of a request's body and drops it: resolves when it ended, or the request went (an
+ * end destroyed it, the request bound cut it). Resolves at once when nothing is left.
+ */
+function readOff(req: IncomingMessage): Promise<void> {
+  if (req.readableEnded || req.destroyed) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = (): void => {
+      req.off('end', done)
+      req.off('close', done)
+      req.off('error', done)
+      resolve()
+    }
+    req.on('end', done)
+    req.on('close', done)
+    req.on('error', done)
+    req.resume()
+  })
+}
+
 /** A refused-origin log line's origin: quoted and cut, never the whole header. */
 function originText(origin: string | undefined): string {
   return JSON.stringify((origin ?? 'none').slice(0, 100))
@@ -468,6 +549,8 @@ export class WebGateway {
    * redeems, never the owner's sign-in (auth.ts keeps the owner's bucket).
    */
   private readonly inviteLimiter: AttemptLimiter
+  /** The upload files (their grants, uploads.ts's own objects) already logged as completed or cut. */
+  private readonly loggedUploads = new WeakSet<object>()
 
   constructor(private readonly deps: GatewayDeps) {
     this.refusals = new CollapsedLog((message) => deps.log(message))
@@ -486,8 +569,19 @@ export class WebGateway {
       // And its downloads: a stream running for a revoked device is cut, its unused links dropped
       // (an expiry comes here too).
       for (const id of ids) deps.downloads?.dropDevice(id)
+      // And its uploads: a chunk being read is cut and every temp of its uploads deleted.
+      for (const id of ids) this.dropUploads(id)
       for (const [ws, device] of this.sockets) if (gone.has(device.id)) ws.terminate()
     })
+  }
+
+  /**
+   * A device's uploads end (uploads.ts dropDevice: the live request destroyed, the temps deleted). Not
+   * awaited by the callers here (a revoke's listener, Disconnect, a mode change are synchronous), and
+   * never a rejection in main.
+   */
+  private dropUploads(deviceId: string): void {
+    void this.deps.uploads?.dropDevice(deviceId).catch((err: unknown) => this.deps.log(`web access: ending uploads failed: ${errorText(err)}`))
   }
 
   /** The ids of the devices with an open socket, each with its socket count (None's anonymous caller is `none`). */
@@ -504,6 +598,8 @@ export class WebGateway {
    */
   disconnectDevice(id: string): number {
     let closed = this.deps.downloads?.dropDevice(id) ?? 0
+    // Its uploads too (the page begins them again); not counted: the count is sockets and downloads.
+    this.dropUploads(id)
     for (const [ws, device] of this.sockets) {
       if (device.id !== id) continue
       ws.terminate()
@@ -621,6 +717,7 @@ export class WebGateway {
     if (before === 'none' && mode !== 'none') {
       this.deps.pages?.tokens.dropDevice('none')
       this.deps.downloads?.dropDevice('none')
+      this.dropUploads(NONE_DEVICE.id)
     }
   }
 
@@ -656,21 +753,31 @@ export class WebGateway {
     })
     const handle = (req: IncomingMessage, res: ServerResponse): void => this.request(req, res)
     // A TLS handshake gets the first request's bound (Node's default is two minutes).
-    const server = tls ? createHttpsServer({ ...tls, handshakeTimeout: this.deps.firstRequestMs ?? FIRST_REQUEST_MS }, handle) : createServer(handle)
+    // The check interval is a construction option only (not a property like the bounds below).
+    const connectionsCheckingInterval = this.deps.connectionsCheckingMs ?? CONNECTIONS_CHECKING_MS
+    const server = tls
+      ? createHttpsServer({ ...tls, handshakeTimeout: this.deps.firstRequestMs ?? FIRST_REQUEST_MS, connectionsCheckingInterval }, handle)
+      : createServer({ connectionsCheckingInterval }, handle)
     // Bounds for what anyone past the Host check can hold before signing in (the shell, its assets
     // and plugin files stream from open file handles): a request must arrive in time, a stalled
     // download is dropped, and the listener takes a bounded number of sockets (upgraded views
     // included; `ws` clears the idle timeout on a socket it takes over).
-    server.headersTimeout = HEADERS_TIMEOUT_MS
-    server.requestTimeout = REQUEST_TIMEOUT_MS
+    const requestTimeout = this.deps.requestTimeoutMs ?? REQUEST_TIMEOUT_MS
+    // Node wants the headers' bound within the request's (a test's short request bound).
+    server.headersTimeout = Math.min(HEADERS_TIMEOUT_MS, requestTimeout)
+    server.requestTimeout = requestTimeout
     server.timeout = this.deps.idleSocketMs ?? IDLE_SOCKET_MS
     server.maxConnections = MAX_CONNECTIONS
     // The socket a request arrives on: the TLS socket for https (made after the handshake), the TCP
     // one for http. Counted from there (the handshake has its own bound above).
     server.on(tls ? 'secureConnection' : 'connection', (socket: Socket) => this.admit(socket))
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => this.upgrade(req, socket, head))
-    // A client error (a malformed request line) is answered by Node; never let it reach the app.
-    server.on('clientError', (_err, socket: Duplex) => refuseUpgrade(socket, '400 Bad Request'))
+    // A client error (a malformed request line) is answered here; never let it reach the app. A request
+    // cut by the request bound comes here too: 408, as Node itself answers it with no listener (plan Task
+    // 1), so the upload client can tell a cut chunk from the writer's own 400 for a body that ended short.
+    server.on('clientError', (err: NodeJS.ErrnoException, socket: Duplex) =>
+      refuseUpgrade(socket, err.code === 'ERR_HTTP_REQUEST_TIMEOUT' ? '408 Request Timeout' : '400 Bad Request')
+    )
     this.server = server
     this.heartbeat = setInterval(() => this.beat(false), this.deps.heartbeatMs ?? HEARTBEAT_MS)
     this.heartbeat.unref()
@@ -714,6 +821,8 @@ export class WebGateway {
     // unused links, which must not work on the next listener).
     this.deps.pages?.tokens.clear()
     const downloadsEnded = this.deps.downloads?.dropAll()
+    // And every upload: the live chunks cut, every temp deleted (a token must not work on the next listener).
+    const uploadsEnded = this.deps.uploads?.dropAll().catch((err: unknown) => this.deps.log(`web access: ending uploads failed: ${errorText(err)}`))
     if (wss) {
       const clients = [...wss.clients]
       if (notice === undefined || clients.length === 0) {
@@ -739,6 +848,8 @@ export class WebGateway {
     // The dropped downloads are over (pipelines unwound, files closed) before the stop resolves, so a
     // stop leaves no stream behind; capped so a file system that never answers a close cannot hold it.
     if (downloadsEnded) await graceful(downloadsEnded, CLOSE_GRACE_MS)
+    // The same for uploads: the temps are gone when the stop resolves.
+    if (uploadsEnded) await graceful(uploadsEnded, CLOSE_GRACE_MS)
     if (!server) return
     await new Promise<void>((resolve) => {
       // Keep-alive connections would hold close() open until they time out.
@@ -850,14 +961,25 @@ export class WebGateway {
     if (!host) return this.send(res, undefined, 403, 'text/plain; charset=utf-8', 'unknown host')
     const method = req.method ?? 'GET'
     const safe = method === 'GET' || method === 'HEAD'
-    if (!safe && method !== 'POST') return this.send(res, host, 405, 'text/plain; charset=utf-8', 'method not allowed')
+    const path = (req.url ?? '/').split('?')[0] ?? '/'
+    const upload = path.startsWith(UPLOAD_PATH_PREFIX)
+    // A PUT is an upload's chunk and nothing else (design-upload.md §3.2): every other PUT stays a 405.
+    if (!safe && method !== 'POST' && !(upload && method === 'PUT')) return this.send(res, host, 405, 'text/plain; charset=utf-8', 'method not allowed')
     // Every state-changing request, before its route is even looked up: a foreign page must learn
     // nothing from which of its posts would have existed.
     if (!safe && !checkOrigin(req.headers.origin, host, this.originRule())) {
       this.refusals.write('origin', 'requests refused for their origin', `web access: ${method} refused, origin ${originText(req.headers.origin)}`)
       return this.send(res, host, 403, 'text/plain; charset=utf-8', 'origin not allowed')
     }
-    const path = (req.url ?? '/').split('?')[0] ?? '/'
+    // An upload's chunk is the shell's own `fetch`, always same-origin: a browser that says otherwise is
+    // carrying another site's request (the Origin check above stops the ones whose Origin it can read).
+    if (upload) {
+      const site = req.headers['sec-fetch-site']
+      if (site !== undefined && site !== 'same-origin') {
+        this.refusals.write('upload-site', 'uploads refused for their site', `web access: an upload was refused, Sec-Fetch-Site ${originText(String(site))}`)
+        return this.json(res, host, 403, { error: 'the request came from another site' }, { Connection: 'close' })
+      }
+    }
     // A download: its token is the credential, the cookie alone binds it (see the header). After the
     // Origin check, so a foreign POST learns nothing more here than anywhere.
     if (path.startsWith(DOWNLOAD_PATH_PREFIX)) {
@@ -900,11 +1022,22 @@ export class WebGateway {
       })
     }
     // Everything else needs a device: a request without a valid cookie and its key learns nothing more.
+    // An upload's refusal here also closes the connection: a body as long as its Content-Length says is
+    // not worth reading off for someone not signed in.
+    const unsigned: Record<string, string> = upload ? { Connection: 'close' } : {}
     const device = this.deviceOf(req)
-    if (!device) return this.json(res, host, 401, { error: 'not signed in' })
+    if (!device) return this.json(res, host, 401, { error: 'not signed in' }, unsigned)
     const guest = this.guestOf(device)
-    if (guest === 'revoked') return this.json(res, host, 401, { error: 'not signed in' })
+    if (guest === 'revoked') return this.json(res, host, 401, { error: 'not signed in' }, unsigned)
     this.trusted(req.socket)
+    // An upload's chunk: before the guest block, so a write guest's reaches it (the route reads the role).
+    if (upload) {
+      return void this.upload(req, res, host, method, path.slice(UPLOAD_PATH_PREFIX.length), device, guest).catch((err: unknown) => {
+        this.deps.log(`web access: an upload failed: ${errorText(err)}`)
+        if (!res.headersSent && !res.destroyed) this.json(res, host, 500, { error: 'the upload failed' }, { Connection: 'close' })
+        else res.destroy()
+      })
+    }
     if (guest) {
       // A guest's routes (design-guests §5, §16.4): its own project in the list, nothing else. Every other
       // route a device has answers 404 as a route that does not exist (D-26): the session counts, server
@@ -1041,6 +1174,115 @@ export class WebGateway {
       bytes: result.bytes,
       detail: result.completed ? 'completed' : `cut: ${result.cut}`
     })
+  }
+
+  /**
+   * `PUT /u/<token>?offset=<n>` (design-upload.md §3.2), past the Host, Origin, `Sec-Fetch-Site` and
+   * cookie-and-key checks. Then, before a byte is written: a guest's role read live (write only), the
+   * token live and bound to this request's device (None mode: the `none` device, on the token alone),
+   * `Content-Length` given (no chunked body) and at most UPLOAD_CHUNK_MAX_BYTES, `offset` a count. The
+   * writer checks the rest (the offset against what is written, the size, the empty file) and writes;
+   * its answer goes back as JSON.
+   * A guest not entitled (the read role, a method other than PUT, a token unknown, another device's or
+   * ended) gets the guest block's 404, the same status, headers and body as a route that does not exist
+   * (D-26): a read guest cannot tell a live token from a guess. A write
+   * guest holding its own live token gets the protocol's answers (400, 409 with `expected`, 413, 507,
+   * 500): without the 409 a Chromium resend would end its file. Answers carry fixed words and
+   * project-relative names only (D-33). A line per file in the access log, never the token.
+   * Every answer after the writer's goes once the body is read off (`readOff`): a writer that failed
+   * mid-body (ENOSPC) leaves the rest unread, and an answer sent over a request still being sent is lost
+   * to the reset that follows when the connection closes on unread bytes.
+   */
+  private async upload(
+    req: IncomingMessage,
+    res: ServerResponse,
+    host: string,
+    method: string,
+    token: string,
+    device: WebDevice,
+    guest: GuestOnlyAccess | undefined
+  ): Promise<void> {
+    // Read live for this request (guestOf just now): a role changed to read refuses the next chunk.
+    if (guest && guest.role !== 'write') return this.notFound(res, host)
+    if (method !== 'PUT') {
+      if (guest) return this.notFound(res, host)
+      return this.json(res, host, 405, { error: 'method not allowed' }, { Allow: 'PUT', Connection: 'close' })
+    }
+    const uploads = this.deps.uploads
+    const shaped = token !== '' && token.length <= MAX_UPLOAD_TOKEN_LENGTH && !token.includes('/')
+    const grant = shaped ? uploads?.grant(token) : undefined
+    // Another device's token answers as an unknown one (§3.1): nobody learns that it exists.
+    if (!uploads || !grant || grant.deviceId !== device.id) {
+      if (guest) return this.notFound(res, host)
+      // An ended upload's next chunk is how the client learns of the end (`lost` reads it as the server's): a body
+      // within the cap is read off by Node and the connection kept, as the guest's 404, so the answer is not lost
+      // to the reset a close on unread bytes makes. Anything else is not a chunk and is not read.
+      const length = req.headers['transfer-encoding'] === undefined ? decimalCount(req.headers['content-length']) : undefined
+      const chunk = length !== undefined && length <= UPLOAD_CHUNK_MAX_BYTES
+      return this.json(res, host, 404, { error: UPLOAD_TOKEN_UNKNOWN_TEXT }, chunk ? {} : { Connection: 'close' })
+    }
+    // A chunked body has no length to hold against the cap before it is read.
+    if (req.headers['transfer-encoding'] !== undefined) {
+      return this.json(res, host, 400, { error: 'a chunk needs a Content-Length' }, { Connection: 'close' })
+    }
+    const length = decimalCount(req.headers['content-length'])
+    if (length === undefined) return this.json(res, host, 400, { error: 'a chunk needs a Content-Length' }, { Connection: 'close' })
+    if (length > UPLOAD_CHUNK_MAX_BYTES) {
+      return this.json(res, host, 413, { error: `a chunk is at most ${UPLOAD_CHUNK_MAX_BYTES} bytes` }, { Connection: 'close' })
+    }
+    // From here the body is at most 8 MiB and its sender holds a live token: a refusal lets Node read the
+    // body off and keeps the connection, so the client reads the answer (a 409's `expected`) rather than
+    // a reset, and sends the next chunk on it.
+    const offset = offsetOf(req.url ?? '')
+    if (offset === undefined) return this.json(res, host, 400, { error: 'the offset is not valid' })
+    // Node destroys a socket idle for `server.timeout` (IDLE_SOCKET_MS) unless a listener takes the timeout. The
+    // last chunk's request waits through the commit, which on a volume with no hard links copies the whole temp:
+    // minutes for a large file with nothing on the socket, and the client's last-chunk deadline allows for it. A
+    // cut there would read as a failure of a file that is placed. So while the writer holds the request the
+    // timeout is ignored: the request bound covers the body, and an end (the idle clock, a revoke) destroys it.
+    let writing = true
+    res.on('timeout', () => {
+      if (!writing) res.destroy()
+    })
+    const result = await uploads.writeChunk(token, offset, req, length).finally(() => {
+      writing = false
+    })
+    if (result.status === 200) {
+      if ('done' in result.reply) this.logUpload(grant, device, grant.size, 'completed')
+      if (!res.destroyed) this.json(res, host, 200, result.reply)
+      return
+    }
+    // The file is over: failed (its temp deleted), or the upload ended while this chunk waited or ran.
+    if (result.failed === true) this.logUpload(grant, device, offset, `cut: ${result.error}`)
+    else if (result.status === 404) this.logUpload(grant, device, offset, 'cut: ended')
+    // The rest of the body read off first (at most 8 MiB, under the request bound), so the answer comes
+    // after the request as the client expects it, never into a reset.
+    await readOff(req)
+    // An end (a revoke, a cancel, a stop) destroyed the request: nobody to answer.
+    if (res.destroyed || res.headersSent) return
+    if (guest && result.status === 404) return this.notFound(res, host)
+    this.json(res, host, result.status, result.expected !== undefined ? { error: result.error, expected: result.expected } : { error: result.error })
+  }
+
+  /**
+   * One access-log line per file (design-upload.md §3.2): the device, the name as planned, the bytes on
+   * disk, completed or cut. Once per file: a resent chunk that finds it over adds nothing. Ends with no
+   * chunk in flight (the idle clock, a cancel between chunks) have no line here: the route never sees them.
+   */
+  private logUpload(grant: Pick<UploadGrant, 'name'>, device: WebDevice, bytes: number, detail: string): void {
+    if (this.loggedUploads.has(grant)) return
+    this.loggedUploads.add(grant)
+    this.deps.accessLog.write({ event: 'upload', device: device.id, name: device.name, file: grant.name, bytes, detail })
+  }
+
+  /**
+   * The guest block's 404 for a route that does not exist; a guest's refusal on `/u/` is these same bytes,
+   * headers included (D-26). So no `Connection: close` on it: Node reads the body off and keeps the
+   * connection, as for a guest's POST to an unknown route, and the request bound (REQUEST_TIMEOUT_MS)
+   * caps how long a body is read off.
+   */
+  private notFound(res: ServerResponse, host: string): void {
+    this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found')
   }
 
   /** A refused download: 204 with no body and nothing a browser could render. */

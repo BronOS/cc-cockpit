@@ -46,7 +46,11 @@ export function PluginFrame(props: {
   className: string
   connect: (deliver: (port: MessagePort) => void) => () => void
   intro?: object
-  onPageMessage?: (data: unknown) => void
+  /**
+   * What this frame's page posts to the shell; `from` is the event's source and this frame's window (the
+   * same, checked here), for a filter that checks it again on its own (web/upload-request.ts).
+   */
+  onPageMessage?: (data: unknown, from: { source: MessageEventSource | null; frame: Window }) => void
   allowPopups?: boolean
   /** The port is made in the shell at the load (HtmlOverlay), not asked of main: asked for at the load. */
   localPort?: boolean
@@ -104,7 +108,7 @@ export function PluginFrame(props: {
     const onMessage = (event: MessageEvent): void => {
       const own = frame.current?.contentWindow
       if (!own || event.source !== own) return
-      onPageMessage.current?.(event.data)
+      onPageMessage.current?.(event.data, { source: event.source, frame: own })
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)

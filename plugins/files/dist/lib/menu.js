@@ -20,11 +20,13 @@
    * ctx.sessions.openShell exists; `rules`: the "Open with" rules matching a file.
    * `download`: ctx.files.download exists (the host's `reset` env); the Download items are for a
    * browser view only (`remote`), since on the host's screen the file is already there.
+   * `upload`: ccPanel.upload.pick exists (an app from the upload release on); the Upload here item is
+   * for a browser view with write rights (`remote`, access owner or write) on a folder and the project folder.
    * A folder always gets both zip items: whether the two zips differ cannot be told from the page
    * (the listing never shows `.git`, hides ignored names when asked, is capped, and holds direct
    * children only, while the walk drops both names at any depth).
    */
-  function menuEntries({ kind, rules = [], system = false, shell = false, remote = false, download = false, access = 'owner' }) {
+  function menuEntries({ kind, rules = [], system = false, shell = false, remote = false, download = false, upload = false, access = 'owner' }) {
     if (access === 'read') return kind === 'root' ? [] : ['copy-relative']
     // On the host's screen only: hidden in a browser view.
     const desktop = system && !remote
@@ -43,6 +45,10 @@
       if (desktop) ids.push('reveal')
       if (kind === 'dir' && shell) ids.push('terminal')
       ids.push('new-file', 'new-folder')
+      // Upload here: a browser view only (the device's files go to the host), never for a read guest
+      // (handled above); `upload` is the page's `typeof ccPanel.upload?.pick === 'function'`, so an
+      // older app without the API never shows an item that could do nothing.
+      if (remote && upload) ids.push('upload')
       if (remote && download) {
         ids.push('download-zip', 'download-zip-all')
       }

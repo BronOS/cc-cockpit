@@ -7,7 +7,8 @@ import { appendFileSync, chmodSync, existsSync, lstatSync, mkdtempSync, readdirS
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { DESKTOP_DOWNLOAD_BURST, DESKTOP_DOWNLOAD_BURST_MS, DESKTOP_DOWNLOAD_MAX_BYTES, DOWNLOAD_CLICK_MS } from '../../src/shared/downloads'
-import { MAX_NAME_NUMBER, numberedName, placeDownload, sweepDownloadTemps, type RemoteDownloadItem } from '../../src/main/remote/remote-downloads'
+import { placeDownload, sweepDownloadTemps, type RemoteDownloadItem } from '../../src/main/remote/remote-downloads'
+import { MAX_NAME_NUMBER, numberedName } from '../../src/shared/numbered-name'
 import type { RemoteServer } from '../../src/shared/remote-servers'
 import { REMOTE_DEVICE_COOKIE } from '../../src/main/remote/remote-cookie'
 import {

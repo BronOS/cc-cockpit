@@ -41,6 +41,12 @@ export interface ApprovalDialogProps {
    */
   denyOnly?: boolean
   note?: string
+  /**
+   * A second consequential answer beside Allow (the upload clash's Keep both): armed, disarmed and
+   * click-guarded exactly as Allow is, so a click already on its way can answer neither. Shown with
+   * `denyOnly` too (Replace may be off while Keep both is not).
+   */
+  alsoAllow?: { label: string; testId?: string; onClick(): void }
   /** `data-testid`s for e2e specs: the dialog box and its two buttons. */
   testIds?: { dialog?: string; allow?: string; deny?: string }
   onAnswer(allow: boolean): void
@@ -59,10 +65,18 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
   }, [focusDeny])
   // How the last press on Allow began: armed or not (undefined: no press seen).
   const pressArmed = useRef<boolean | undefined>(undefined)
-  const answer = (allow: boolean): void => {
+  // One answer per dialog, whichever button gives it.
+  const once = (fn: () => void): void => {
     if (answered.current) return
     answered.current = true
-    props.onAnswer(allow)
+    fn()
+  }
+  const answer = (allow: boolean): void => once(() => props.onAnswer(allow))
+  // Allow and `alsoAllow`: a click counts only when its press began armed (allowClickCounts).
+  const guardedClick = (fn: () => void): void => {
+    const counts = allowClickCounts(armed, pressArmed.current)
+    pressArmed.current = undefined
+    if (counts) fn()
   }
   useEffect(() => {
     const arm = new ApprovalArm(setArmed)
@@ -138,16 +152,22 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
           <button type="button" ref={deny} data-testid={props.testIds?.deny} onClick={() => answer(false)}>
             {props.denyLabel ?? 'Deny'}
           </button>
+          {props.alsoAllow !== undefined && (
+            <button
+              type="button"
+              data-testid={props.alsoAllow.testId}
+              disabled={!armed}
+              onClick={() => guardedClick(() => once(() => props.alsoAllow?.onClick()))}
+            >
+              {props.alsoAllow.label}
+            </button>
+          )}
           {props.denyOnly !== true && <button
             type="button"
             className="confirm-danger"
             data-testid={props.testIds?.allow}
             disabled={!armed}
-            onClick={() => {
-              const counts = allowClickCounts(armed, pressArmed.current)
-              pressArmed.current = undefined
-              if (counts) answer(true)
-            }}
+            onClick={() => guardedClick(() => answer(true))}
           >
             {props.allowLabel ?? 'Allow'}
           </button>}
