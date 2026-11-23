@@ -56,9 +56,8 @@
 // `--ozone-platform=headless --disable-gpu`, so no display is needed) and exits with its status.
 import { spawn } from 'node:child_process'
 import { build } from 'esbuild'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { request as httpRequest, createServer, Agent } from 'node:http'
-import { tmpdir } from 'node:os'
 import { Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createRequire } from 'node:module'
@@ -373,13 +372,20 @@ async function zipDownload(lib, tmp) {
 /**
  * Phase 9: the flood beside a 1 GiB upload through the real UploadWriter, in 8 MiB PUTs over loopback,
  * one at a time as the page sends them. The writes are fs calls on the libuv pool; what could reach
- * main is the request's data events, the per-piece awaits and the commit's link.
+ * main is the request's data events, the per-piece awaits and the commit's link. Not measured: the
+ * temps record's synchronous flush at a file's first chunk (mkdir, open, write, fsync, rename on main),
+ * which runs once per file, so one 1 GiB file never shows it in a p99 (an upload of many files pays it each).
+ * The measured window is the upload's own (it ends when the last PUT is answered): a longer window
+ * would be flood alone and dilute the p99 the gate reads.
  */
-async function uploadPhase(lib) {
+async function uploadPhase(lib, tmp) {
   const TOTAL = 1024 * 1024 * 1024
   const CHUNK = 8 * 1024 * 1024
-  // Outside the repo: node_modules may be a link, and the writer resolves the folder to a real path.
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cc-upload-bench-')))
+  // Under the bench's own tmp (a real path, as phase 7's zip-tree), so main's finally and the next run
+  // remove a leftover; a stale big.bin would pass the size check while the new file took a numbered name.
+  const dir = join(tmp, 'upload-tree')
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
   const token = 'bench-token'
   const grant = { token, uploadId: 'bench-upload-0000', deviceId: 'bench', windowId: 1, index: 0, folderReal: dir, folderRel: '', name: 'big.bin', choice: 'new', size: TOTAL }
   let outcome
@@ -392,7 +398,7 @@ async function uploadPhase(lib) {
       }
     }),
     projectRoot: () => dir,
-    tempsFile: join(dir, 'temps.json'),
+    tempsFile: join(tmp, 'upload-temps.json'),
     log: (m) => console.log(m)
   })
   const server = createServer(async (req, res) => {
@@ -421,6 +427,7 @@ async function uploadPhase(lib) {
   let done = false
   let sent = 0
   const t0 = performance.now()
+  let uploadEnd = t0
   const upload = (async () => {
     try {
       for (let off = 0; off < TOTAL; off += CHUNK) {
@@ -428,15 +435,17 @@ async function uploadPhase(lib) {
         sent += CHUNK
       }
     } finally {
+      uploadEnd = performance.now()
       done = true
     }
   })()
   const count = { posted: 0 }
   let r
   try {
-    r = await measure(SECONDS, () => floodTick(count), () => done)
+    // 0 s: the window ends with the upload (see the header comment), never at SECONDS.
+    r = await measure(0, () => floodTick(count), () => done)
     await upload
-    const seconds = (performance.now() - t0) / 1000
+    const seconds = (uploadEnd - t0) / 1000
     const size = statSync(join(dir, 'big.bin')).size
     if (!outcome?.ok || size !== TOTAL) throw new Error(`9. upload: ${mib(size)} MiB at big.bin, outcome ${JSON.stringify(outcome)}: not the 1 GiB upload`)
     console.log(`\n9. upload + flooded: ${mib(sent)} MiB in ${sent / CHUNK} PUTs of ${mib(CHUNK)} MiB in ${seconds.toFixed(1)} s = ${(sent / 1024 / 1024 / seconds).toFixed(0)} MiB/s; ${mib(count.posted)} MiB parsed meanwhile`)
@@ -444,6 +453,8 @@ async function uploadPhase(lib) {
   } finally {
     agent.destroy()
     await new Promise((ok) => server.close(ok))
+    // Flush the temps record first: its debounced save would re-create the deleted folder's parent later.
+    await writer.sweepTemps()
     rmSync(dir, { recursive: true, force: true })
   }
   return r
@@ -702,7 +713,7 @@ async function main() {
     many.push(await streamedMany(frames, 12, 1920, 1080, true))
 
     // 9. a 1 GiB upload through the real writer beside the flooded tabs
-    uploadRun = await uploadPhase(uploadLib)
+    uploadRun = await uploadPhase(uploadLib, tmp)
 
   } finally {
     mirror.stop()
