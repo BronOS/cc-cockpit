@@ -175,7 +175,9 @@ answers `200 {received}`; the last one commits (§2.4) and answers `{done: true,
 Refusals answer a JSON `{error}`: 400 (shape), 409 with `expected` (offset), 413 (over a cap), 507 (disk full); a guest's
 refusal is 404, as every guest refusal on the gateway. The 204-only rule of `/d/` does not apply: a `fetch` is not a
 navigation, so a body cannot replace the page. Headers: `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`.
-One line per upload in `web-access.log`: device, display-safe name, bytes, completed or cut.
+One line per file in `web-access.log`: device, display-safe name, bytes, completed or cut (the route sees chunks only, so
+a file whose upload ends with no chunk in flight, by the idle clock, a cancel or a window closing between chunks, has no
+line).
 
 ### 3.3 The client
 
@@ -189,6 +191,10 @@ acknowledged bytes.
 restart forever below about 2.2 Mbit/s. The client starts at 1 MiB and aims at about 5 s a chunk: it doubles after a chunk
 under 2.5 s and halves after one over 10 s or one cut by the bound, between `UPLOAD_CHUNK_MIN_BYTES` (256 KiB, about
 70 kbit/s inside the bound) and `UPLOAD_CHUNK_MAX_BYTES` (8 MiB). The bound stays as it is for every other route.
+Node checks the bound every `connectionsCheckingInterval` (default 30 s, so a cut fell at 30-60 s in the spike); the
+gateway passes 5 s (`CONNECTIONS_CHECKING_MS`), so a cut falls at 30-35 s. A cut chunk is answered **408** (the
+gateway's `clientError` listener, as Node answers it with none), never the writer's 400 for a body that ended short, and
+Chromium may resend the request once before the client sees it; the offset check absorbs the duplicate.
 
 Never `XMLHttpRequest`, and never the `File` itself as a body: in the spike (§11) an XHR PUT of a `File` posted from the
 panel frame failed for some files (the same file every time within a run, another file in the next run), while an XHR of
