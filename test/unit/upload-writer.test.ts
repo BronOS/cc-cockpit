@@ -4,9 +4,9 @@
 // sweep at start. Real `Uploads` and real trees in a temp dir; the fs seam makes a write fail with
 // ENOSPC and a link with EXDEV.
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from 'node:fs'
-import { link as realLink, open as realOpen, type FileHandle } from 'node:fs/promises'
+import { link as realLink, open as realOpen, unlink as realUnlink, type FileHandle } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UPLOAD_CHUNK_MAX_BYTES, UPLOAD_TEMP_PREFIX, type UploadBegun } from '../../src/shared/uploads'
@@ -164,6 +164,18 @@ function failingWrites(code: string): Partial<UploadWriterFs> {
   }
 }
 const fullDisk = failingWrites('ENOSPC')
+
+/** fs.unlink that refuses (EACCES) every temp's delete while `refuse.on`: an unlink the volume refused. */
+function refusedTempUnlink(refuse: { on: boolean }): Partial<UploadWriterFs> {
+  return {
+    unlink: async (path) => {
+      if (refuse.on && basename(path).startsWith(UPLOAD_TEMP_PREFIX)) {
+        throw Object.assign(new Error(`EACCES: permission denied, unlink '${path}'`), { code: 'EACCES' })
+      }
+      await realUnlink(path)
+    },
+  }
+}
 
 describe('chunks and offsets', () => {
   it('writes a file in chunks at their offsets and commits it on the last byte', async () => {
@@ -458,7 +470,7 @@ describe('commit', () => {
     }
   })
 
-  it('a temp swapped for a link before the link is placed nowhere: the name made is removed', async () => {
+  it('a temp swapped for a link before the link fails the file and never deletes the name it does not own', async () => {
     writeFileSync(join(outside, 'secret.txt'), 'secret')
     const r = rig({
       link: async (from, to) => {
@@ -469,9 +481,41 @@ describe('commit', () => {
     })
     const { token } = await tokenFor(r, '', 'a.txt', 3)
     expect(await put(r, token, 0, 'new')).toMatchObject({ status: 500, error: 'the file changed on the server while it was written', failed: true })
-    expect(existsSync(join(proj, 'a.txt'))).toBe(false)
-    expect(lstatSync(join(outside, 'secret.txt')).nlink).toBe(1)
+    // Not the file written: left as the link made it (only the written file's identity says what is
+    // ours), logged; the outside file is untouched and nothing was written through it.
+    expect(readFileSync(join(proj, 'a.txt'), 'utf8')).toBe('secret')
     expect(readFileSync(join(outside, 'secret.txt'), 'utf8')).toBe('secret')
+    expect(r.logs.some((l) => l.includes('not the file written, left in place'))).toBe(true)
+  })
+
+  it('a file another process put at the name right after the link is never deleted (external review)', async () => {
+    const r = rig({
+      link: async (from, to) => {
+        await realLink(from, to)
+        // Between the link and its check: the name replaced by another process's own file.
+        writeFileSync(join(proj, 'theirs.part'), 'theirs')
+        renameSync(join(proj, 'theirs.part'), to)
+      },
+    })
+    const { token } = await tokenFor(r, '', 'a.txt', 3)
+    expect(await put(r, token, 0, 'new')).toMatchObject({ status: 500, failed: true })
+    expect(readFileSync(join(proj, 'a.txt'), 'utf8')).toBe('theirs')
+    expect(tempsIn(proj)).toEqual([])
+  })
+
+  it('a temp whose delete is refused after the copy fallback keeps its record entry, and the next start sweeps it', async () => {
+    const refuse = { on: true }
+    const r = rig({ link: exdev, ...refusedTempUnlink(refuse) })
+    const { token } = await tokenFor(r, '', 'a.txt', 3)
+    expect(await put(r, token, 0, 'new')).toMatchObject({ status: 200, reply: { done: true, name: 'a.txt' } })
+    expect(readFileSync(join(proj, 'a.txt'), 'utf8')).toBe('new')
+    const [temp] = tempsIn(proj)
+    expect(temp).toBeDefined()
+    await settleRecord()
+    expect(recorded()).toEqual([join(proj, temp!)])
+    expect(await rig().writer.sweepTemps()).toBe(1)
+    expect(tempsIn(proj)).toEqual([])
+    expect(readFileSync(join(proj, 'a.txt'), 'utf8')).toBe('new')
   })
 
   it('a temp swapped for a link before the copy is never read through it', async () => {
@@ -583,6 +627,27 @@ describe('aborts', () => {
     expect(tempsIn(proj)).toEqual([])
     expect(existsSync(join(proj, 'a.txt'))).toBe(false)
     await settleRecord()
+    expect(recorded()).toEqual([])
+  })
+
+  it('a cancel whose temp delete is refused keeps the record entry, and the next start sweeps the temp', async () => {
+    const refuse = { on: true }
+    const r = rig(refusedTempUnlink(refuse))
+    const { token, uploadId } = await tokenFor(r, '', 'a.txt', 10)
+    const slow = new PassThrough()
+    const chunk = put(r, token, 0, slow, 10)
+    slow.write('abc')
+    await until(() => tempsIn(proj).length === 1)
+    const [temp] = tempsIn(proj)
+    await r.uploads.cancel(A, uploadId)
+    expect(await chunk).toMatchObject({ status: 404 })
+    // Still there, its bytes given back through the descriptor, and still on the record.
+    expect(statSync(join(proj, temp!)).size).toBe(0)
+    await settleRecord()
+    expect(recorded()).toEqual([join(proj, temp!)])
+    expect(r.logs.some((l) => l.includes('kept for the next start'))).toBe(true)
+    expect(await rig().writer.sweepTemps()).toBe(1)
+    expect(tempsIn(proj)).toEqual([])
     expect(recorded()).toEqual([])
   })
 

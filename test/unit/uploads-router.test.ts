@@ -352,7 +352,7 @@ describe('upload ids and the role after an await', () => {
 })
 
 describe('uploads.paste: the gate only (the rule is Uploads.paste, upload-paste.test.ts)', () => {
-  it("hands on main's caller, view and role, never the payload's; manual must be a boolean", async () => {
+  it("hands on main's caller, view and role, never the payload's; manual and bracketed must be booleans", async () => {
     const seen: UploadPasteCall[] = []
     const { router, web } = setup({
       paste: (call) => {
@@ -360,13 +360,33 @@ describe('uploads.paste: the gate only (the rule is Uploads.paste, upload-paste.
         return { text: 'x ' }
       }
     })
-    await router.dispatch(web(OWNER, 'owner'), 'uploads.paste', { uploadId: 'u1', manual: true, viewId: 'web:9', guest: true })
+    await router.dispatch(web(OWNER, 'owner'), 'uploads.paste', { uploadId: 'u1', manual: true, bracketed: true, viewId: 'web:9', guest: true })
     await router.dispatch(web(WRITER, { guest: 'gW' }), 'uploads.paste', { uploadId: 'u2' })
     expect(seen).toEqual([
-      { caller: caller('devO'), projectId: A, viewId: OWNER, guest: false, uploadId: 'u1', manual: true },
-      { caller: caller('devW'), projectId: A, viewId: WRITER, guest: true, uploadId: 'u2', manual: false }
+      { caller: caller('devO'), projectId: A, viewId: OWNER, guest: false, uploadId: 'u1', manual: true, bracketed: true, mayType: expect.any(Function) },
+      { caller: caller('devW'), projectId: A, viewId: WRITER, guest: true, uploadId: 'u2', manual: false, bracketed: false, mayType: expect.any(Function) }
     ])
     await expect(router.dispatch(web(OWNER, 'owner'), 'uploads.paste', { uploadId: 'u1', manual: 'yes' })).rejects.toThrow(/manual/)
+    await expect(router.dispatch(web(OWNER, 'owner'), 'uploads.paste', { uploadId: 'u1', bracketed: 1 })).rejects.toThrow(/bracketed/)
+  })
+
+  it("the write passes `tabs.input`'s own check, read live: the owner any tab, a write guest only one in its scope while it still writes", async () => {
+    const seen: UploadPasteCall[] = []
+    const { router, web, roles } = setup({
+      paste: (call) => {
+        seen.push(call)
+        return { text: 'x ' }
+      }
+    })
+    await router.dispatch(web(OWNER, 'owner'), 'uploads.paste', { uploadId: 'u1' })
+    await router.dispatch(web(WRITER, { guest: 'gW' }), 'uploads.paste', { uploadId: 'u2' })
+    const [owner, guest] = seen
+    expect(owner!.mayType('c2')).toBe(true)
+    expect(guest!.mayType('c1')).toBe(true)
+    expect(guest!.mayType('c2')).toBe(false)
+    // Made read-only after the call began: no write.
+    roles.gW = 'read'
+    expect(guest!.mayType('c1')).toBe(false)
   })
 })
 

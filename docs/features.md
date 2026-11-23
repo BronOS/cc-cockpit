@@ -690,7 +690,8 @@ no text (a copy from Excel, Word or Copy image pastes its text as before). A tab
   one answer for the whole upload. Replace is not offered over a folder or a link. Replace keeps the file's permissions
   and writes through a temp, so a half-written file never shows under the real name.
 - *A tab upload ends with the paths pasted into the prompt*, backslash-escaped for a shell, absolute for you, relative to
-  the tab's folder for a guest. Nothing presses Enter. It is pasted only when the tab is the one shown with its keys on (and, in a Claude tab, Claude is waiting for input);
+  the tab's folder for a guest. Nothing presses Enter. It is pasted only when the tab is the one shown with its keys on (and, in a Claude tab, Claude is waiting for input,
+  checked by the server at the moment it writes the paths);
   otherwise the notice holds the paths with Paste path, and Copy when there is text to copy (not with the keys off, or for a
   path with a control or invisible character). Paste path is refused while Claude asks for a permission.
 - *What is never uploaded:* folders (named in the result, the drop's files still go), more than 100 files at once, and a file over 2 GiB (either refuses the whole upload), `.git` or anything under a `.git` folder (a `.git` file too), the app's data folder, and anything that
@@ -700,7 +701,7 @@ no text (a copy from Excel, Word or Copy image pastes its text as before). A tab
   chunks that adapt to the link (1 MiB to start, 256 KiB to 8 MiB), each retried up to 3 times at 1, 5 and 20 seconds;
   60 seconds with no bytes, Cancel, leaving the page, revoking or disconnecting the device, leaving None mode, stopping the
   gateway, closing the window or a guest losing access end it and delete the temp (`.cc-upload-*`, swept at the next start
-  if the server died). After Cancel or 60 seconds with no bytes, files already placed stay and their paths still paste
+  if the server died or could not delete it). After Cancel or 60 seconds with no bytes, files already placed stay and their paths still paste
   (Paste path works once the link is back).
   Only the owner and write guests upload; a read guest sees no menu item, and main refuses it.
 - *The desktop:* a local project's own window has no upload (the files are on that computer).

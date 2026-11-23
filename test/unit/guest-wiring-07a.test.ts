@@ -413,13 +413,20 @@ describe("index.ts wires 07a's guest deps", () => {
 
   it("gives the tab handlers the guest paths, everyone and the guest's create", () => {
     const tabsDeps = block('registerTabHandlers(router, {')
-    expect(tabsDeps).toContain('guest: guestTabDeps({')
-    expect(tabsDeps).toContain('closeAsks: guestCloseAsks')
+    // The owner's and the guest's input handlers are named before it: the upload paste writes through the
+    // same two (design-upload.md §4.3).
+    expect(tabsDeps).toContain('guest: guestTabs,')
+    expect(tabsDeps).toContain('input: ownerTabInput,')
+    expect(block('const guestTabs = guestTabDeps({')).toContain('closeAsks: guestCloseAsks')
     expect(tabsDeps).toContain('everyone: (windowId, event) => views.toWindow(windowId, event.channel, event.payload)')
     expect(tabsDeps).toContain('create: async (projectId, options, windowId, guestId) =>')
     expect(tabsDeps).toContain('createTab(projectId, options, windowId, guestId)')
-    expect(tabsDeps).toContain('presence.typed(viewId, tabId)')
+    expect(block('const ownerTabInput = viewInputHandler({')).toContain('presence.typed(viewId, tabId)')
     expect(tabsDeps).toContain('presence.viewSelected(viewId, tabId)')
+    const paste = block('registerUploadHandlers(router, {')
+    expect(paste).toContain('if (!call.mayType(tabId)) return false')
+    expect(paste).toContain('if (call.guest) guestTabs.input(call.projectId, tabId, data, call.viewId)')
+    expect(paste).toContain('else ownerTabInput(call.projectId, tabId, data, call.viewId)')
     expect(block('function createTab(projectId: string, options: TabCreateRequest, windowId: number, openedByGuest?: string): TabInfo | null {')).toContain(
       '...(openedByGuest !== undefined ? { openedByGuest } : {})'
     )

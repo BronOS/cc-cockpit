@@ -33,8 +33,13 @@
 // files already settled finishes it rather than removing it (the rest settle as cancelled), so its partial
 // result still pastes.
 //
-// The paste (§4.3, `paste`): main types nothing; it answers the text the shell pastes with xterm's own
-// `paste` in that view, or holds it with a reason. Only for an upload whose source was a tab, begun by
+// The paste (§4.3, `paste`): main writes the text into the tab as the calling view's own input (the path
+// its keys take: `typed`, the room draft bit), in the same synchronous step as the checks below, and
+// answers it; or holds it with a reason and writes nothing. Checked and written in one step: a check
+// answered to the page, which then typed through `tabs.input`, left the reply's way back and the input's
+// way in open, and Claude could reach `needs-permission` meanwhile (external review). The page reports
+// only whether its terminal is in bracketed-paste mode, so the text is wrapped as xterm's own `paste`
+// would wrap it. Only for an upload whose source was a tab, begun by
 // the caller's device in the caller's window, finished. The automatic call is taken at most once per
 // upload, whatever it answers; Paste path (`manual`) any number of times. Both need the tab alive and
 // selected in the calling view (typing would go nowhere else); the automatic one needs a Claude tab
@@ -108,6 +113,11 @@ export const UPLOAD_PASTE_NOT_WAITING_TEXT = 'Claude is not waiting for input'
 export const UPLOAD_PASTE_PERMISSION_TEXT = 'Claude is asking for a permission'
 export const UPLOAD_PASTE_UNSAFE_TEXT = 'the path holds a character that cannot be pasted safely'
 export const UPLOAD_PASTE_NO_PATH_TEXT = "the path cannot be given from the tab's folder"
+export const UPLOAD_PASTE_NO_INPUT_TEXT = 'the tab takes no input from this view'
+
+/** Bracketed paste's markers, as xterm's own `paste` wraps a paste while the program asked for the mode. */
+const PASTE_START = '\x1b[200~'
+const PASTE_END = '\x1b[201~'
 
 /** The source tab as main's tables have it at the paste (index.ts reads TabManager and the session registry). */
 export interface UploadPasteTab {
@@ -120,7 +130,10 @@ export interface UploadPasteTab {
   status?: TabStatus
 }
 
-/** What the paste rule reads of main's tables at the moment of the call, never of the payload. */
+/**
+ * What the paste rule reads of main's tables at the moment of the call, never of the payload, and the
+ * calling view's input path it writes through. `bracketed` alone is the page's word, about its own terminal.
+ */
 export interface UploadPasteFacts {
   /** The tab now, by id; undefined once it is closed. */
   tab(tabId: string): UploadPasteTab | undefined
@@ -128,6 +141,17 @@ export interface UploadPasteFacts {
   selected: string | undefined
   /** A guest's text is relative to the tab's starting folder, never a host path (D-33). */
   guest: boolean
+  /**
+   * The view's terminal is in bracketed-paste mode (`UploadPasteRequest.bracketed`). A wrong word only
+   * changes how text this view could type anyway arrives.
+   */
+  bracketed: boolean
+  /**
+   * Writes `data` into the tab as the calling view's own keys (the router's `tabs.input` path: the owner's
+   * `viewInputHandler`, a write guest's `guestViewInputHandler`), synchronously. False, and nothing
+   * written, when this view may not type there now (a guest whose access or scope changed).
+   */
+  input(tabId: string, data: string): boolean
 }
 
 /** Who calls: main's own tables (the router's bound view), never a payload. */
@@ -395,9 +419,10 @@ export class Uploads {
   }
 
   /**
-   * `uploads.paste` (§4.3, the rule in this file's header): `{text}` to paste now, or `{held, text}` with
-   * the reason and the text the notice keeps (its Paste path and Copy; the shell offers no Copy for unsafe
-   * text). Synchronous from the lookup to the answer, so two calls cannot both take the automatic one.
+   * `uploads.paste` (§4.3, the rule in this file's header): `{text}` once it is written into the tab
+   * (`facts.input`), or `{held, text}` with the reason and the text the notice keeps (its Paste path and
+   * Copy; the shell offers no Copy for unsafe text), nothing written. Synchronous from the lookup to the
+   * write, so two calls cannot both take the automatic one and the status checked is the status written to.
    * Throws one answer (UPLOAD_UNKNOWN_TEXT) for an id that is unknown, another device's or window's, from a
    * panel, not finished, or with no file uploaded: nothing to paste, and no way to tell them apart.
    */
@@ -440,9 +465,12 @@ export class Uploads {
       // click, as typing would be); the automatic paste only `waiting`.
       if (tab.status === undefined || (!manual && tab.status !== 'waiting')) return this.held(record, manual, UPLOAD_PASTE_NOT_WAITING_TEXT, text)
     }
-    if (manual) return { text }
-    if (record.autoPasted) return { held: UPLOAD_PASTE_AGAIN_TEXT, text }
-    record.autoPasted = true
+    if (!manual && record.autoPasted) return { held: UPLOAD_PASTE_AGAIN_TEXT, text }
+    // Written now, in this step: nothing can change the status between the check above and the input.
+    if (!facts.input(tabId, facts.bracketed ? `${PASTE_START}${text}${PASTE_END}` : text)) {
+      return this.held(record, manual, UPLOAD_PASTE_NO_INPUT_TEXT, text)
+    }
+    if (!manual) record.autoPasted = true
     return { text }
   }
 

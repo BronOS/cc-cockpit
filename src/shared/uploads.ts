@@ -140,13 +140,21 @@ export interface UploadCancelRequest {
   uploadId: string
 }
 
-/** The terminal entry's paste (design §4.3); `manual` is the held notice's Paste path. */
+/**
+ * The terminal entry's paste (design §4.3); `manual` is the held notice's Paste path. `bracketed`: the view's
+ * terminal is in bracketed-paste mode (xterm's `modes.bracketedPasteMode`), so main wraps the text it writes
+ * as xterm's own `paste` would.
+ */
 export interface UploadPasteRequest {
   uploadId: string
   manual?: boolean
+  bracketed?: boolean
 }
 
-/** Paste `text` now, or hold it (the reason shown) with the text for the notice's paths and Copy. */
+/**
+ * `{text}`: main wrote it into the tab as the view's own input (§4.3). `{held}`: nothing written; the reason
+ * shown, with the text for the notice's paths and Copy.
+ */
 export type UploadPasteReply = { text: string } | { held: string; text: string }
 
 /** The folder chooser's listing, through the terminal tab the drop or paste landed on (design §4.2). */

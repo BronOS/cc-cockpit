@@ -358,10 +358,13 @@ the pasted path, clipboard cases (Excel, Word, Copy image), a 1 GiB upload over 
   panel frame alone (`PluginFrame`, checked against `event.source`; overlays, slots and page tabs never), then names the panel
   key in `uploads.begin`, which main resolves against the layout. A file is read only in the page (the `File` goes to
   `fetch` PUT as `slice`, never XHR: an XHR PUT of a whole `File` failed in the spike; slices because the chunk size adapts).
-- The terminal paste after an upload (`uploads.paste`): main types nothing; the shell pastes the returned text with xterm's own
-  `paste` (the person's input path, so the tab is `typed`), and main allows the automatic one only for a shown, live tab at
-  `waiting` (a shell tab needs no status), once per upload; otherwise it is held and the person's Paste path click is the
-  retry. A path with a control, bidi or invisible character is never pasted. The five `uploads.*` invoke channels are all `adapted` (served only to `view.remote`) with `GUEST_CLASS` `write`; there
+- The terminal paste after an upload (`uploads.paste`): main checks and writes in one synchronous step (`Uploads.paste` calls
+  `facts.input`): the text goes in as the calling view's own `tabs.input` (the owner's or the write guest's handler, after
+  `IpcRouter.writesTabNow`, so the tab is `typed`), wrapped for bracketed paste when the page says its terminal is in that
+  mode; the shell types nothing (typing main's answer itself left a round trip in which Claude could reach a permission
+  dialog). Main allows the automatic one only for a shown, live tab at `waiting` (a shell tab needs no status), once per
+  upload; otherwise it is held and the person's Paste path click is the retry. Never an `await` between the check and the
+  write (the router's `paste` dep is synchronous). A path with a control, bidi or invisible character is never pasted. The five `uploads.*` invoke channels are all `adapted` (served only to `view.remote`) with `GUEST_CLASS` `write`; there
   is no upload event channel.
 - `ctx.processes` (host-local, design.md §4 "Processes"): argv only, bytes not text, 16 live children per plugin, process
   groups SIGKILLed on `kill`, when the leader exits, on plugin dispose and on host stop; not a capability (the host could `ctx.exec` anyway), so the cap and the kill are the control.

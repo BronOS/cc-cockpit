@@ -3705,6 +3705,24 @@ function start(server: boolean): void {
     input: webviewInput
   })
 
+  // A view's keys into a tab: the owner's and a write guest's (tabs/view-input.ts, guest-wiring.ts). Named here
+  // because the upload paste (design-upload.md §4.3) writes through the very same two, as the view's own input.
+  const ownerTabInput = viewInputHandler({
+    viewInput: (projectId, tabId, data, viewId) => tabs.viewInput(projectId, tabId, data, viewId),
+    userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
+    acted: (projectId, tabId, viewId) => {
+      selections.typed(projectId, viewId, tabId)
+      presence.typed(viewId, tabId)
+    }
+  })
+  const guestTabs = guestTabDeps({
+    presence,
+    tabExists: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
+    selections,
+    tabs,
+    userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
+    closeAsks: guestCloseAsks
+  })
   registerTabHandlers(router, {
     // The first attach of a restored window starts its saved tabs (restore.ts says why only
     // now); the renderer subscribed to tabs.data before asking, so no early output is lost. Then,
@@ -3731,15 +3749,10 @@ function start(server: boolean): void {
     // means "the person typed" because nothing main or a plugin types ever comes through here.
     // With web access on, the view's own query replies are stripped (main's copy answers them,
     // TabManager.viewInput); the registry sees what reached the pty. A browser's keys take this
-    // same path (tabs/view-input.ts): `typed` and the send gate apply unchanged.
-    input: viewInputHandler({
-      viewInput: (projectId, tabId, data, viewId) => tabs.viewInput(projectId, tabId, data, viewId),
-      userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
-      acted: (projectId, tabId, viewId) => {
-        selections.typed(projectId, viewId, tabId)
-        presence.typed(viewId, tabId)
-      }
-    }),
+    // same path (tabs/view-input.ts): `typed` and the send gate apply unchanged. The one other writer
+    // through it is the upload paste (registerUploadHandlers below): the paths of the person's own drop
+    // or file paste, from that view's own call, checked and written in one step (design-upload.md §4.3).
+    input: ownerTabInput,
     // Per view (main/tabs/terminal-sizes.ts): the pty takes a view's size only while it sizes the tab.
     resize: (projectId, tabId, cols, rows, viewId) => tabs.resize(projectId, tabId, cols, rows, viewId),
     fit: (projectId, tabId, viewId) => tabs.fit(projectId, tabId, viewId),
@@ -3764,14 +3777,7 @@ function start(server: boolean): void {
     everyone: (windowId, event) => views.toWindow(windowId, event.channel, event.payload),
     // A guest's terminal acts (design-guests §7, §8): its own selection and presence, sizes by explicit take only,
     // keys that set `typed`, and a close of a tab it did not open asked of the owner's views (D-9).
-    guest: guestTabDeps({
-      presence,
-      tabExists: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
-      selections,
-      tabs,
-      userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
-      closeAsks: guestCloseAsks
-    }),
+    guest: guestTabs,
     // A view's tab pane selection, for SessionInfo.active (the view that acted last,
     // tabs/view-selections.ts). Only a tab of the sender's project counts: anything else (a tab
     // closed while the message travelled, a foreign id) leaves it as it was.
@@ -4032,7 +4038,8 @@ function start(server: boolean): void {
   // mode), as the gateway keys `/u/`; the source panel through the layout's zones now, the tab through main's
   // tab table, both in the caller's own project. The terminal entry's paste (§4.3) reads, at the call, the
   // source tab in main's tab table (its starting folder, its exit), its Claude status in the session registry
-  // and the calling view's selection (ViewSelections), never the payload.
+  // and the calling view's selection (ViewSelections), never the payload, and writes the text through the
+  // view's own input path (the owner's or the write guest's, as `tabs.input` would) in that same step.
   registerUploadHandlers(router, {
     deviceOf: (viewId, windowId) => webConnections.deviceIdOf(viewId, windowId),
     placedPanel: (projectId, panelKey) => layouts.placedPanel(projectId, panelKey),
@@ -4044,6 +4051,13 @@ function start(server: boolean): void {
     paste: (call) =>
       uploads.paste(call.caller, call.uploadId, call.manual, {
         guest: call.guest,
+        bracketed: call.bracketed,
+        input: (tabId, data) => {
+          if (!call.mayType(tabId)) return false
+          if (call.guest) guestTabs.input(call.projectId, tabId, data, call.viewId)
+          else ownerTabInput(call.projectId, tabId, data, call.viewId)
+          return true
+        },
         selected: selections.selectionOf(call.viewId),
         tab: (tabId) => {
           const tab = tabs.list(call.projectId).find((t) => t.id === tabId)

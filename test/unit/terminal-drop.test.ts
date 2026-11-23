@@ -14,9 +14,9 @@ import {
   droppedFiles,
   onTerminalUpload,
   pastedFiles,
-  pasteIntoTerminal,
   registerTerminalPane,
   terminalPaneOf,
+  terminalPasteMode,
   takesUploads,
   terminalKeysOff,
   type ClipboardLike,
@@ -243,65 +243,68 @@ describe('cancelUnhandledFileDrops: a Files drop nobody took does nothing (desig
 })
 
 describe('the paste seams: keys-off and the terminal (design §4.3)', () => {
-  it('no pane mounted counts as keys-off and pastes nothing', () => {
+  it('no pane mounted counts as keys-off and gives no terminal to paste into', () => {
     expect(terminalKeysOff()).toBe(true)
-    expect(pasteIntoTerminal('t', 'x ')).toBe(false)
+    expect(terminalPasteMode('t')).toBeUndefined()
   })
 
-  it("reads the mounted pane's keys-off at each call, and again at the paste itself", () => {
+  it("reads the mounted pane's keys-off at each call, and again right before the paste", () => {
     let off = false
-    const pasted: Array<[string, string]> = []
-    const unregister = registerTerminalPane(terminalPaneOf(() => ({ activeId: 't', keysOff: off }), (tabId, text) => (pasted.push([tabId, text]), true)))
+    const asked: string[] = []
+    const unregister = registerTerminalPane(terminalPaneOf(() => ({ activeId: 't', keysOff: off }), (tabId) => (asked.push(tabId), { bracketed: true })))
     offs.push(unregister)
     expect(terminalKeysOff()).toBe(false)
-    expect(pasteIntoTerminal('t', '/p/a.png ')).toBe(true)
+    expect(terminalPasteMode('t')).toEqual({ bracketed: true })
     off = true
     expect(terminalKeysOff()).toBe(true)
-    expect(pasteIntoTerminal('t', '/p/b.png ')).toBe(false)
-    expect(pasted).toEqual([['t', '/p/a.png ']])
+    expect(terminalPasteMode('t')).toBeUndefined()
+    expect(asked).toEqual(['t'])
     // A stale unregister (an unmount after a remount registered anew) leaves the newer pane.
-    const newer = registerTerminalPane({ keysOff: () => false, paste: () => true })
+    const newer = registerTerminalPane({ keysOff: () => false, pasteMode: () => ({ bracketed: false }) })
     offs.push(newer)
     unregister()
     expect(terminalKeysOff()).toBe(false)
   })
 
-  it("TabsPane's pane (terminalPaneOf): pastes only into the view's selected tab, never while keys are off, state read at each call", () => {
+  it("TabsPane's pane (terminalPaneOf): only the view's selected tab, never while keys are off, state read at each call", () => {
     const state = { activeId: 't1' as string | null, keysOff: false }
-    const pasted: Array<[string, string]> = []
-    const p = terminalPaneOf(() => state, (tabId, text) => (pasted.push([tabId, text]), true))
-    expect(p.paste('t1', 'a ')).toBe(true)
-    // The person picked another tab or pane during the round trip: nothing goes into a terminal not shown.
+    const asked: string[] = []
+    const p = terminalPaneOf(() => state, (tabId) => (asked.push(tabId), { bracketed: false }))
+    expect(p.pasteMode('t1')).toEqual({ bracketed: false })
+    // The person picked another tab or pane during the upload: nothing goes into a terminal not shown.
     state.activeId = 't2'
-    expect(p.paste('t1', 'b ')).toBe(false)
+    expect(p.pasteMode('t1')).toBeUndefined()
     state.activeId = null
-    expect(p.paste('t1', 'c ')).toBe(false)
+    expect(p.pasteMode('t1')).toBeUndefined()
     state.activeId = 't1'
     state.keysOff = true
     expect(p.keysOff()).toBe(true)
-    expect(p.paste('t1', 'd ')).toBe(false)
+    expect(p.pasteMode('t1')).toBeUndefined()
     state.keysOff = false
     expect(p.keysOff()).toBe(false)
     // The sessions' own answer (no terminal for the tab here) passes through.
-    expect(terminalPaneOf(() => state, () => false).paste('t1', 'e ')).toBe(false)
-    expect(pasted).toEqual([['t1', 'a ']])
+    expect(terminalPaneOf(() => state, () => undefined).pasteMode('t1')).toBeUndefined()
+    expect(asked).toEqual(['t1'])
   })
 
-  it('wired into the controller: keys-off holds the paste before uploads.paste is asked; keys on pastes the text', async () => {
+  it('wired into the controller: keys-off holds the paste before uploads.paste is asked; keys on asks main with the mode', async () => {
     let off = true
-    const pasted: string[] = []
-    offs.push(registerTerminalPane(terminalPaneOf(() => ({ activeId: 't', keysOff: off }), (_t, text) => (pasted.push(text), true))))
+    offs.push(registerTerminalPane(terminalPaneOf(() => ({ activeId: 't', keysOff: off }), () => ({ bracketed: true }))))
     const calls: string[] = []
-    const invoke = (async (channel: string) => {
+    const payloads: unknown[] = []
+    const invoke = (async (channel: string, payload?: unknown) => {
       calls.push(channel)
       if (channel === 'uploads.begin') return { uploadId: 'u1', refused: [], clashes: [], tokens: [{ index: 0, token: 'k', name: 'a.png' }] }
-      if (channel === 'uploads.paste') return { text: '/p/a.png ' }
+      if (channel === 'uploads.paste') {
+        payloads.push(payload)
+        return { text: '/p/a.png ' }
+      }
       return undefined
     }) as UploadControllerDeps['invoke']
     const run: NonNullable<UploadControllerDeps['run']> = async (_files, tokens) => tokens.map((t) => ({ index: t.index, name: t.name, outcome: 'done' as const }))
     const upload = async (): Promise<UploadUi> => {
       const ui = new UploadUi()
-      const c = new UploadController({ invoke, ui, projectId: 'p', run, keysOff: terminalKeysOff, pasteInto: pasteIntoTerminal })
+      const c = new UploadController({ invoke, ui, projectId: 'p', run, keysOff: terminalKeysOff, pasteMode: terminalPasteMode })
       const done = c.startForTab('t', [{ name: 'a.png', size: 1, slice: () => new Blob([]) }])
       await new Promise((r) => setTimeout(r, 0))
       ui.get().choosers[0]!.onAnswer('')
@@ -315,6 +318,6 @@ describe('the paste seams: keys-off and the terminal (design §4.3)', () => {
     calls.length = 0
     await upload()
     expect(calls).toEqual(['uploads.begin', 'uploads.paste'])
-    expect(pasted).toEqual(['/p/a.png '])
+    expect(payloads).toEqual([{ uploadId: 'u1', bracketed: true }])
   })
 })

@@ -18,8 +18,8 @@
 //
 // Module-level seams, as upload-request.ts's for panel frames: the upload controller (web/main.tsx, one
 // per page, outside React) registers the sink (`onTerminalUpload`), and TabsPane (inside React, remounted
-// on a reconnect) registers what only it knows: whether this view is keys-off and the terminal to paste
-// into (`registerTerminalPane`). Unregistered, nothing uploads and every paste is held.
+// on a reconnect) registers what only it knows: whether this view is keys-off and the terminal the paste
+// goes into, with its paste mode (`registerTerminalPane`). Unregistered, nothing uploads and every paste is held.
 //
 // DOM-light: the container is an EventTarget plus `classList`, the events are read by their fields, so
 // unit tests run it in plain Node.
@@ -102,27 +102,30 @@ export function onTerminalUpload(fn: TerminalUploadHandler): () => void {
 export interface TerminalPane {
   /** This view is keys-off (state/tabs-store.ts): no command, and no paste, acts on a pane. */
   keysOff(): boolean
-  /** Pastes `text` with xterm's own `paste` in the tab's terminal here; false when there is none, or keys-off. */
-  paste(tabId: string, text: string): boolean
+  /**
+   * The tab's terminal here, about to take the paste main writes (TerminalSession.pasteMode: the person's
+   * act, and whether it is in bracketed-paste mode); undefined when there is none, or keys-off.
+   */
+  pasteMode(tabId: string): { bracketed: boolean } | undefined
 }
 
 let pane: TerminalPane | undefined
 
 /**
  * TabsPane's pane over its live tab state (`read`, its state ref, read at each call) and the sessions'
- * paste. The paste goes only into the view's selected tab while its keys are on: main's "selected in the
- * calling view" answer is one round trip old at the paste, the person may have picked another tab or pane
- * meanwhile, and the paths must not go into a terminal not shown (keys-off read again here, at the paste).
+ * paste mode. Only the view's selected tab while its keys are on: the paths must not go into a terminal not
+ * shown (keys-off read again here, right before the call). Main checks the view's selection once more, in
+ * the step that writes the text.
  */
 export function terminalPaneOf(
   read: () => { readonly activeId: string | null; readonly keysOff: boolean },
-  paste: (tabId: string, text: string) => boolean
+  pasteMode: (tabId: string) => { bracketed: boolean } | undefined
 ): TerminalPane {
   return {
     keysOff: () => read().keysOff,
-    paste: (tabId, text) => {
+    pasteMode: (tabId) => {
       const s = read()
-      return s.activeId === tabId && !s.keysOff && paste(tabId, text)
+      return s.activeId === tabId && !s.keysOff ? pasteMode(tabId) : undefined
     }
   }
 }
@@ -144,9 +147,9 @@ export function terminalKeysOff(): boolean {
   return pane === undefined || pane.keysOff()
 }
 
-/** The controller's paste: xterm's own `paste` through the mounted pane, which reads keys-off again (`terminalPaneOf`). */
-export function pasteIntoTerminal(tabId: string, text: string): boolean {
-  return pane?.paste(tabId, text) ?? false
+/** The controller's paste mode, through the mounted pane, which reads keys-off again (`terminalPaneOf`). */
+export function terminalPasteMode(tabId: string): { bracketed: boolean } | undefined {
+  return pane?.pasteMode(tabId)
 }
 
 // ---------------------------------------------------------------------------------------------------

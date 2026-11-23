@@ -26,7 +26,8 @@
 //     still resolve to begin's real path, and the temp's `lstat` be the descriptor's file (dev, ino).
 //     Every placement acts on the temp's path again, so each is checked after it too: the name placed
 //     must `lstat` as that file (a temp swapped for a link meanwhile: macOS's `link` follows a link in
-//     its source, Linux's links the link itself), and the copy opens the temp `O_NOFOLLOW` and checks
+//     its source, Linux's links the link itself: the file fails and that name is left, since only the
+//     written file's identity tells what is ours), and the copy opens the temp `O_NOFOLLOW` and checks
 //     its `fstat` before reading. New and Keep both: an exclusive `link` (EEXIST on any entry, a link
 //     included, never followed: the next number), or on a filesystem with no hard links an exclusive
 //     copy (`copyExclusive`, which restarts the idle clock per chunk: a 2 GiB copy on a slow mount is not
@@ -38,6 +39,8 @@
 //     the chunk to stop, then closes and deletes every temp of the upload. A failed file (ENOSPC, a
 //     commit refused) deletes its temp at once and settles with its reason; a write failing mid-body
 //     leaves the rest of the body unread, not destroyed, so the route can still deliver that reason.
+//     A temp's record entry goes only once its name is gone (deleted, or not ours): a delete refused
+//     (EACCES, EBUSY, EIO), at an abort or after a commit, keeps it for the next start's sweep.
 // Reasons reach the view (a guest's too, D-33): fixed words and display-safe names, never an fs error's
 // message (it names the absolute path). No Electron (the plan's rule).
 import { randomBytes } from 'node:crypto'
@@ -51,7 +54,7 @@ import { displayText } from '../plugins/link-request'
 import { within } from '../path-within'
 import { JsonFile, type Versioned } from '../store/json-file'
 import { sameFile } from '../verified-read'
-import { copyExclusive, NO_HARD_LINKS, remove, removeIfOwn, type CopyOptions } from './copy-exclusive'
+import { copyExclusive, NO_HARD_LINKS, removeIfOwn, type CopyOptions, type RemoveOutcome } from './copy-exclusive'
 import { resolveProjectEntry } from './system-files'
 import { numberingRefusal, type UploadFileOutcome, type UploadGrant } from './uploads'
 
@@ -67,6 +70,8 @@ export interface UploadWriterFs {
   open(path: string, flags: number, mode: number): Promise<FileHandle>
   link(existing: string, newPath: string): Promise<void>
   rename(from: string, to: string): Promise<void>
+  /** Every delete of a temp or a placed name (a refused one keeps the record entry); default `unlink`. */
+  unlink(path: string): Promise<void>
   /** The no-hard-link fallback; default `copyExclusive`. */
   copy(temp: string, final: string, mode: number, opts: CopyOptions): Promise<Stats>
 }
@@ -160,6 +165,7 @@ export class UploadWriter {
       open: deps.fs?.open ?? ((path, flags, mode) => fsOpen(path, flags, mode)),
       link: deps.fs?.link ?? fsLink,
       rename: deps.fs?.rename ?? fsRename,
+      unlink: deps.fs?.unlink ?? unlink,
       copy: deps.fs?.copy ?? copyExclusive,
     }
     this.temps = new JsonFile<TempsRecord>({ filePath: deps.tempsFile, defaults: () => ({ schemaVersion: 1, temps: [] }), log: this.log })
@@ -386,6 +392,9 @@ export class UploadWriter {
     if (!now?.isFile() || !sameFile(now, st)) return this.fail(file, 500, 'the file changed on the server while it was written')
 
     let placed: string
+    // The temp's name still there after a placement whose delete of it was refused (a hard link's
+    // second name, or the copy fallback's whole source): its record entry stays for the next start's sweep.
+    let tempLeft = false
     if (grant.choice === 'replace') {
       const target = join(grant.folderReal, grant.name)
       const old = await lstat(target).catch(() => undefined)
@@ -414,10 +423,11 @@ export class UploadWriter {
       // call's, checked by identity), as a copy cancelled midway removes itself, and nothing reports a
       // file the person cancelled as written.
       if (!this.current(file)) {
-        await removeIfOwn(done.final, done.st)
+        await removeIfOwn(done.final, done.st, this.fs.unlink)
         return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
       }
       placed = done.name
+      tempLeft = done.tempLeft
     }
     // Settled in the same step as the entry goes: a PUT for this token while the close below runs must
     // find no grant (404), never a fresh entry that would make a second temp nothing deletes.
@@ -425,21 +435,24 @@ export class UploadWriter {
     this.files.delete(file.token)
     this.deps.grants().settle(file.token, { ok: true, name: placed, path })
     await handle.close().catch(() => undefined)
-    this.dropRecord(file.temp)
+    if (tempLeft) this.log(`upload ${grant.uploadId.slice(0, 8)}: file ${grant.index}: its temp could not be deleted, kept for the next start`)
+    else this.dropRecord(file.temp)
     return { status: 200, reply: { done: true, name: placed, path } }
   }
 
   /**
    * A new name or Keep both: the planned name, else numbered from it (a name that appeared since begin is
    * numbered too, never overwritten), by exclusive link, or exclusive copy where hard links are refused.
-   * Answers the name, its path and the placed entry's identity, or the answer that ends the chunk.
+   * Answers the name, its path, the placed entry's identity (from a descriptor: the temp's `fstat` for a
+   * link, which shares its inode, the copy's own for a copy) and whether the temp's name could not be
+   * deleted, or the answer that ends the chunk.
    */
   private async placeNew(
     file: LiveFile,
     grant: UploadGrant,
     st: Stats,
     mode: number
-  ): Promise<{ name: string; final: string; st: Stats } | UploadChunkResult> {
+  ): Promise<{ name: string; final: string; st: Stats; tempLeft: boolean } | UploadChunkResult> {
     // `numberedUploadName` answers the name itself for 0 (checkUploadName passed it) and null past the
     // numbering's limit or the name limit.
     for (let n = 0; ; n++) {
@@ -463,22 +476,25 @@ export class UploadWriter {
           if (codeOf(copyErr) === 'ENOSPC') return this.fail(file, 507, UPLOAD_DISK_FULL_TEXT)
           throw copyErr
         }
-        await removeIfOwn(file.temp, st)
-        return { name, final, st: placedSt }
+        const tempLeft = (await removeIfOwn(file.temp, st, this.fs.unlink)) === 'failed'
+        return { name, final, st: placedSt, tempLeft }
       }
       // The link acted on the temp's path: the name must hold the file written. A temp swapped for a
-      // link meanwhile made it a hard link to that link's target (macOS) or the link itself (Linux); the
-      // name is one this call made, so it goes.
+      // link meanwhile made it a hard link to that link's target (macOS) or the link itself (Linux), and
+      // the file fails. The name is left as it is: the only identity this call can tell its own by is the
+      // written file's (`st`, from the descriptor), and what the name holds is not it. An `lstat` taken
+      // now names whatever is there now, so a delete checked against it could take a file another process
+      // put at the name after the link (external review). Whoever swapped the temp could have made that
+      // link themselves; the log says what happened.
       const linked = await lstat(final).catch(() => undefined)
       if (!linked || !sameFile(linked, st)) {
-        if (linked) await removeIfOwn(final, linked)
-        this.log(`upload ${grant.uploadId.slice(0, 8)}: file ${grant.index}: what was linked is not the file written`)
+        this.log(`upload ${grant.uploadId.slice(0, 8)}: file ${grant.index}: what was linked is not the file written, left in place`)
         if (!this.current(file)) return { status: 404, error: UPLOAD_TOKEN_UNKNOWN_TEXT }
         return this.fail(file, 500, 'the file changed on the server while it was written')
       }
       // Placed (the link shares the temp's inode): the temp's name goes.
-      await removeIfOwn(file.temp, st)
-      return { name, final, st: linked }
+      const tempLeft = (await removeIfOwn(file.temp, st, this.fs.unlink)) === 'failed'
+      return { name, final, st, tempLeft }
     }
     return this.fail(file, 500, numberingRefusal(grant.name, 'in this folder'))
   }
@@ -509,8 +525,10 @@ export class UploadWriter {
 
   /**
    * The temp closed and deleted, and its record entry dropped. Deleted only while it is still the file
-   * written (a file someone put at the name is never ours); a temp moved away (its folder swapped) at
-   * least gives its bytes back, truncated through the descriptor. Never throws.
+   * written (a file someone put at the name is never ours); a temp moved away (its folder swapped), or
+   * one whose delete was refused, at least gives its bytes back, truncated through the descriptor. A
+   * refused delete (EACCES, EBUSY, an I/O error: anything but "not there") keeps the record entry, so the
+   * next start's sweep deletes the temp: dropped, nothing would ever find it again. Never throws.
    */
   private async discard(file: LiveFile): Promise<void> {
     if (this.files.get(file.token) === file) this.files.delete(file.token)
@@ -518,11 +536,13 @@ export class UploadWriter {
     file.handle = undefined
     if (handle) {
       // No fstat to check against (it failed right after the O_EXCL create): the name is still ours.
-      let removed = true
-      if (file.st) removed = await removeIfOwn(file.temp, file.st)
-      else await remove(file.temp)
-      if (!removed) await handle.truncate(0).catch(() => undefined)
+      const outcome = file.st ? await removeIfOwn(file.temp, file.st, this.fs.unlink) : await unlinkName(file.temp, this.fs.unlink)
+      if (outcome !== 'removed') await handle.truncate(0).catch(() => undefined)
       await handle.close().catch(() => undefined)
+      if (outcome === 'failed') {
+        this.log(`upload ${file.uploadId.slice(0, 8)}: a temp could not be deleted, kept for the next start`)
+        return
+      }
     }
     this.dropRecord(file.temp)
   }
@@ -533,6 +553,16 @@ export class UploadWriter {
     this.temps.update((d) => {
       d.temps = d.temps.filter((e) => e.path !== temp)
     })
+  }
+}
+
+/** `path` unlinked, as `removeIfOwn` reports it, for a name known to be ours with no identity to check. */
+async function unlinkName(path: string, unlinkPath: (path: string) => Promise<void>): Promise<RemoveOutcome> {
+  try {
+    await unlinkPath(path)
+    return 'removed'
+  } catch (err) {
+    return codeOf(err) === 'ENOENT' ? 'absent' : 'failed'
   }
 }
 

@@ -354,6 +354,21 @@ export class IpcRouter {
   }
 
   /**
+   * Whether the caller may type into `tabId` now, as `tabs.input`'s own check would decide it: always for the
+   * owner; for a guest, still this project's write guest with the tab in its scope, read live. False on any
+   * doubt. For a handler whose request names no tab and that writes a tab's input itself (`uploads.paste`).
+   */
+  writesTabNow(channel: string, ctx: ProjectContext, view: CallView, tabId: string): boolean {
+    if (view.who === 'owner') return true
+    try {
+      const live = this.guestAccessNow(channel, ctx, view)
+      return live !== undefined && this.guestDeps?.guests?.tabVisible(live.id, tabId) === true
+    } catch {
+      return false
+    }
+  }
+
+  /**
    * The filter context of a guest's call (shared/guest-filter.ts), for the handlers that answer with lists
    * (design-guests §5, spec-review 3). Undefined for the owner: answer unfiltered. `tabOrder`: the project's tab
    * ids in order, for the filters that re-index (only `tabs.moved` today).
@@ -2445,6 +2460,13 @@ export interface UploadPasteCall {
   guest: boolean
   uploadId: unknown
   manual: boolean
+  /** The page's word that its terminal is in bracketed-paste mode (UploadPasteFacts.bracketed). */
+  bracketed: boolean
+  /**
+   * Whether this view may type into the tab now (IpcRouter.writesTabNow: the owner, or a write guest with the
+   * tab in its scope): the paste writes as the view's own `tabs.input` would, so it passes that input's check.
+   */
+  mayType(tabId: string): boolean
 }
 
 /** What the upload handlers need from main (design-upload.md §3.1): files/uploads.ts and main's own tables. */
@@ -2462,8 +2484,12 @@ export interface UploadHandlerDeps {
   resolve(caller: UploadCaller, uploadId: unknown, choice: unknown): Promise<UploadResolveReply>
   cancel(caller: UploadCaller, uploadId: unknown): Promise<void>
   folders(windowId: number, path: unknown): Promise<UploadFoldersReply | UploadError>
-  /** The paste rule (Uploads.paste: the upload's source tab, its status, the view's selection). */
-  paste(call: UploadPasteCall): Promise<UploadPasteReply> | UploadPasteReply
+  /**
+   * The paste rule and its write (Uploads.paste: the upload's source tab, its status, the view's selection,
+   * then the text as the view's own input in the same synchronous step). Synchronous: an await between the
+   * checks and the write would reopen the window the step closes.
+   */
+  paste(call: UploadPasteCall): UploadPasteReply
 }
 
 /** A `{tab}` source that is no Claude or shell tab of the project (a page tab, a command tab, another project's). */
@@ -2537,9 +2563,19 @@ export function registerUploadHandlers(router: IpcRouter, deps: UploadHandlerDep
 
   router.handleProject('uploads.paste', async (ctx, payload, view) => {
     const caller = callerOf('uploads.paste', ctx, view)
-    const { uploadId, manual } = fields('uploads.paste', payload)
+    const { uploadId, manual, bracketed } = fields('uploads.paste', payload)
     if (manual !== undefined && typeof manual !== 'boolean') throw new Error('uploads.paste: manual must be a boolean')
-    return deps.paste({ caller, projectId: ctx.projectId, viewId: view.viewId, guest: !isOwner(view), uploadId, manual: manual === true })
+    if (bracketed !== undefined && typeof bracketed !== 'boolean') throw new Error('uploads.paste: bracketed must be a boolean')
+    return deps.paste({
+      caller,
+      projectId: ctx.projectId,
+      viewId: view.viewId,
+      guest: !isOwner(view),
+      uploadId,
+      manual: manual === true,
+      bracketed: bracketed === true,
+      mayType: (tabId) => router.writesTabNow('uploads.paste', ctx, view, tabId)
+    })
   })
 
   // The folder chooser's listing names the terminal tab it is for (§4.2): a write guest whose scope holds no tab

@@ -107,7 +107,8 @@ extension kept), **Cancel** (nothing written). One answer covers the whole uploa
     link.
   - A new file never gets an exec bit (a `File` carries no mode). The mtime is the write's own.
 - **Temps record.** Main records each live temp's path, with its project folder, in `<data>/uploads/temps.json` before
-  it creates it and drops it at commit or deletion. At start, main deletes every temp listed (none can be live after a
+  it creates it and drops it at commit or deletion, only once the temp's name is gone: a delete refused (`EACCES`, `EBUSY`,
+  `EIO`; anything but "not there") keeps the entry, so the next start's sweep deletes the temp (§13). At start, main deletes every temp listed (none can be live after a
   restart): only a regular file named as a temp whose folder's real path is inside its recorded project folder. An entry
   it could not reach (the project folder missing, a volume not mounted yet, an lstat or unlink refused) stays for the next
   start; the rest of the record is emptied. The start waits for the sweep at most 5 s (a stale temp under an unreachable
@@ -282,17 +283,24 @@ cancels. Then `uploads.begin`, the clash dialog when needed, the progress notice
 
 ### 4.3 The paste
 
-After the last file committed, the shell calls `uploads.paste {uploadId}`: only for an upload whose `source` was that tab,
-begun by this device, finished. Main types nothing itself: it answers `{text}` or `{held: reason, text}`, and on `{text}`
-the shell pastes it with xterm's own `paste` in that view, so the program's bracketed-paste mode holds, the text goes
-through the person's own input path (`TabManager.viewInput`: the tab becomes `typed`; it was the person's drop), and no
-Enter is ever sent.
+After the last file committed, the shell calls `uploads.paste {uploadId, bracketed}`: only for an upload whose `source`
+was that tab, begun by this device, finished. `bracketed` is the view's terminal's bracketed-paste mode (xterm's
+`modes.bracketedPasteMode`), the page's word about its own terminal. Main checks the rule below and, in the same synchronous
+step, writes the text into the tab as that view's own input (the path its keys take, `tabs.input`'s handler: the owner's
+`viewInputHandler`, a write guest's `guestViewInputHandler`, so `TabManager.viewInput` runs and the tab becomes `typed`; it
+was the person's drop), wrapped in `ESC [200~` / `ESC [201~` when `bracketed` (as xterm's own `paste` wraps it), and answers
+`{text}`; or it answers `{held: reason, text}` and writes nothing. No Enter is ever sent. Checked and written in one step:
+as first built, main answered `{text}` and the shell typed it with xterm's `paste` through `tabs.input`, which has no status
+guard (the person's keys must reach a permission dialog), so a Claude tab that reached `needs-permission` during the
+reply's way back and the input's way in would have taken the paths (external review). The write passes `tabs.input`'s own
+check, read live (`IpcRouter.writesTabNow`: the owner, or a write guest with the tab in its scope).
 
 **Pasted at once** (the automatic call, at most once per upload) only when all hold:
 - *checked by main:* the tab is alive; it is the view's selected tab (`ViewSelections.selectionOf`); for a Claude tab, its
   status is `waiting` (the send gate's "at the prompt": `idle` is not established relative to the prompt,
   `status-reducer.ts`; `working` lags a dialog). A shell tab needs only the first two.
-- *checked by the shell, before it calls:* the view is not keys-off for that pane. Keys-off lives only in the renderer
+- *checked by the shell, before it calls:* the view is not keys-off for that pane, and the tab is the one shown in it
+  (its terminal mounted; otherwise held "the path could not be pasted", main not asked). Keys-off lives only in the renderer
   (`state/tabs-store.ts`); this check is the person's own view guarding its own terminal, not a boundary (a view that lied
   would type into a terminal it can type into anyway), so no channel reports it to main.
 
@@ -525,10 +533,17 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
 - A numbered name on `EEXIST` starts from the planned name (Keep both's `a (1).txt` can become `a (1) (1).txt`). Replace
   whose target is gone fails the file ("changed meanwhile"), as a folder or a link does. A temps record that cannot be
   saved fails the file before any temp. A temp whose folder was swapped away is truncated to 0 through the descriptor and
-  left, its record entry dropped.
+  left, its record entry dropped. A temp whose delete is refused (anything but ENOENT: `removeIfOwn` answers `removed`,
+  `absent`, `other` or `failed`) is truncated the same way and keeps its record entry for the next start's sweep, at an
+  abort and after a commit alike (a hard link's second name, or the copy fallback's whole source).
+- Every delete is checked against the written file's identity (the descriptor's `fstat`, or the copy's own), never against a
+  later `lstat` of the name: a name the link made that does not hold the written file (the temp swapped for a link) is
+  left and logged, and the file fails. An `lstat` taken after the link names whatever is there now, so a delete checked
+  against it could take a file another process put at the name meanwhile (external review); whoever swapped the temp could
+  have made that link themselves.
 - The record's entries are `{path, root}` with no schema bump (new on this branch); a string entry is dropped. The sweep
   keeps an entry whose root cannot be `realpath`ed (an unmounted volume says ENOENT, which "drop on ENOENT" would lose).
-  `UploadWriterFs` has a `copy` seam for tests. `DataPaths.uploadTempsJson` is `<data>/uploads/temps.json`.
+  `UploadWriterFs` has `copy` and `unlink` seams for tests. `DataPaths.uploadTempsJson` is `<data>/uploads/temps.json`.
 - The sweep is awaited in the `whenReady` chain before `runStartOrder`, not inside `applyWebAccess` (on the desktop
   `runStartOrder` does not await the gateway); its failure only logs. It walks a copy of the record's entries taken at
   its start and reads the live temps again before each one: the start goes on past a stalled sweep, and a new upload's
@@ -595,9 +610,15 @@ Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
 **Terminal entry and paste.**
 - The entry is opt-in from `TerminalView` (it knows `tab.kind`; overlay terminals never get it) through
   `attach(container, entry)`; its seams (`onTerminalUpload`, `registerTerminalPane`) are module-level, as the panel's.
-  `TerminalSession.paste` calls `io.act` before xterm's `paste`, so a write guest's held size goes first, as before a key.
+  `TerminalSession.pasteMode` calls `io.act` (a write guest's held size goes first, as before a key), scrolls to the prompt
+  as xterm's `paste` would and answers the bracketed-paste mode; main writes the text (§4.3), the shell types nothing.
 - Keys-off is view-wide (`TabsState.keysOff`); with no tab pane mounted the shell counts it as keys-off, and it is read
-  again at the xterm paste itself.
+  again right before the call, with the view's selected tab (`terminalPaneOf`).
+- The paste is checked and written in one synchronous step in main (`Uploads.paste` calls `facts.input`, wired in
+  `index.ts` to the owner's or the write guest's `tabs.input` handler after `IpcRouter.writesTabNow`); the router's
+  `paste` dep is synchronous for that reason. A view that may no longer type into the tab is held ("the tab takes no input
+  from this view"). What remains is the session registry's own lag behind Claude's screen, the same as for the person's
+  keys.
 - Paste path (manual) needs the tab alive and selected in the calling view; only the status rule is relaxed. A held
   automatic call uses up the one automatic paste (a later one answers held "offered once already"). A Claude tab with no
   session-registry entry is held for both: no status is not "at the prompt". The paths come from the record's `folderReal`

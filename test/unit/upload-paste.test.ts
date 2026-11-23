@@ -1,5 +1,6 @@
-// The terminal entry's paste rule (design-upload.md §4.3; plan Task 11): Uploads.paste answers the text the
-// shell pastes with xterm's own `paste`, or holds it with a reason. Only for a finished upload from a tab,
+// The terminal entry's paste rule (design-upload.md §4.3; plan Task 11): Uploads.paste writes the text into
+// the tab as the calling view's own input, in the same step as its checks, and answers it, or holds it with a
+// reason and writes nothing. Only for a finished upload from a tab,
 // begun by the caller's device in its window; the automatic call at most once, `{text}` only when the tab
 // is alive, selected in the calling view and (a Claude tab) `waiting`; Paste path (`manual`) any number of
 // times in any status but `needs-permission` and `ended`. The owner gets absolute paths, a guest paths
@@ -12,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   UPLOAD_PASTE_AGAIN_TEXT,
   UPLOAD_PASTE_ENDED_TEXT,
+  UPLOAD_PASTE_NO_INPUT_TEXT,
   UPLOAD_PASTE_NOT_SELECTED_TEXT,
   UPLOAD_PASTE_NOT_WAITING_TEXT,
   UPLOAD_PASTE_PERMISSION_TEXT,
@@ -66,13 +68,35 @@ async function finished(
   return begun.uploadId
 }
 
-/** The source tab `t1`, a Claude tab `waiting` in the project folder and selected, unless told otherwise. */
+/**
+ * The source tab `t1`, a Claude tab `waiting` in the project folder and selected, unless told otherwise; the
+ * view's input taken (and recorded in `written` when given) unless `input` says otherwise.
+ */
 function facts(
-  over: { tab?: Partial<UploadPasteTab> | null; selected?: string | undefined; guest?: boolean; status?: TabStatus } = {}
+  over: {
+    tab?: Partial<UploadPasteTab> | null
+    selected?: string | undefined
+    guest?: boolean
+    status?: TabStatus
+    bracketed?: boolean
+    input?: (tabId: string, data: string) => boolean
+    written?: Array<[string, string]>
+  } = {}
 ): UploadPasteFacts {
   const tab: UploadPasteTab | undefined =
     over.tab === null ? undefined : { kind: 'claude', cwd: proj, exited: false, status: over.status ?? 'waiting', ...over.tab }
-  return { tab: (id) => (id === 't1' ? tab : undefined), selected: 'selected' in over ? over.selected : 't1', guest: over.guest ?? false }
+  return {
+    tab: (id) => (id === 't1' ? tab : undefined),
+    selected: 'selected' in over ? over.selected : 't1',
+    guest: over.guest ?? false,
+    bracketed: over.bracketed ?? false,
+    input:
+      over.input ??
+      ((tabId, data) => {
+        over.written?.push([tabId, data])
+        return true
+      })
+  }
 }
 
 describe('Uploads.paste: the text (design §4.3)', () => {
@@ -162,7 +186,7 @@ describe('Uploads.paste: the automatic call (design §4.3)', () => {
     const uploads = make()
     const id = await finished(uploads, ['a.png'])
     const tab: UploadPasteTab = { kind: 'claude', cwd: proj, exited: false }
-    expect(uploads.paste(A, id, false, { tab: () => tab, selected: 't1', guest: false })).toMatchObject({ held: UPLOAD_PASTE_NOT_WAITING_TEXT })
+    expect(uploads.paste(A, id, false, { ...facts(), tab: () => tab })).toMatchObject({ held: UPLOAD_PASTE_NOT_WAITING_TEXT })
   })
 
   it('a shell tab needs only to be alive and selected', async () => {
@@ -221,6 +245,43 @@ describe('Uploads.paste: Paste path, the manual call (design §4.3)', () => {
     expect(uploads.paste(A, id, true, facts({ selected: 't2' }))).toMatchObject({ held: UPLOAD_PASTE_NOT_SELECTED_TEXT })
     // None of those took the automatic call.
     expect(uploads.paste(A, id, false, facts())).toEqual({ text: expect.any(String) })
+  })
+})
+
+describe('Uploads.paste: the write, in the same step as the checks (design §4.3, external review)', () => {
+  it('writes the answered text into the source tab as the view\'s input before it answers, bracketed when the terminal is', async () => {
+    const uploads = make()
+    const plain = await finished(uploads, ['a.png'])
+    const written: Array<[string, string]> = []
+    const reply = uploads.paste(A, plain, false, facts({ written }))
+    expect(reply).toEqual({ text: expect.stringMatching(/a\.png $/) })
+    expect(written).toEqual([['t1', (reply as { text: string }).text]])
+    const wrapped = await finished(uploads, ['b.png'])
+    const more: Array<[string, string]> = []
+    const second = uploads.paste(A, wrapped, false, facts({ written: more, bracketed: true }))
+    expect(more).toEqual([['t1', `\x1b[200~${(second as { text: string }).text}\x1b[201~`]])
+  })
+
+  it('reads the status at the write: a tab that reached needs-permission after an earlier answer gets nothing', async () => {
+    // The old flow answered `{text}` at `waiting` and the page typed it a round trip later, through
+    // `tabs.input`, which checks no status. Here every write follows its own check in one step.
+    const uploads = make()
+    const id = await finished(uploads, ['a.png'])
+    const written: Array<[string, string]> = []
+    expect(uploads.paste(A, id, false, facts({ written, status: 'working' }))).toMatchObject({ held: UPLOAD_PASTE_NOT_WAITING_TEXT })
+    expect(uploads.paste(A, id, true, facts({ written, status: 'needs-permission' }))).toMatchObject({ held: UPLOAD_PASTE_PERMISSION_TEXT })
+    expect(uploads.paste(A, id, true, facts({ written, selected: 't2' }))).toMatchObject({ held: UPLOAD_PASTE_NOT_SELECTED_TEXT })
+    expect(uploads.paste(A, id, false, facts({ written }))).toMatchObject({ held: UPLOAD_PASTE_AGAIN_TEXT })
+    expect(written).toEqual([])
+    expect(uploads.paste(A, id, true, facts({ written }))).toEqual({ text: expect.any(String) })
+    expect(written).toHaveLength(1)
+  })
+
+  it('holds when the view may not type into the tab now, and that takes the automatic call', async () => {
+    const uploads = make()
+    const id = await finished(uploads, ['a.png'])
+    expect(uploads.paste(A, id, false, facts({ input: () => false }))).toMatchObject({ held: UPLOAD_PASTE_NO_INPUT_TEXT, text: expect.any(String) })
+    expect(uploads.paste(A, id, false, facts())).toMatchObject({ held: UPLOAD_PASTE_AGAIN_TEXT })
   })
 })
 

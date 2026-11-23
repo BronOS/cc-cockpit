@@ -52,7 +52,7 @@ import '../styles.css'
 import './web.css'
 import { setWebviewFrameSource } from './webview-stream'
 import { leaveThenClose, UploadController } from './upload-controller'
-import { cancelUnhandledFileDrops, onTerminalUpload, pasteIntoTerminal, terminalKeysOff } from '../tabs/terminal-drop'
+import { cancelUnhandledFileDrops, onTerminalUpload, terminalKeysOff, terminalPasteMode } from '../tabs/terminal-drop'
 import { onUploadRequest } from './upload-request'
 import { uploadUi, type PresetStorage } from '../notices/upload-model'
 import { startShellScrolling } from '../../sdk/scroll-edges'
@@ -331,7 +331,7 @@ function startShell(reactRoot: ReturnType<typeof createRoot>, guest: SessionGues
     projectId: project,
     storage: pageStorage(),
     keysOff: terminalKeysOff,
-    pasteInto: pasteIntoTerminal
+    pasteMode: terminalPasteMode
   })
   onUploadRequest((request) => void uploads.start(request))
   onTerminalUpload((tabId, files, opts) => void uploads.startForTab(tabId, files, opts))

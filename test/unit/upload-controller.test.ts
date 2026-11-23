@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   KEYS_OFF_HELD,
+  PASTE_FAILED_HELD,
   leaveThenClose,
   UploadController,
   type UploadControllerDeps,
@@ -404,22 +405,35 @@ describe('UploadController: a terminal source', () => {
     return { ui, calls, storage, chooser: chooser!, c }
   }
 
-  it('opens the chooser at the preset, writes it after begin and pastes the text', async () => {
+  it('opens the chooser at the preset, writes it after begin and asks main to paste, with the terminal\'s mode', async () => {
     const storage = mem()
     storage.data.set(presetKey('proj'), 'assets')
-    const pasted: [string, string][] = []
+    const asked: string[] = []
     const { ui, calls, chooser } = await chooseAndRun(
-      { keysOff: () => false, pasteInto: (tab, text) => (pasted.push([tab, text]), true) },
+      { keysOff: () => false, pasteMode: (tab) => (asked.push(tab), { bracketed: true }) },
       { 'uploads.paste': { text: '/p/docs/n0 ' } },
       storage
     )
     expect(chooser.preset).toBe('assets')
     expect(calls[0]?.payload).toEqual({ source: { tab: 'tab-1' }, folder: 'docs', files: [{ name: 'shot.png', size: 4 }] })
     expect(storage.data.get(presetKey('proj'))).toBe('docs')
-    expect(calls[1]).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1' } })
-    expect(pasted).toEqual([['tab-1', '/p/docs/n0 ']])
+    // Main writes the text, as this view's input, in the step that checks the status (external review):
+    // the shell only says how its terminal takes a paste, and types nothing itself.
+    expect(calls[1]).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1', bracketed: true } })
+    expect(asked).toEqual(['tab-1'])
     expect(lastResult(ui)).toMatchObject({ text: 'Uploaded n0 to docs', sticky: false })
     expect(lastResult(ui).held).toBeUndefined()
+  })
+
+  it('the tab not shown here (another selected, its terminal gone) is held without asking main', async () => {
+    let shown = false
+    const { ui, calls } = await chooseAndRun({ keysOff: () => false, pasteMode: () => (shown ? { bracketed: false } : undefined) }, { 'uploads.paste': { text: 'x ' } })
+    expect(calls.some((x) => x.channel === 'uploads.paste')).toBe(false)
+    expect(lastResult(ui).held).toEqual({ reason: PASTE_FAILED_HELD, text: '' })
+    shown = true
+    lastResult(ui).onPaste!()
+    await tick()
+    expect(calls.filter((x) => x.channel === 'uploads.paste').map((x) => x.payload)).toEqual([{ uploadId: 'u1', manual: true }])
   })
 
   it('a chooser Cancel begins nothing', async () => {
@@ -434,25 +448,23 @@ describe('UploadController: a terminal source', () => {
     expect(ui.get().notices).toHaveLength(0)
   })
 
-  it('a held paste stays with Paste path; the manual call pastes', async () => {
-    const pasted: string[] = []
+  it('a held paste stays with Paste path; the manual call asks main again', async () => {
     let paste = 0
     const { ui, calls } = await chooseAndRun(
-      { pasteInto: (_t, text) => (pasted.push(text), true) },
+      { pasteMode: () => ({ bracketed: false }) },
       { 'uploads.paste': () => (++paste === 1 ? { held: 'Claude is busy', text: '/p/docs/n0 ' } : { text: '/p/docs/n0 ' }) }
     )
     const r = lastResult(ui)
     expect(r).toMatchObject({ sticky: true, held: { reason: 'Claude is busy', text: '/p/docs/n0 ' } })
-    expect(pasted).toEqual([])
     r.onPaste!()
     await tick()
     expect(calls.at(-1)).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1', manual: true } })
-    expect(pasted).toEqual(['/p/docs/n0 '])
+    expect(paste).toBe(2)
   })
 
   it('keys-off is held without asking main, and a later Paste path asks with manual', async () => {
     let off = true
-    const { ui, calls } = await chooseAndRun({ keysOff: () => off, pasteInto: () => true }, { 'uploads.paste': { text: 'x ' } })
+    const { ui, calls } = await chooseAndRun({ keysOff: () => off, pasteMode: () => ({ bracketed: false }) }, { 'uploads.paste': { text: 'x ' } })
     expect(calls.some((x) => x.channel === 'uploads.paste')).toBe(false)
     const r = lastResult(ui)
     expect(r.held).toEqual({ reason: KEYS_OFF_HELD, text: '' })
@@ -466,7 +478,7 @@ describe('UploadController: a terminal source', () => {
   })
 
   it('a paste call that rejects (not wired yet) keeps the result with a hold', async () => {
-    const { ui } = await chooseAndRun({}, { 'uploads.paste': new Error('refused') })
+    const { ui } = await chooseAndRun({ pasteMode: () => ({ bracketed: false }) }, { 'uploads.paste': new Error('refused') })
     expect(lastResult(ui)).toMatchObject({ text: 'Uploaded n0 to docs', sticky: true, held: { reason: 'refused', text: '' } })
   })
 
@@ -474,7 +486,7 @@ describe('UploadController: a terminal source', () => {
     for (const outcome of ['failed', 'cancelled'] as const) {
       const ui = new UploadUi()
       const { invoke, calls } = fakeInvoke({ 'uploads.begin': begin, 'uploads.cancel': undefined, 'uploads.paste': { text: 'x' } })
-      const c = new UploadController({ invoke, ui, projectId: 'p', run: fakeRun(() => outcome).run, pasteInto: () => true })
+      const c = new UploadController({ invoke, ui, projectId: 'p', run: fakeRun(() => outcome).run, pasteMode: () => ({ bracketed: false }) })
       const done = c.startForTab('t', [file('a')])
       await tick()
       ui.get().choosers[0]!.onAnswer('')
@@ -497,9 +509,8 @@ describe('UploadController: a terminal source', () => {
       'uploads.paste': () =>
         !finished ? { held: 'the upload is still running', text: '' } : ++paste === 1 ? { held: 'Claude is busy', text: '/p/d/n0 ' } : { text: '/p/d/n0 ' }
     })
-    const pasted: string[] = []
     const run = fakeRun((t) => (t.index === 1 ? 'failed' : 'done')).run
-    const c = new UploadController({ invoke, ui, projectId: 'p', run, keysOff: () => false, pasteInto: (_t, text) => (pasted.push(text), true) })
+    const c = new UploadController({ invoke, ui, projectId: 'p', run, keysOff: () => false, pasteMode: () => ({ bracketed: false }) })
     const done = c.startForTab('t', [file('a'), file('b')])
     await tick()
     ui.get().choosers[0]!.onAnswer('d')
@@ -514,10 +525,9 @@ describe('UploadController: a terminal source', () => {
     const r = lastResult(ui)
     expect(r).toMatchObject({ text: 'Uploaded 1 of 2 to d; not uploaded: n1 (the disk is full)', sticky: true, held: { reason: 'Claude is busy' } })
     r.onPaste!()
-    while (pasted.length === 0) await tick()
+    while (paste < 2) await tick()
     expect(calls.slice(3).map((x) => x.channel)).toEqual(['uploads.cancel', 'uploads.paste'])
     expect(calls.at(-1)).toEqual({ channel: 'uploads.paste', payload: { uploadId: 'u1', manual: true } })
-    expect(pasted).toEqual(['/p/d/n0 '])
   })
 
   it('a link that dropped: Paste path sends the cancel again before the paste, which then finds it finished', async () => {
@@ -526,6 +536,7 @@ describe('UploadController: a terminal source', () => {
     const ui = new UploadUi()
     let up = false
     let finished = false
+    let written = 0
     const { invoke, calls } = fakeInvoke({
       'uploads.begin': { uploadId: 'u1', refused: [], clashes: [], tokens: tokensFor(0, 1) },
       'uploads.cancel': () => {
@@ -535,12 +546,12 @@ describe('UploadController: a terminal source', () => {
       'uploads.paste': () => {
         if (!up) throw new Error('the connection was lost')
         if (!finished) throw new Error('no such upload')
+        written++
         return { text: '/p/d/n0 ' }
       }
     })
-    const pasted: string[] = []
     const run = fakeRun((t) => (t.index === 1 ? 'failed' : 'done')).run
-    const c = new UploadController({ invoke, ui, projectId: 'p', run, keysOff: () => false, pasteInto: (_t, text) => (pasted.push(text), true) })
+    const c = new UploadController({ invoke, ui, projectId: 'p', run, keysOff: () => false, pasteMode: () => ({ bracketed: false }) })
     const done = c.startForTab('t', [file('a'), file('b')])
     await tick()
     ui.get().choosers[0]!.onAnswer('d')
@@ -548,10 +559,9 @@ describe('UploadController: a terminal source', () => {
     expect(lastResult(ui).held).toEqual({ reason: 'the connection was lost', text: '' })
     up = true
     lastResult(ui).onPaste!()
-    while (pasted.length === 0) await tick()
+    while (written === 0) await tick()
     expect(calls.map((x) => x.channel)).toEqual(['uploads.begin', 'uploads.cancel', 'uploads.paste', 'uploads.cancel', 'uploads.paste'])
     expect(calls.at(-2)?.payload).toEqual({ uploadId: 'u1' })
-    expect(pasted).toEqual(['/p/d/n0 '])
   })
 
   it('a pagehide while the automatic paste is in flight shows no result notice', async () => {
@@ -560,7 +570,7 @@ describe('UploadController: a terminal source', () => {
       'uploads.begin': begin,
       'uploads.paste': () => new Promise(() => undefined)
     })
-    const c = new UploadController({ invoke: bridge.invoke, ui, projectId: 'p', run: fakeRun().run, keysOff: () => false, pasteInto: () => true })
+    const c = new UploadController({ invoke: bridge.invoke, ui, projectId: 'p', run: fakeRun().run, keysOff: () => false, pasteMode: () => ({ bracketed: false }) })
     const done = c.startForTab('t', [file('a')])
     await tick()
     ui.get().choosers[0]!.onAnswer('')
@@ -576,7 +586,7 @@ describe('UploadController: a terminal source', () => {
     let answer: (v: unknown) => void = () => undefined
     let paste = 0
     const { ui, c } = await chooseAndRun(
-      { keysOff: () => false, pasteInto: () => true },
+      { keysOff: () => false, pasteMode: () => ({ bracketed: false }) },
       { 'uploads.paste': () => (++paste === 1 ? { held: 'Claude is busy', text: 'x ' } : new Promise((r) => (answer = r))) }
     )
     lastResult(ui).onPaste!()

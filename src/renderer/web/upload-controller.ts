@@ -20,7 +20,7 @@
 // main's idle clock removes whatever a lost cancel leaves.
 //
 // DOM-free: the invoke, the run, the dialogs and notices (`UploadUi`), the storage and the terminal's
-// paste are injected, so unit tests drive it in plain Node.
+// paste mode are injected, so unit tests drive it in plain Node.
 
 import { runUpload, type UploadFileResult, type UploadRunOptions, type UploadSource as UploadBytes } from './upload-client'
 import type { UploadRequest } from './upload-request'
@@ -71,16 +71,17 @@ export interface UploadControllerDeps {
   run?: (files: readonly UploadBytes[], tokens: readonly UploadFileToken[], opts: UploadRunOptions) => Promise<UploadFileResult[]>
   /**
    * The terminal entry's seams (tabs/terminal-drop.ts, wired in web/main.tsx): whether this view is keys-off for that pane (the renderer's
-   * own guard, design §4.3; keys-off counts as held), and the paste with xterm's own `paste` in that
-   * view. Unwired, every terminal paste is held: the result keeps the paths with Paste path.
+   * own guard, design §4.3; keys-off counts as held), and the tab's terminal shown here, about to take the
+   * paste main writes (the person's act on it, and whether it is in bracketed-paste mode; undefined when
+   * it is not the tab shown here). Unwired, every terminal paste is held: the result keeps Paste path.
    */
   keysOff?: (tabId: string) => boolean
-  pasteInto?: (tabId: string, text: string) => boolean
+  pasteMode?: (tabId: string) => { bracketed: boolean } | undefined
 }
 
 /** The hold the shell itself decides (design §4.3: keys-off is the person's own view guarding its terminal). */
 export const KEYS_OFF_HELD = 'the keys are off in this view'
-/** A paste the shell could not deliver (no terminal for the tab here, or the call failed). */
+/** A paste the shell could not ask for: the tab is not the one shown here (another selected, or its terminal gone). */
 export const PASTE_FAILED_HELD = 'the path could not be pasted'
 /** A run that rejected (it never should: runUpload settles every file) is said as this. */
 const RUN_FAILED = 'the upload stopped unexpectedly'
@@ -315,20 +316,27 @@ export class UploadController {
 
   /**
    * The automatic paste (`manual` false) or the held notice's Paste path. Answers the hold the notice
-   * keeps, or undefined when the text went into the terminal.
+   * keeps, or undefined when main wrote the text into the terminal.
+   *
+   * Main writes it, as this view's own input, in the same step as its checks (design §4.3): the page
+   * typing main's answer through `tabs.input` arrived a round trip after main's status check, and that
+   * input has no status guard, so Claude could have reached a permission dialog meanwhile (external
+   * review). The page only says whether its terminal is in bracketed-paste mode.
    */
   private async paste(uploadId: string, tab: string, manual: boolean): Promise<HeldPaste | undefined> {
-    // Checked before either call (design §4.3): keys-off is held, and main is not asked at all.
+    // Checked before the call (design §4.3): keys-off is held, and main is not asked at all.
     if (this.deps.keysOff?.(tab) === true) return { reason: KEYS_OFF_HELD, text: '' }
+    // The tab's terminal shown here: none (another tab selected here), and main is not asked either.
+    const mode = this.deps.pasteMode?.(tab)
+    if (mode === undefined) return { reason: PASTE_FAILED_HELD, text: '' }
     let reply: UploadPasteReply
     try {
-      reply = await this.deps.invoke('uploads.paste', { uploadId, ...(manual ? { manual: true } : {}) })
+      reply = await this.deps.invoke('uploads.paste', { uploadId, ...(manual ? { manual: true } : {}), ...(mode.bracketed ? { bracketed: true } : {}) })
     } catch (err) {
       return { reason: reasonOf(err), text: '' }
     }
     if ('held' in reply) return { reason: reply.held, text: reply.text }
-    if (this.deps.pasteInto?.(tab, reply.text) === true) return undefined
-    return { reason: PASTE_FAILED_HELD, text: reply.text }
+    return undefined
   }
 
   /** The result notice from the run's per-file results and main's refusals. */

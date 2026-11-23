@@ -19,12 +19,13 @@ vi.mock('@xterm/xterm', () => ({
     // The hidden input xterm focuses (TerminalSession listens for its focus).
     textarea: EventTarget | undefined
     unicode = { activeVersion: '' }
-    modes = { synchronizedOutputMode: false }
+    modes = { synchronizedOutputMode: false, bracketedPasteMode: false }
     // What shared/terminal-screen.ts atGround reads: 0 is the parser's ground state.
     _core = { _inputHandler: { _parser: { currentState: 0 } } }
     readonly resizes: Array<[number, number]> = []
-    // What xterm's own `paste` was handed (the upload's paths, design-upload.md §4.3).
+    // What xterm's own `paste` was handed (a person's paste; the upload's paths are main's to write, design-upload.md §4.3).
     readonly pasted: string[] = []
+    scrolledToBottom = 0
     constructor(options: Record<string, unknown>) {
       this.options = { ...options }
     }
@@ -53,6 +54,9 @@ vi.mock('@xterm/xterm', () => ({
     focus(): void {}
     paste(text: string): void {
       this.pasted.push(text)
+    }
+    scrollToBottom(): void {
+      this.scrolledToBottom++
     }
     dispose(): void {}
   }
@@ -703,15 +707,16 @@ describe("a guest view's terminal", () => {
 })
 
 // The terminal entry of uploads (design-upload.md §4.1, §4.3; terminal-drop.ts holds the rules): attached
-// only with an entry, after the own-act listener, so a write guest's file paste is still its act; the
-// paths go in through xterm's own `paste`, and the registry never makes a terminal to paste into.
+// only with an entry, after the own-act listener, so a write guest's file paste is still its act; main writes
+// the paths (the terminal only reports its paste mode, as the person's act), and the registry never makes a
+// terminal to paste into.
 const drop = (await import('../../src/renderer/tabs/terminal-drop')) as {
   onTerminalUpload(fn: (tabId: string, files: readonly unknown[], opts: unknown) => void): () => void
 }
 type EntrySession = Session & {
   attach(container: HTMLElement, entry?: { tabId: string; select(): void }): void
   detach(): void
-  paste(text: string): boolean
+  pasteMode(): { bracketed: boolean } | undefined
 }
 
 describe('the uploads entry on a terminal', () => {
@@ -776,23 +781,26 @@ describe('the uploads entry on a terminal', () => {
     made.push(s)
     s.attach(laidOutPane())
     expect(calls).toEqual([])
-    expect(s.paste('./a.png ')).toBe(true)
+    expect(s.pasteMode()).toEqual({ bracketed: false })
     expect(calls).toEqual(['resize 120x40'])
-    expect((s.term as { pasted: string[] }).pasted).toEqual(['./a.png '])
+    // Main writes the paths (design-upload.md §4.3): nothing is typed here.
+    expect((s.term as { pasted: string[] }).pasted).toEqual([])
   })
 
-  it("pastes with xterm's own paste; the registry pastes only into a terminal it holds", () => {
+  it("reports the terminal's bracketed-paste mode and scrolls to the prompt; types nothing; the registry answers only for a terminal it holds", () => {
     const { s, term } = session()
-    expect((s as unknown as EntrySession).paste('/p/a\\ b.png ')).toBe(true)
-    expect((term as unknown as { pasted: string[] }).pasted).toEqual(['/p/a\\ b.png '])
+    const t = term as unknown as { pasted: string[]; scrolledToBottom: number; modes: { bracketedPasteMode: boolean } }
+    t.modes.bracketedPasteMode = true
+    expect((s as unknown as EntrySession).pasteMode()).toEqual({ bracketed: true })
+    expect(t.scrolledToBottom).toBe(1)
+    expect(t.pasted).toEqual([])
     const reg = new SessionRegistry(() => ({ input: () => undefined, ack: () => undefined, resize: () => undefined })) as unknown as Registry & {
-      paste(tabId: string, text: string): boolean
+      pasteMode(tabId: string): { bracketed: boolean } | undefined
     }
-    expect(reg.paste('none', 'x ')).toBe(false)
-    const held = reg.get('t') as unknown as { term: { pasted: string[] } }
-    expect(reg.paste('t', 'x ')).toBe(true)
-    expect(held.term.pasted).toEqual(['x '])
+    expect(reg.pasteMode('none')).toBeUndefined()
+    reg.get('t')
+    expect(reg.pasteMode('t')).toEqual({ bracketed: false })
     reg.disposeAll()
-    expect(reg.paste('t', 'y ')).toBe(false)
+    expect(reg.pasteMode('t')).toBeUndefined()
   })
 })

@@ -4,6 +4,7 @@
 // refused for want of hard links. One copy, so a fix to either reaches both. Pure Node, no Electron.
 import { constants as fsConstants, type Stats } from 'node:fs'
 import { lstat, open, unlink } from 'node:fs/promises'
+import { codeOf } from '../../shared/error-text'
 import { sameFile } from '../verified-read'
 
 /** Link errors of a filesystem with no hard links (exFAT, FAT32, some SMB, NFS and FUSE mounts). */
@@ -15,15 +16,39 @@ export async function remove(path: string): Promise<void> {
 }
 
 /**
- * Remove `path` only while it is still the entry `own` names (same dev and inode): what this placement
- * linked or created there, never a file another process put at the name meanwhile. Never throws;
- * true when the entry was ours (and so removed, or tried).
+ * What `removeIfOwn` did: `removed` (the entry was ours and is gone), `absent` (nothing at the path),
+ * `other` (an entry that is not ours: left alone) or `failed` (the lstat or the unlink was refused, for
+ * any reason but ENOENT: whatever is there may still be ours). A caller that keeps a record of the
+ * path (the upload temps, swept at the next start) keeps it on `failed` only.
  */
-export async function removeIfOwn(path: string, own: Pick<Stats, 'dev' | 'ino'>): Promise<boolean> {
-  const now = await lstat(path).catch(() => undefined)
-  if (!now || now.dev !== own.dev || now.ino !== own.ino) return false
-  await remove(path)
-  return true
+export type RemoveOutcome = 'removed' | 'absent' | 'other' | 'failed'
+
+/**
+ * Remove `path` only while it is still the entry `own` names (same dev and inode): what this placement
+ * linked or created there, never a file another process put at the name meanwhile. `own` must come from
+ * the caller's own descriptor (an `fstat`), never from a later `lstat` of the path: that would name
+ * whatever is there now, another process's file included. Never throws.
+ * `unlinkPath`: a test seam (an unlink refused), default `unlink`.
+ */
+export async function removeIfOwn(
+  path: string,
+  own: Pick<Stats, 'dev' | 'ino'>,
+  unlinkPath: (path: string) => Promise<void> = unlink
+): Promise<RemoveOutcome> {
+  let now: Stats
+  try {
+    now = await lstat(path)
+  } catch (err) {
+    return codeOf(err) === 'ENOENT' ? 'absent' : 'failed'
+  }
+  if (now.dev !== own.dev || now.ino !== own.ino) return 'other'
+  try {
+    await unlinkPath(path)
+  } catch (err) {
+    // Gone meanwhile (by whoever): nothing of ours is left there either.
+    return codeOf(err) === 'ENOENT' ? 'absent' : 'failed'
+  }
+  return 'removed'
 }
 
 /** The copy's chunk: one read and one write at a time, so a file of gigabytes never sits in memory. */
