@@ -31,6 +31,8 @@ function normalizeRelative(rel) {
   return parts.join('/')
 }
 
+/** A writer's temp in an upload's target folder: `.cc-upload-` plus hex. */
+const isUploadTemp = (name) => name.startsWith('.cc-upload-')
 const joinRel = (dir, name) => (dir === '' ? name : `${dir}/${name}`)
 
 /** Inside `root` (a real path) or `root` itself. */
@@ -84,6 +86,8 @@ async function listDir(root, rel, { exec, hideHidden = false, hideIgnored = fals
   let entries = []
   for (const d of dirents) {
     if (d.name === '.git') continue
+    // An upload's temp (design-upload §3): never shown, whatever the hidden setting says.
+    if (isUploadTemp(d.name)) continue
     if (hideHidden && d.name.startsWith('.')) continue
     const e = { name: d.name, kind: d.isDirectory() ? 'dir' : d.isFile() ? 'file' : 'other' }
     if (d.isSymbolicLink()) {
@@ -226,7 +230,7 @@ async function searchablePaths(exec, root) {
       continue
     }
     for (const d of ds) {
-      if (d.name === '.git') continue
+      if (d.name === '.git' || isUploadTemp(d.name)) continue
       const rel = joinRel(dir, d.name)
       if (d.isDirectory()) stack.push(rel)
       else if (d.isFile()) out.push(rel)

@@ -20,6 +20,8 @@
       .row { display: flex; align-items: center; gap: 4px; height: 22px; min-height: 22px; padding: 0 6px 0 0; border-radius: 0; white-space: nowrap; cursor: pointer; user-select: none; }
       .row:hover { background: var(--cc-surface-1); }
       .row.sel { background: var(--cc-accent-soft); }
+      .row.drop-target { outline: 1px dashed var(--cc-focus); outline-offset: -1px; background: var(--cc-accent-soft); }
+      #list.drop-target { outline: 1px dashed var(--cc-focus); outline-offset: -1px; }
       #list:focus .row.sel { outline: 1px solid var(--cc-focus); outline-offset: -1px; }
       .twisty { width: 12px; flex: none; text-align: center; color: var(--cc-fg-subtle); font-size: 9px; }
       .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

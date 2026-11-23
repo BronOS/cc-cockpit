@@ -61,6 +61,14 @@ test('listDir: folders first, natural order, .git never listed, dotfiles shown',
   assert.equal(l.more, 0)
 })
 
+test('listDir and the filter walk never show an upload temp (.cc-upload-*)', async () => {
+  const p = project()
+  for (const f of ['a.txt', '.cc-upload-0123456789abcdef', 'sub/b.txt', 'sub/.cc-upload-fedcba9876543210', '.env']) p.write(f)
+  assert.deepEqual(names(await tree.listDir(p.root, '', { exec: p.exec })), ['sub', '.env', 'a.txt'])
+  assert.deepEqual(names(await tree.listDir(p.root, 'sub', { exec: p.exec })), ['b.txt'])
+  assert.deepEqual(names(await tree.listDir(p.root, '', { exec: p.exec, hideHidden: false })), ['sub', '.env', 'a.txt'])
+})
+
 test('listDir: hideHidden drops dot names', async () => {
   const p = project()
   p.write('.env')
@@ -169,5 +177,6 @@ test('searchablePaths: git files without ignored ones, walk outside git', async 
   const q = project({ git: false })
   q.write('a/b.txt')
   q.write('c.txt')
+  q.write('a/.cc-upload-0123456789abcdef')
   assert.deepEqual((await tree.searchablePaths(q.exec, q.root)).sort(), ['a/b.txt', 'c.txt'])
 })
