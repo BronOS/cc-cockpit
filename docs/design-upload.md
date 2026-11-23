@@ -1,6 +1,6 @@
 # Uploads from the person's device — design
 
-Status: designed (2026-11-22, with the owner, section by section; revision 2 after a review pass, its eleven fixes applied); implemented (2026-11-23, plan `docs/plans/completed/20261122-upload.md`; §13 lists where the build differs). The reverse of
+Status: designed (2026-11-22, with the owner, section by section; revision 2 after a review pass, its eleven fixes applied); implemented (2026-11-23, plan `docs/plans/20261122-upload.md`; §13 lists where the build differs). The reverse of
 `docs/design-download.md`, which it reuses where the same rule fits and departs from where it does not (§3, §10). Extends
 `docs/design-web.md` (web access, §9 server mode), `docs/design-remote-desktop.md` (remote windows) and
 `docs/design-guests.md`; read `design-download.md` first.
@@ -99,7 +99,7 @@ extension kept), **Cancel** (nothing written). One answer covers the whole uploa
   `lstat` must match the descriptor's `fstat` (dev, ino), so the file committed is the one written.
   - *A new name, or Keep both:* `fs.link(temp, final)`, exclusive (`EEXIST` is never overwritten and never followed: the
     next number, so a name that appeared since begin is numbered too), then unlink the temp. On a filesystem with no hard
-    links (`EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `ENOSYS`, `EXDEV`), `copyFile(temp, final, COPYFILE_EXCL)` instead, then
+    links (`EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `ENOSYS`, `EXDEV`), `copyExclusive` instead (`O_EXCL` create, removes only its own file; see §13), then
     unlink (the download save's fallback).
   - *Replace:* the target must still be a regular file (`lstat`; a folder or a link that appeared since fails that file,
     "it changed meanwhile"). The temp takes the replaced file's permission bits minus setuid, setgid and sticky (a
@@ -265,8 +265,8 @@ In the web shell, on the terminal's container:
 - **Paste:** in the capture phase, before xterm: the paste becomes an upload (`pasted: true` for each file) only when
   `clipboardData.files` is not empty **and** the clipboard holds no `text/plain`. A copy from Excel, Word or a browser's
   Copy image carries text and an image together, and there the text is what the person meant, so any paste with text
-  stays a text paste, unchanged. A screenshot copied with Ctrl+Cmd+Shift+4 has no text. Task 1 records what each of those
-  clipboards holds in Chrome, Safari and Firefox.
+  stays a text paste, unchanged. A screenshot copied with Ctrl+Cmd+Shift+4 has no text. Task 1 ran only synthetic
+  `ClipboardItem`s in Electron 45's Chromium (no Excel, Word, Safari or Firefox clipboard was recorded; §13).
 
 ### 4.2 The folder chooser
 
@@ -294,7 +294,8 @@ Enter is ever sent.
   would type into a terminal it can type into anyway), so no channel reports it to main.
 
 **Otherwise held:** the result notice keeps the paths as text with **Paste path** and **Copy** (Copy uses `text`, which the
-held answer carries). Paste path is the person's click at that moment, as typing would be: `uploads.paste {uploadId,
+held answer carries; a keys-off hold never asks main and has no text, so no Copy, and a path with a control, bidi or
+invisible character gets none either). Paste path is the person's click at that moment, as typing would be: `uploads.paste {uploadId,
 manual: true}`, any number of times while the notice lives, in any status but `needs-permission` and `ended`; main checks
 again, the shell checks keys-off again.
 
@@ -472,12 +473,15 @@ outside paths.
 ## 13. As built
 
 What the build decided or changed beyond the text above; each line is what the code does, with the reason where it is not
-obvious. The sections above were edited where a deviation changed their rule; this list is the rest.
+obvious. The sections above were edited where a deviation changed their rule (a few places may still read as first designed; where
+they differ, this list and the code win); this list is the rest.
 
 **Spike (Task 1).** An unhandled `Files` drop's navigation could not be reproduced through a DevTools drag (no `drop`
 without a cancelled `dragover`, no `will-navigate`), so §3.6's cancel is kept and checked by hand. A chunk cut by the
 request bound reached `fetch` as a 408 after Chromium's resend (about 119 s), not as a network error (§3.3). Firefox and
-WebKit ran through Playwright's older installed revisions (`executablePath`), not the expected ones.
+WebKit ran through Playwright's older installed revisions (`executablePath`), not the expected ones; only the spike
+harness ran there (the frame's handoff, `fetch` of slices), never the app. Task 1 used synthetic `ClipboardItem`s in
+Electron 45's Chromium only: no Excel, Word, Safari or Firefox clipboard.
 
 **Shared rules (`shared/uploads.ts`, `numbered-name.ts`).**
 - A refusal of a whole upload is `UploadBeginReply = UploadBegun | {error}`; `UploadResolveReply` is `{tokens, refused} |
@@ -490,7 +494,7 @@ WebKit ran through Playwright's older installed revisions (`executablePath`), no
   control character, so `pasteText` returns `null` (held) instead of dropping a path. A file over 2 GiB refuses the whole
   upload; `pasted: true` gets only `checkUploadName` in main (the device's clock names the file).
 - Added as named constants: `UPLOAD_PATH_PREFIX`, `UPLOAD_TEMP_PREFIX`, `UPLOAD_CHUNK_FAST_MS` / `SLOW_MS`,
-  `UPLOAD_BEGINS_MAX` / `WINDOW_MS`, `UPLOAD_NAME_MAX_BYTES`, `UPLOAD_PENDING_MS`, `UPLOAD_FINISHED_KEPT` (20).
+  `UPLOAD_BEGINS_MAX` / `WINDOW_MS`, `UPLOAD_NAME_MAX_BYTES`; `UPLOAD_PENDING_MS` and `UPLOAD_FINISHED_KEPT` (20) are in `main/files/uploads.ts`.
 
 **Core (`main/files/uploads.ts`).**
 - A pending upload (clashes unanswered) holds no place and lasts `UPLOAD_PENDING_MS` (10 min; the 60 s idle clock is for
@@ -532,7 +536,9 @@ WebKit ran through Playwright's older installed revisions (`executablePath`), no
   client with its `expected`.
 - Window and project close reach `Uploads.dropWindow` from `main/index.ts`'s wiring (the gateway knows no windows); a read
   guest's role change ends its upload through `GuestStore`'s `dropUploads`, not at the route. `GuestStore.end()` drops the
-  guest's uploads before `revokeGuest`; `dropDownloadsOf` became `dropTransfersOf` and drops both. `guest-wiring.ts` needed
+  guest's uploads before `revokeGuest`; `dropDownloadsOf` became `dropTransfersOf` and drops both. It also runs when a widening's quiet wait ends (the guest
+  reconnects then), so sharing one more tab with a write guest ends that guest's running upload too, unlike §3.4's rule
+  that a reconnect alone does not. `guest-wiring.ts` needed
   no change.
 - `uploads.begin` for a `{panel}` source needs the panel in a zone of the reconciled layout: a hidden panel has no frame, so
   it is refused. A source that does not resolve (panel not placed, tab not a Claude or shell tab of the project) answers
@@ -543,17 +549,18 @@ WebKit ran through Playwright's older installed revisions (`executablePath`), no
 
 **Client and shell.**
 - The chunk size grows only after a full-size chunk (a short last chunk is fast by being short) and carries across files.
-  A 409 whose `expected` differs from the offset resumes without using a retry (50 per file at most); one pointing at the
-  same offset ends the file. After a fetch rejection a one-byte slice probe tells an unreadable `File` (Chromium's
+  A 409 resumes without using a retry (50 per file at most) only when `expected` lies ahead of the acknowledged offset and
+  short of the size; any other 409 ends the file (§3.3). After a fetch rejection a one-byte slice probe tells an unreadable `File` (Chromium's
   `NotReadableError`) from a dead link; that probe was not run in a real browser, so the one attempt for the next file is
   the guarantee. An abort seen after an attempt cancels the file unless the answer was a whole commit (`done: true`). The
   client takes `sleep` as an option beside `fetch`, `signal`, `onProgress`, `now` (the backoff's test seam).
-- `ccPanel.upload` is in any page of a remote non-read view (the SDK cannot tell a panel from an overlay); the shell takes
+- `ccPanel.upload` is in a panel and an html overlay of a remote non-read view, not in a slot or a page tab (the SDK cannot
+  tell a panel from an html overlay; the shell drops the overlay's request); the shell takes
   a request only from a panel frame: `PluginFrame` hands `onPageMessage` `{source, frame}`, the filter re-checks
   `event.source`, and a source-scan test keeps overlays, slots, settings and page tabs out. A file list over 100 passes
   as it is (main's refusal is the visible one); a non-`File` entry drops the whole message. `onUploadRequest` is one
   module-level sink. The SDK sets `dropEffect: 'none'` on an unhandled `Files` dragover, not only `preventDefault`; a page's
-  own drag listeners must set `dropEffect` synchronously, so the guide says to register before the SDK's. `types.ts` did
+  own drag listeners must set `dropEffect` synchronously, so the guide says the SDK's cancel runs first and a window-level handler must set `dropEffect: 'copy'` itself. `types.ts` did
   not change (the `ccPanel` types live in `panel-core.ts`), so there is no example copy.
 - The controller is made in `web/main.tsx`'s `startShell`: React remounts `<App>` on every reconnect and a reconnect must
   not end an upload. The notice, chooser and clash state live in `UploadUi` (`upload-model.ts`, module-level,
@@ -562,8 +569,8 @@ WebKit ran through Playwright's older installed revisions (`executablePath`), no
   chooser unmounts the chooser (one dialog at a time; its selection is lost). The chooser's Upload is disabled until the
   preset's folder listing resolves.
 - A `resolve` that errors cancels and shows "Nothing uploaded: <reason>" instead of asking again. After a run that left
-  files not done the controller sends `uploads.cancel` once the paste is tried (a client-side failure leaves a token live
-  on main for the idle minute). The folder preset is written only for a chooser (terminal) upload. The person's own Cancel
+  files not done the controller sends and awaits `uploads.cancel` before the paste, which needs a finished upload (a
+  client-side failure leaves a token live on main for the idle minute). The folder preset is written only for a chooser (terminal) upload. The person's own Cancel
   in the chooser or the clash dialog shows no notice unless refused files or folders need naming.
 - The shell cancels every `Files` drag nobody cancelled, whatever its target (`cancelUnhandledFileDrops`, installed in
   `startShell`; §3.6), not the SDK's `cancelsFilesDrag`, which spares inputs: a file dropped on a shell text field would
@@ -593,5 +600,8 @@ gateway (devices, cookies and hashed secrets are not cheap to stand up); its win
 share `test/e2e/upload-fixtures.ts`; a guessed PUT is compared with a GET of a missing route, since the gateway answers a
 PUT to any other route 405 for everyone; "drop outside every target" asserts a cancelled `dragover` with `dropEffect: 'none'`
 (Chromium then delivers no `drop`). The browser half of the terminal entry ran against fakes first, and `index.ts`'s paste
-wiring has no unit test: the e2e is their first real run. In a full `npm run test:e2e` six tests that depend on OS window
-focus failed (none touches uploads; `files-menu:226` passes alone), not compared against the base commit.
+wiring has no unit test: the e2e is their first real run. In the first full `npm run test:e2e` (Task 14) six tests that depend on OS
+window focus failed (none touches uploads); the orchestrator compared clean copies of the base and the branch: the five focus
+tests pass alone on both, `files-menu:226` fails on the base and passes on the branch, so environmental, not regressions. The
+last full run (Task 15) was 383 passed, 4 failed (`editor-split:755` and `:991`, `files-menu:226`, `server-mode:846`); all
+four pass alone and the six did not recur.

@@ -690,16 +690,16 @@ no text (a copy from Excel, Word or Copy image pastes its text as before). A tab
   one answer for the whole upload. Replace is not offered over a folder or a link. Replace keeps the file's permissions
   and writes through a temp, so a half-written file never shows under the real name.
 - *A tab upload ends with the paths pasted into the prompt*, backslash-escaped for a shell, absolute for you, relative to
-  the tab's folder for a guest. Nothing presses Enter. In a Claude tab it is pasted only while Claude is waiting for input
-  and the tab is the one shown with its keys on; otherwise the notice holds the paths with Paste path and Copy.
-- *What is never uploaded:* folders (named in the result, the drop's files still go), a file over 2 GiB, more than 100
-  files at once, `.git` or anything under a `.git` folder (a `.git` file too), the app's data folder, and anything that
+  the tab's folder for a guest. Nothing presses Enter. It is pasted only when the tab is the one shown with its keys on (and, in a Claude tab, Claude is waiting for input);
+  otherwise the notice holds the paths with Paste path, and Copy when there is text to copy (not with the keys off, or for a
+  path with a control or invisible character). Paste path is refused while Claude asks for a permission.
+- *What is never uploaded:* folders (named in the result, the drop's files still go), more than 100 files at once, and a file over 2 GiB (either refuses the whole upload), `.git` or anything under a `.git` folder (a `.git` file too), the app's data folder, and anything that
   would pass the project folder or leave it through a link. The server's free disk must cover the upload plus 1 GiB. A
   name with a control or invisible character is refused.
-- *Limits and safety:* 2 uploads at once per device and 6 in all, 20 begins per 10 minutes per device. The bytes go in
+- *Limits and safety:* 2 uploads at once per device and 6 in all, 20 uploads started per 10 minutes per device. The bytes go in
   chunks that adapt to the link (1 MiB to start, 256 KiB to 8 MiB), each retried up to 3 times at 1, 5 and 20 seconds;
   60 seconds with no bytes, Cancel, leaving the page, revoking or disconnecting the device, leaving None mode, stopping the
-  gateway, closing the window or a guest losing access end it and delete the temp (`.cc-upload-*`, swept at the next start
+  gateway, closing the window or a guest losing access (or being given another tab) end it and delete the temp (`.cc-upload-*`, swept at the next start
   if the server died). Only the owner and write guests upload; a read guest sees no menu item, and main refuses it.
 - *The desktop:* a local project's own window has no upload (the files are on that computer).
 
@@ -1137,7 +1137,8 @@ No install is called supported beyond what was run.
   in-page progress; a streamed webview page's own downloads are still cancelled.
 - Uploads: no folders, no resume after the page reloads (a reload cancels), no mtime kept, no `ccc upload` (Claude cannot ask
   for a file), no overlays or slots as a source, no uploads from the streamed Browser panel's own file inputs. Not run on
-  Firefox, Safari or iOS, with a real Finder drop, or with Claude Code attaching an image from the pasted path.
+  Firefox, Safari or iOS, with a real Finder drop, with the clipboard cases (Excel, Word, Copy image), with the unhandled-drop
+  navigation check, with a 1 GiB upload over the internet, or with Claude Code attaching an image from the pasted path.
 - A start link read by someone else, a lost device that was unlocked, and a shared server's other users are exposures
   Revoke does not undo (above).
 
@@ -1241,8 +1242,10 @@ quarantine mark (`xattr -p com.apple.quarantine`): not yet verified on a package
 
 **Uploads.** Files › Upload here…, a drop on Files and a drop or paste on a tab work in the remote window as in a browser
 (see "Web access" › "Uploads"): the window runs the server's page, which reads the files you choose or drop and sends
-them to that server over the same connection (the SSH tunnel included); this app adds nothing and reads no file itself.
-The window's native file chooser is the OS's. Closing the window cancels a running upload.
+them to that server over the same connection; this app adds nothing and reads no file itself. The window's native file
+chooser is the OS's. Closing the window cancels a running upload through the page's own `pagehide` cancel (best effort,
+else the 60 s idle clock). Run: Upload here through Playwright's `filechooser` over Direct only. Not run: a drop on Files,
+a drop or paste on a tab, the built-in SSH tunnel, My own tunnel, the native chooser on a packaged Mac.
 
 **Forget vs revoke.** **Forget** removes the server from this app and drops its cookie, secrets and trusted host key
 here; the device stays listed on the server until `ccc web revoke <device id>` (or Revoke in the browsers' card) there.

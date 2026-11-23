@@ -65,9 +65,10 @@ the guest e2e (`guest-overlay-views.spec.ts`) has run on macOS only.
 Uploads from the person's device (Files' Upload here and drops, a drop or paste of files onto a Claude or shell tab with the
 paths pasted into the prompt; owner and write guests, browser views and the desktop's remote window: `main/files/uploads.ts`,
 `upload-writer.ts`, the gateway's `/u/<token>`, `renderer/web/upload-*.ts`, `ccPanel.upload`) are implemented; design in
-`docs/design-upload.md` (§13 "As built"), plan in `docs/plans/completed/20261122-upload.md`, user docs in `docs/features.md`
-("Web access" › "Uploads", "Remote servers" › "Uploads"). Run: Chromium (Electron's) in unit, e2e (browser views, guests,
-server mode, the remote window) and the bench's 1 GiB phase through the real writer. Not run: Firefox, Safari and iOS, a real
+`docs/design-upload.md` (§13 "As built"), plan in `docs/plans/20261122-upload.md`, user docs in `docs/features.md`
+("Web access" › "Uploads", "Remote servers" › "Uploads"). Run: unit tests (Node, vitest), e2e in Electron's Chromium on macOS only (browser views, guests, server mode through darwin's
+`--server` start, never Linux; the remote window one case, Upload here over Direct, no drop or tab paste) and the bench's 1 GiB phase
+through the real writer; Firefox and WebKit ran only the spike harness, never the app. Not run: the app on Firefox, Safari and iOS, a real
 Finder drop, a packaged Mac's remote window (native chooser, SSH tunnel, My own tunnel), Claude Code attaching an image from
 the pasted path, clipboard cases (Excel, Word, Copy image), a 1 GiB upload over the internet (the plan's Post-Completion list).
 
@@ -342,11 +343,11 @@ the pasted path, clipboard cases (Excel, Word, Copy image), a 1 GiB upload over 
   `.cc-download-*` temp then an exclusive `fs.link` (never overwrite or follow), never opened. Its `setSavePath` must be called
   inside the event (else Electron shows a dialog), and nothing there may call `dialog`.
 - Uploads (design-upload.md, `main/files/uploads.ts`, `upload-writer.ts`): `/u/<token>` is the one route that takes a PUT, admitted
-  before the guest 404 block and behind the full cookie-and-key check (not `/d/`'s token-alone); a token is per file and
+  before the guest 404 block and behind the full cookie-and-key check (`/d/` skips the device key; in None mode both are the token alone); a token is per file and
   multi-use (chunks at `offset`), minted by `uploads.begin` / `resolve` for the device and bound to it, one idle clock (60 s of
   body bytes) per upload, chunks sized to finish inside the 30 s request bound (`connectionsCheckingInterval` 5 s, a cut is a
   408). Answers are JSON with real statuses; a guest not entitled gets the guest block's 404 byte for byte. Teardowns are
-  revoke, disconnect, leaving None mode, gateway stop, window close and every narrowing of a guest (`dropTransfersOf`); each
+  revoke, disconnect, leaving None mode, gateway stop, window close every narrowing of a guest and a widening's reconnect (`dropTransfersOf`); each
   deletes its temp. The writer writes `.cc-upload-<hex>` beside the target, then commits by exclusive `link` (`rename` only
   for Replace; no-hard-link volumes use `copyExclusive`), and records each temp with its project root in
   `<data>/uploads/temps.json` before creating it; the start sweep deletes only what that record names and still lies in its
@@ -354,12 +355,12 @@ the pasted path, clipboard cases (Excel, Word, Copy image), a 1 GiB upload over 
 - `ccPanel.upload` (`src/sdk/panel*.ts`) posts `cc-plugin.upload` to the parent only, and the shell accepts it from a mounted
   panel frame alone (`PluginFrame`, checked against `event.source`; overlays, slots and page tabs never), then names the panel
   key in `uploads.begin`, which main resolves against the layout. A file is read only in the page (the `File` goes to
-  `fetch` PUT as `slice`, never XHR, never the whole `File` as a body, which failed in the spike).
+  `fetch` PUT as `slice`, never XHR: an XHR PUT of a whole `File` failed in the spike; slices because the chunk size adapts).
 - The terminal paste after an upload (`uploads.paste`): main types nothing; the shell pastes the returned text with xterm's own
   `paste` (the person's input path, so the tab is `typed`), and main allows the automatic one only for a shown, live tab at
   `waiting` (a shell tab needs no status), once per upload; otherwise it is held and the person's Paste path click is the
-  retry. A path with a control, bidi or invisible character is never pasted. `uploads.*` channels each have `REMOTE_CLASS`,
-  `GUEST_CLASS` (write only) and, for events, `GUEST_EVENT` rows.
+  retry. A path with a control, bidi or invisible character is never pasted. The five `uploads.*` invoke channels are all `adapted` (served only to `view.remote`) with `GUEST_CLASS` `write`; there
+  is no upload event channel.
 - `ctx.processes` (host-local, design.md §4 "Processes"): argv only, bytes not text, 16 live children per plugin, process
   groups SIGKILLed on `kill`, when the leader exits, on plugin dispose and on host stop; not a capability (the host could `ctx.exec` anyway), so the cap and the kill are the control.
 - Editor host rules (`plugins/editor`): saves are compare-and-swap against what was last read, so a write Claude made
