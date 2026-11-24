@@ -161,3 +161,38 @@ export function pageTabChord(deps: PageTabChordDeps, windowId: number, chord: st
   if (repeat) return true
   return deps.trigger(windowId, id, chord, origin)
 }
+
+/**
+ * Whether `frame` is a plugin page the shell embeds directly (a panel or a slot: `cc-plugin:` page,
+ * parent the shell page itself). The caller has already ruled out a page tab frame (`tabOf`). A frame
+ * a plugin page nests is not one: its chords stay with it, as a nested page tab's do.
+ */
+export function isShellPluginFrame(frame: TrackedFrameLike | null | undefined): boolean {
+  if (!frame || !frame.url.startsWith('cc-plugin:')) return false
+  const parent = frame.parent as { readonly parent?: unknown } | null | undefined
+  return !!parent && parent.parent === null
+}
+
+/** What `panelChord` needs from main (index.ts: the key table and the window's shell page). */
+export interface PanelChordDeps {
+  /** The window's key table: the command bound to `chord`, if any. */
+  commandFor(windowId: number, chord: string): string | undefined
+  /** Hand the keyboard to the window's shell page, then run the command there; false when it is gone. */
+  triggerInShell(windowId: number, id: string, chord: string, code: string): boolean
+}
+
+/**
+ * A chord typed into a plugin panel's frame (Sessions, Usage, Files...): a sandboxed frame keeps its
+ * keys, so without this Cmd+T worked in a Claude tab and did nothing once a panel had the focus. Same
+ * rules as a webview panel's page (`webviewChord`): `forwardedCommand` decides which chords (the app
+ * table, Cmd/Ctrl/Alt only, never the overlay keys), the shell takes the keyboard first (a new tab's
+ * terminal must get the keys that follow) and runs the command through its modal gate for the view's
+ * active tab: a panel names no tab. True when the chord was taken; an auto-repeat is swallowed.
+ */
+export function panelChord(deps: PanelChordDeps, windowId: number, chord: string | null, code: string, repeat = false): boolean {
+  if (chord === null) return false
+  const id = forwardedCommand(chord, (c) => deps.commandFor(windowId, c))
+  if (id === undefined) return false
+  if (repeat) return true
+  return deps.triggerInShell(windowId, id, chord, code)
+}

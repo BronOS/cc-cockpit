@@ -256,7 +256,7 @@ import { rendererLocation } from './windows/create-window'
 import { crashWindowPage, ElectronWindowFactory } from './windows/electron-window-factory'
 import { electronAskClose, QueuedCloseAsk } from './windows/close-dialog'
 import { electronAskUnsaved, QueuedUnsavedAsk, QuitGuard, type AskUnsaved } from './windows/unsaved-dialog'
-import { PageTabFrameTabs, pageTabChord } from './tabs/page-tab-keys'
+import { PageTabFrameTabs, isShellPluginFrame, pageTabChord, panelChord } from './tabs/page-tab-keys'
 import { PageTabDiscuss } from './tabs/page-tab-discuss'
 import { CLOSE, type WebFoldersRequest, type WebOpenProjectRequest } from '../shared/web-protocol'
 import type { WebSecretsStatus } from '../shared/web-access'
@@ -1687,8 +1687,30 @@ function start(server: boolean): void {
       // A page tab's frame has the keyboard: the app's chords go to the shell (page-tab-keys.ts,
       // design-editor.md §1 "Keyboard"), naming that frame's tab and the key's physical code.
       if (server) return
-      const tab = pageTabFrames.tabOf(win.webContents.focusedFrame)
-      if (tab === undefined) return
+      const focused = win.webContents.focusedFrame
+      const tab = pageTabFrames.tabOf(focused)
+      if (tab === undefined) {
+        // A plugin panel's frame (not a page tab): the app's chords reach the shell too, as for a
+        // webview panel's page (page-tab-keys.ts panelChord). Overlays took theirs above.
+        if (!isShellPluginFrame(focused)) return
+        const taken = panelChord(
+          {
+            commandFor: (w, c) => commandForChord(w, c),
+            triggerInShell: (w, id, chord, code) => {
+              const target = BrowserWindow.fromId(w)
+              if (!target || target.isDestroyed()) return false
+              target.webContents.focus()
+              return views.toWindow(w, 'commands.trigger', { id, chord, code, from: 'webview' })
+            }
+          },
+          windowId,
+          chordOfInput(input.type === 'keyDown' && input.isAutoRepeat ? { ...input, isAutoRepeat: false } : input),
+          input.code,
+          input.type === 'keyDown' && input.isAutoRepeat
+        )
+        if (taken) event.preventDefault()
+        return
+      }
       const handled = pageTabChord(
         {
           commandFor: (w, c) => commandForChord(w, c),

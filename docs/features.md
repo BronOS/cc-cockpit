@@ -249,6 +249,10 @@ behind it are in [design.md](design.md).
   button, terminal font), Keybindings, Plugins (installed plugins and the marketplace in one list; a card's gear opens
   the plugin's global settings), This Project (colour, enabled plugins and their project settings, the project's
   new-tab commands, panel zones, slot and service picks) and Projects.
+- Keybindings from a panel: on the desktop the app's chords (Cmd/Ctrl/Alt chords of the key table) also work while a plugin
+  panel or slot (Sessions, Usage, Files...) has the focus: main sees the key before the sandboxed frame, runs the command for
+  the active tab and takes the keyboard into the shell. Chords the table lacks and bare keys stay with the panel. A
+  browser view's panels keep their keys (only page tabs forward there); not run on a packaged Mac.
 - Global values and project overrides: a plugin's project settings have a global value (Settings > Plugins, the card's
   gear), and Settings > This Project shows each field under "Use global" (the default) or an override of its own; a
   secret field works the same way. A plugin's app settings stay app-wide. A panel header shows a gear for a plugin with

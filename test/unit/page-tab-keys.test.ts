@@ -6,7 +6,7 @@
 // declared keys clash only in Settings › Keybindings (CommandRegistry.bindings pageKeys).
 import { afterEach, describe, expect, it } from 'vitest'
 import { CommandRegistry } from '../../src/main/commands/command-registry'
-import { MAX_TRACKED_PAGE_TAB_FRAMES, PageTabFrameTabs, pageTabChord } from '../../src/main/tabs/page-tab-keys'
+import { MAX_TRACKED_PAGE_TAB_FRAMES, PageTabFrameTabs, isShellPluginFrame, pageTabChord, panelChord } from '../../src/main/tabs/page-tab-keys'
 import {
   forwardedChords,
   onKeyTable,
@@ -171,6 +171,42 @@ describe('desktop: before-input-event on a page tab frame', () => {
 
   it('a window that is gone takes nothing', () => {
     expect(pageTabChord({ commandFor: () => 'tab.close', trigger: () => false }, 3, 'ctrl+w', { tab: TAB, code: 'KeyW' })).toBe(false)
+  })
+})
+
+describe('desktop: before-input-event on a plugin panel frame (Sessions, Usage, Files)', () => {
+  const top = { parent: null }
+  const frame = (url: string, parent: unknown = top) => ({ frameTreeNodeId: 1, name: '', url, parent })
+
+  it('only a plugin page the shell embeds directly is a panel frame', () => {
+    expect(isShellPluginFrame(frame('cc-plugin://cockpit.sessions/panel.html'))).toBe(true)
+    expect(isShellPluginFrame(frame('cc-plugin://x/p.html', { parent: top }))).toBe(false)
+    expect(isShellPluginFrame(frame('https://example.com/'))).toBe(false)
+    expect(isShellPluginFrame(frame('cc-plugin://x/p.html', null))).toBe(false)
+    expect(isShellPluginFrame(null)).toBe(false)
+  })
+
+  it('app chords go to the shell with the keyboard handed over; typing, Escape and repeats are handled as for a webview', () => {
+    const table: Record<string, string> = { 'ctrl+t': 'tab.newClaude', escape: 'overlay.pop' }
+    const run: Array<[number, string, string, string]> = []
+    const deps = {
+      commandFor: (_w: number, c: string) => table[c],
+      triggerInShell: (w: number, id: string, chord: string, code: string) => {
+        run.push([w, id, chord, code])
+        return true
+      }
+    }
+    expect(panelChord(deps, 3, 'ctrl+t', 'KeyT')).toBe(true)
+    expect(panelChord(deps, 3, 'ctrl+a', 'KeyA')).toBe(false)
+    expect(panelChord(deps, 3, 'escape', 'Escape')).toBe(false)
+    expect(panelChord(deps, 3, 't', 'KeyT')).toBe(false)
+    expect(panelChord(deps, 3, null, 'KeyT')).toBe(false)
+    expect(panelChord(deps, 3, 'ctrl+t', 'KeyT', true)).toBe(true)
+    expect(run).toEqual([[3, 'tab.newClaude', 'ctrl+t', 'KeyT']])
+  })
+
+  it('a window that is gone takes nothing', () => {
+    expect(panelChord({ commandFor: () => 'tab.close', triggerInShell: () => false }, 3, 'ctrl+w', 'KeyW')).toBe(false)
   })
 })
 
