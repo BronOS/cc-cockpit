@@ -6,11 +6,14 @@ import {
   MAX_SIZE,
   MIN_SIZE,
   RENAMED_PANEL_KEYS,
+  TERMINAL_PANEL_KEY,
   defaultLayout,
+  geometryOf,
   hidePanel,
   movePanel,
   placePanelAt,
   layoutIndexOf,
+  normalizeGeometry,
   normalizeLayout,
   reconcile,
   resizePanel,
@@ -18,6 +21,7 @@ import {
   setZoneCollapsed,
   togglePanel,
   unhidePanel,
+  withGeometry,
   zoneOf,
   type AvailablePanel,
   type LayoutState,
@@ -530,5 +534,44 @@ describe('placePanelAt', () => {
   it('survives normalize: the order is the stored list', () => {
     const l = placePanelAt(base, 't/d', 'right', 0)
     expect(normalizeLayout(JSON.parse(JSON.stringify(l)))).toEqual(l)
+  })
+})
+
+describe('the Terminal panel\'s open state is geometry (design-terminal-panel.md §13.1, D8)', () => {
+  const TERMINAL: AvailablePanel = { panelKey: TERMINAL_PANEL_KEY, defaultZone: 'bottom' }
+  const withTerminal = (open: boolean): LayoutState => {
+    const l = reconcile(defaultLayout(), [TERMINAL, LOG])
+    return open ? togglePanel(l, TERMINAL_PANEL_KEY) : l
+  }
+
+  it('is not a plugin key', () => {
+    expect(TERMINAL_PANEL_KEY).toBe('core/terminal')
+  })
+
+  it('geometryOf carries it only when the panel is placed', () => {
+    expect(geometryOf(defaultLayout()).terminalOpen).toBeUndefined()
+    expect(geometryOf(withTerminal(false)).terminalOpen).toBe(false)
+    expect(geometryOf(withTerminal(true)).terminalOpen).toBe(true)
+  })
+
+  it('withGeometry applies it to the Terminal panel only, and keeps the other panels\' open state', () => {
+    const shown = togglePanel(withTerminal(false), 'jira/log')
+    const opened = withGeometry(shown, { zones: {}, panels: {}, terminalOpen: true })
+    expect(panel(opened, TERMINAL_PANEL_KEY).open).toBe(true)
+    expect(panel(opened, 'jira/log').open).toBe(true)
+    // keepGeometry's shape: a remote view's edit with the stored (desktop) geometry keeps the desktop's state.
+    const remoteEdit = withTerminal(true)
+    expect(panel(withGeometry(remoteEdit, geometryOf(withTerminal(false))), TERMINAL_PANEL_KEY).open).toBe(false)
+    // Absent: the layout's own value, and the same object when nothing changes.
+    const l = withTerminal(true)
+    expect(withGeometry(l, geometryOf(l))).toBe(l)
+    expect(panel(withGeometry(l, { zones: {}, panels: {} }), TERMINAL_PANEL_KEY).open).toBe(true)
+  })
+
+  it('normalizeGeometry keeps a boolean and drops anything else', () => {
+    expect(normalizeGeometry({ terminalOpen: true }).terminalOpen).toBe(true)
+    expect(normalizeGeometry({ terminalOpen: false }).terminalOpen).toBe(false)
+    expect(normalizeGeometry({ terminalOpen: 'yes' })).not.toHaveProperty('terminalOpen')
+    expect(normalizeGeometry({})).not.toHaveProperty('terminalOpen')
   })
 })

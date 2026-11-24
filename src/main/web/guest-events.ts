@@ -145,6 +145,9 @@ export const GUEST_EVENT: { readonly [E in EventChannel]: GuestEventRule<E> } = 
   'tabs.moved': guestTabsMoved,
   'tabs.select': guestByTab,
   'tabs.exitFocus': guestExitFocus,
+  // Docked tabs are hidden from guests (design-terminal-panel.md §13.2): a dock reaches a guest as its narrowing
+  // reconnect, never as this event.
+  'tabs.docked': 'drop',
   'tabs.added': guestTab,
   'groups.changed': guestGroups,
   // The owner's machine, settings and access: never a guest's.

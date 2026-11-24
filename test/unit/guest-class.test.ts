@@ -146,6 +146,16 @@ describe('target extractors (fail closed)', () => {
     expect(GUEST_CLASS['tabs.create'].cls).toBe('write')
   })
 
+  it('the Terminal panel is never a guest\'s: no tab created there, no dock, no panel selection (design-terminal-panel §8)', () => {
+    expect(byTabCreate({ kind: 'shell', dock: 'panel' })).toBeUndefined()
+    // Any value, even one main would not take: present is refused.
+    expect(byTabCreate({ kind: 'shell', dock: null })).toBeUndefined()
+    expect(GUEST_CLASS['tabs.dock'].cls).toBe('no')
+    expect(GUEST_CLASS['tabs.panelSelected'].cls).toBe('no')
+    expect(REMOTE_CLASS['tabs.dock']).toBe('yes')
+    expect(REMOTE_CLASS['tabs.panelSelected']).toBe('adapted')
+  })
+
   it('Discuss: the page tab or overlay and the target tab; a new session names none', () => {
     expect(byPageDiscuss({ tabId: 'p', question: 'q', target: { kind: 'tab', tabId: 'c' } })).toEqual([{ tab: 'p' }, { tab: 'c' }])
     expect(byPageDiscuss({ tabId: 'p', question: 'q', target: { kind: 'new' } })).toEqual([{ tab: 'p' }])

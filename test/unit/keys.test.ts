@@ -116,6 +116,20 @@ describe('chordFromEvent', () => {
     expect(chordFromEvent(ev({ key: 'y', code: 'KeyT', metaKey: true }))).toBe('meta+y')
   })
 
+  it('names the key left of 1 by its code on layouts that type something else there (the Terminal panel)', () => {
+    const toggle = normalizeChord('Ctrl+`', 'linux')
+    expect(toggle).toBe('ctrl+`')
+    // US: the key itself, and Shift's ~ unshifted.
+    expect(chordFromEvent(ev({ key: '`', code: 'Backquote', ctrlKey: true }))).toBe(toggle)
+    expect(chordFromEvent(ev({ key: '~', code: 'Backquote', ctrlKey: true, shiftKey: true }))).toBe(normalizeChord('Ctrl+Shift+`', 'linux'))
+    // Cyrillic ё, German dead key, ISO §, AZERTY ²: still Ctrl+`.
+    for (const key of ['ё', 'Dead', '§', '²']) expect(chordFromEvent(ev({ key, code: 'Backquote', ctrlKey: true })), key).toBe(toggle)
+    // Shift on a non-Latin layout (Ё) too.
+    expect(chordFromEvent(ev({ key: 'Ё', code: 'Backquote', ctrlKey: true, shiftKey: true }))).toBe('ctrl+shift+`')
+    // An ASCII character a layout types there is that character, as Dvorak's letters are.
+    expect(chordFromEvent(ev({ key: '<', code: 'Backquote', ctrlKey: true }))).toBe('ctrl+<')
+  })
+
   it('unshifts punctuation', () => {
     expect(chordFromEvent(ev({ key: '<', code: 'Comma', shiftKey: true, metaKey: true }))).toBe(
       normalizeChord('Cmd+Shift+,', 'darwin')

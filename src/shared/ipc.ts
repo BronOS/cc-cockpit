@@ -14,7 +14,7 @@ import type { ScreenAnswer } from './terminal-screen'
 import type { Theme } from './theme'
 import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-background'
 import type { PageTabSpec } from './page-tabs'
-import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
+import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabDock, TabExitBehavior, TabKind } from './types'
 import type { PluginServicesView } from './services'
 import type { GlobalPluginLimitsView, PluginLimitsView } from './plugin-limits'
 import type { PanelHeaderIconName } from './panel-header'
@@ -253,6 +253,12 @@ export interface TabInfo {
    * when any view is dirty; never saved.
    */
   dirty?: true
+  /**
+   * A shell or command tab in the Terminal panel (docs/design-terminal-panel.md §2): drawn in the panel's strip,
+   * never in the main strip, its count, `tab.select.N` or a split group, and never the project's active tab. Set
+   * by main only (the person's `tabs.dock`, or `tabs.create` with `dock`); every snapshot carries the current value.
+   */
+  dock?: TabDock
 }
 
 /** One user entry of the new-tab menu as the menu shows it: no command text, main runs it by id. */
@@ -277,8 +283,10 @@ export interface TabCommandMenu {
  * whether it opens a tab or a terminal overlay.
  */
 export type TabCreateRequest =
-  | { kind: 'claude' | 'shell'; cwd?: string; beside?: TabBeside }
-  | { kind: 'command'; level: TabCommandLevel; entryId: string; beside?: TabBeside }
+  | { kind: 'claude'; cwd?: string; beside?: TabBeside }
+  // `dock`: opened in the Terminal panel. Never together with `beside` (no groups in the panel); refused for guests.
+  | { kind: 'shell'; cwd?: string; beside?: TabBeside; dock?: TabDock }
+  | { kind: 'command'; level: TabCommandLevel; entryId: string; beside?: TabBeside; dock?: TabDock }
 
 /**
  * `tabs.create`'s `beside` (split right / down, the New tab menu at a new pane's place): create the
@@ -379,9 +387,10 @@ export interface PanelInfo {
   /**
    * `webview`: the panel is a native web view main lays over it (`"kind": "webview"`, plan B
    * Task 8); the renderer draws its toolbar and the placeholder whose place it reports with
-   * `webviews.placement`. Absent: an html panel (or a core one).
+   * `webviews.placement`. Absent: an html panel.
+   * `core`: a panel the shell draws itself (the Terminal panel, `core/terminal`): no frame, no plugin, no `src`.
    */
-  kind?: 'webview'
+  kind?: 'webview' | 'core'
   /**
    * The slot frames drawn in this panel's column (ctx.panels.slots, design-next §2), in the order
    * placed: main resolved each placement's provider, clamped its height and left out what is not
@@ -1952,6 +1961,18 @@ export interface IpcInvokeMap {
    * the sender's project's is ignored, as a selection racing a close is normal.
    */
   'tabs.selected': { req: { tabId: string }; res: void }
+  /**
+   * The person moves a shell or command tab of the sender's project into the Terminal panel or back to the tab
+   * area (docs/design-terminal-panel.md §3). Main checks the kind, takes the tab out of its group first, saves, and
+   * tells the window's views (`tabs.docked`). Refused for an unknown or foreign tab and for any other kind.
+   */
+  'tabs.dock': { req: { tabId: string; dock: 'panel' | 'main' }; res: void }
+  /**
+   * The view's Terminal panel shows this docked tab now (its selection changed while the panel is on screen, or
+   * the panel was shown). Never the project's active tab or presence (design §13.5); a browser view joins the
+   * tab's stream (design §13.7). A tab that is not a docked tab of the sender's project is ignored.
+   */
+  'tabs.panelSelected': { req: { tabId: string }; res: void }
 
   // Guests (design-guests, shared/design.md §16.2). Every one is GUEST_CLASS `no`: a guest never
   // manages guests. Narrowing (kick, revoke, read, scope down, hide) is allowed from any owner view;
@@ -2187,6 +2208,11 @@ export interface IpcEventMap {
    * The page applies it only while that close left it keys-off and `tabId` is still what is left.
    */
   'tabs.exitFocus': { tabId: string; closed: string }
+  /**
+   * A tab moved between the main tab area and the Terminal panel (`tabs.dock`), to every view of the window: the
+   * page moves it between strips (a main selection on it moves to a neighbour, as a close would).
+   */
+  'tabs.docked': { tabId: string; dock: 'panel' | 'main' }
   /**
    * main started a tab the page did not ask for (a plugin's ctx.sessions.open): add it to the
    * bar. Not selected: it starts in `starting`, where a key the user meant for the tab they are
@@ -2482,6 +2508,8 @@ export const INVOKE_CHANNELS = [
   'tabs.ack',
   'tabs.screen',
   'tabs.selected',
+  'tabs.dock',
+  'tabs.panelSelected',
   'groups.get',
   'groups.place',
   'groups.remove',
@@ -2540,6 +2568,7 @@ export const EVENT_CHANNELS = [
   'remote.changed',
   'tabs.select',
   'tabs.exitFocus',
+  'tabs.docked',
   'tabs.added',
   'window.state',
   'layout.updated',
@@ -2952,6 +2981,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.visibility': 'yes',
   'tabs.ack': 'adapted',
   'tabs.selected': 'adapted',
+  // The person's move of their own tab, as tabs.reorder: no host screen, no wider access.
+  'tabs.dock': 'yes',
+  // As tabs.selected: a remote view's panel selection also joins that tab's stream for the view.
+  'tabs.panelSelected': 'adapted',
   'tabs.data': 'adapted',
   // The desktop page seeds web access's copy of a tab from its own screen: asked of the desktop view
   // only, and only its answer is taken (a browser's would let it put what it likes on the other views).
@@ -2966,6 +2999,7 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   // Where a pane the person ended in this view hands the keys: a selection within their own group, as
   // tabs.select is, sent only to the view main saw type.
   'tabs.exitFocus': 'yes',
+  'tabs.docked': 'yes',
   'tabs.added': 'yes',
 
   // Split terminal view: the person's arrangement, no host screen and no wider access, the same

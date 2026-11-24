@@ -85,6 +85,12 @@ export const CORE_COMMANDS: readonly CommandDef[] = [
   core('app.openFolder', 'Open Folder…', 'Cmd+O'),
   core('overlay.pop', 'Pop Top Overlay', 'Escape'),
   core('overlay.closeTop', 'Close Top Overlay', 'Cmd+Shift+W'),
+  // The Terminal panel (docs/design-terminal-panel.md §6, D3). Ctrl, not Cmd, on every platform, as VS Code
+  // (Cmd+` is macOS's window cycling), and the one exception to "Cmd plus Shift or Alt" above PANE_COMMANDS:
+  // Ctrl+` takes the NUL a terminal would send (Emacs' set-mark), which the person chose for a one-key toggle.
+  // shared/keys.ts chordFromEvent reads the key by its code too, so a layout without ` there still fires it.
+  core('terminal.toggle', 'Toggle Terminal Panel', 'Ctrl+`'),
+  core('terminal.new', 'New Terminal in Panel', 'Ctrl+Shift+`'),
   ...PANE_COMMANDS
 ]
 

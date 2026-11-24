@@ -98,12 +98,14 @@ export const byCommand: GuestExtractor = (req) => {
 }
 
 /**
- * `tabs.create`: a guest opens only Claude and Shell tabs (never the owner's [+] menu commands); `beside`,
- * when present, must name a tab the guest sees.
+ * `tabs.create`: a guest opens only Claude and Shell tabs (never the owner's [+] menu commands), never in the
+ * Terminal panel (`dock`); `beside`, when present, must name a tab the guest sees.
  */
 export const byTabCreate: GuestExtractor = (req) => {
   const kind = own(req, 'kind')
   if (kind !== 'claude' && kind !== 'shell') return undefined
+  // The Terminal panel is the owner's (docs/design-terminal-panel.md §8): a guest never opens a tab there.
+  if (own(req, 'dock') !== undefined) return undefined
   const beside = own(req, 'beside')
   if (beside === undefined) return []
   const tab = own(beside, 'tabId')
@@ -359,6 +361,9 @@ export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Obje
   'webviews.placement': NO,
   'tabs.commands': NO,
   'tabs.reorder': NO,
+  // The Terminal panel and its tabs are hidden from guests in v1 (docs/design-terminal-panel.md §8, D5).
+  'tabs.dock': NO,
+  'tabs.panelSelected': NO,
   'tabs.rename': NO,
   'tabs.flag': NO,
   'tabs.toggleFlag': NO,

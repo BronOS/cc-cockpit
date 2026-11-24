@@ -171,6 +171,10 @@ export function chordFromEvent(e: KeyEventLike): string | null {
       key = (m[1] ?? m[2] ?? key).toLowerCase()
     }
   }
+  // The key left of 1 (`code` Backquote, the Terminal panel's Ctrl+`): a layout that types something else
+  // there (Cyrillic ё, a German dead key, ISO §, AZERTY ²) or a Mac's Option still names it by the US key,
+  // as letters and digits above. An ASCII key there (` or ~) keeps the rule below.
+  if (e.code === 'Backquote' && (e.altKey || !/^[\x20-\x7e]$/.test(e.key))) key = '`'
   if (e.shiftKey) key = own(UNSHIFTED, key) ?? key
   key = own(KEY_ALIASES, key) ?? key
   const mods: Modifier[] = []

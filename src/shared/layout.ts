@@ -40,6 +40,13 @@ export const RENAMED_PANEL_KEYS: Readonly<Record<string, string>> = Object.freez
   'core/sessions': 'cockpit.sessions/sessions'
 })
 
+/**
+ * The Terminal panel (docs/design-terminal-panel.md), the one panel core draws itself. `core` has no dot, so it
+ * never matches PLUGIN_ID_PATTERN (shared/manifest.ts) and cannot collide with a plugin's panel key. Its placement
+ * (zone, order, hidden) is shared layout like any panel's; its open state is per view (`LayoutGeometry.terminalOpen`).
+ */
+export const TERMINAL_PANEL_KEY = 'core/terminal'
+
 export interface PanelPlacement {
   panelKey: string
   open: boolean
@@ -285,8 +292,9 @@ export function setZoneCollapsed(
 }
 
 /**
- * A layout's geometry: zone sizes, collapsed zones and panel sizes. Shared state is which panels
- * sit in which zone, in what order, open or not; geometry is per view (design-web.md §5.1: a phone
+ * A layout's geometry: zone sizes, collapsed zones and panel sizes, and the Terminal panel's open state
+ * (`terminalOpen`). Shared state is which panels sit in which zone, in what order, open or not (the
+ * Terminal panel's open excepted); geometry is per view (design-web.md §5.1: a phone
  * and a desktop differ). Main stores the desktop's in the layout as before; a remote view keeps its
  * own in the browser (renderer/zones/layout-sync.ts) and main never takes it from a remote view's
  * `layout.set` (LayoutService.set with `keepGeometry`).
@@ -295,6 +303,12 @@ export interface LayoutGeometry {
   zones: Partial<Record<ZoneId, { size: number; collapsed: boolean }>>
   /** panelKey -> size, of placed panels and of remembered ones (a hidden panel keeps its size). */
   panels: Record<string, number>
+  /**
+   * The Terminal panel's open state, per view (design-terminal-panel.md §13.1, D8): the `open` of the
+   * TERMINAL_PANEL_KEY placement, carried with the geometry so a toggle on one screen never opens or closes it
+   * on another (`keepGeometry` keeps the stored one, as it keeps zone sizes). Absent: the layout's own value.
+   */
+  terminalOpen?: boolean
 }
 
 /** The geometry of a layout. */
@@ -307,7 +321,8 @@ export function geometryOf(layout: LayoutState): LayoutGeometry {
     zones[z] = { size: zone.size, collapsed: zone.collapsed }
     for (const p of zone.panels) panels[p.panelKey] = p.size
   }
-  return { zones, panels }
+  const terminal = ZONE_IDS.flatMap((z) => layout.zones[z].panels).find((p) => p.panelKey === TERMINAL_PANEL_KEY)
+  return terminal ? { zones, panels, terminalOpen: terminal.open } : { zones, panels }
 }
 
 /**
@@ -319,6 +334,8 @@ export function withGeometry(layout: LayoutState, geometry: LayoutGeometry): Lay
     const size = Object.hasOwn(geometry.panels, key) ? geometry.panels[key] : undefined
     return typeof size === 'number' && Number.isFinite(size) ? clampSize(size) : own
   }
+  const openOf = (key: string, own: boolean): boolean =>
+    key === TERMINAL_PANEL_KEY && typeof geometry.terminalOpen === 'boolean' ? geometry.terminalOpen : own
   const zones = { ...layout.zones }
   for (const z of ZONE_IDS) {
     const zone = layout.zones[z]
@@ -326,7 +343,7 @@ export function withGeometry(layout: LayoutState, geometry: LayoutGeometry): Lay
     zones[z] = {
       collapsed: typeof g?.collapsed === 'boolean' ? g.collapsed : zone.collapsed,
       size: typeof g?.size === 'number' && Number.isFinite(g.size) ? clampSize(g.size) : zone.size,
-      panels: zone.panels.map((p) => ({ ...p, size: sizeOf(p.panelKey, p.size) }))
+      panels: zone.panels.map((p) => ({ ...p, size: sizeOf(p.panelKey, p.size), open: openOf(p.panelKey, p.open) }))
     }
   }
   const remembered: Record<string, RememberedPlacement> = {}
@@ -358,6 +375,7 @@ export function normalizeGeometry(raw: unknown): LayoutGeometry {
       n += 1
     }
   }
+  if (typeof raw.terminalOpen === 'boolean') out.terminalOpen = raw.terminalOpen
   return out
 }
 

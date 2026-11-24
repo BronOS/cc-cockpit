@@ -50,6 +50,14 @@ describe('CommandRegistry', () => {
     }
   })
 
+  it('binds the Terminal panel to Ctrl+` and Ctrl+Shift+` on every platform (D3)', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      const view = new CommandRegistry(platform, () => ({})).view('p')
+      expect(find(view, 'terminal.toggle'), platform).toMatchObject({ key: 'ctrl+`', source: 'core' })
+      expect(find(view, 'terminal.new')?.key, platform).toBe('ctrl+shift+`')
+    }
+  })
+
   it('has no conflicting defaults', () => {
     for (const platform of ['darwin', 'linux'] as const) {
       expect(new CommandRegistry(platform, () => ({})).view('p').conflicts).toEqual([])

@@ -19,6 +19,13 @@ import type { WindowBackground } from './window-background'
 export type TabKind = 'claude' | 'shell' | 'command' | 'page'
 
 /**
+ * Where a tab sits (docs/design-terminal-panel.md §2): `'panel'` is the core Terminal panel's strip; absent is
+ * the main tab area. Only shell and command tabs are ever docked; the person moves them (`tabs.dock`), never a
+ * plugin. One tab order for both: each strip is the order filtered by this field.
+ */
+export type TabDock = 'panel'
+
+/**
  * One user-defined entry of the new-tab menu (design §3 Tabs, "Custom commands"): app-wide in
  * `AppSettings.tabCommands`, per project in `ProjectRecord.tabCommands`. `command` is a shell
  * command line the user wrote (`lazygit`, `npm run dev`, `docker compose logs -f | grep api`),
@@ -102,6 +109,11 @@ export interface TabRecord {
   params?: unknown
   title?: string
   icon?: string
+  /**
+   * A shell or command tab in the Terminal panel (TabDock). Plain data here (the file is user-writable):
+   * restore keeps it only on a shell or command record and drops it (not the tab) from any other kind.
+   */
+  dock?: TabDock
 }
 
 /**
