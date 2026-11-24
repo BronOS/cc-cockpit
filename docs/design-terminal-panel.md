@@ -184,11 +184,14 @@ export const TERMINAL_PANEL_KEY = 'core/terminal'                         // src
 'tabs.panelSelected': { req: { tabId: string }; res: void }              // the view selected a panel tab
 // event channels
 'tabs.docked':        { tabId: string; dock: 'panel' | 'main' }
-'tabs.panelSelect':   { tabId: string }                                  // main asks the view to select it
+// (no 'tabs.panelSelect' event: dropped in §13.7)
+
+// src/shared/layout.ts: per-view open state of the Terminal panel (§13.1)
+interface LayoutGeometry { /* ... */ terminalOpen?: boolean }
 ```
 
 Classes: `tabs.dock` REMOTE `yes`, GUEST `no`; `tabs.panelSelected` REMOTE `adapted` (as `tabs.selected`), GUEST `no`;
-events `tabs.docked` and `tabs.panelSelect` GUEST_EVENT `drop`. Commands in `CORE_COMMANDS`: `terminal.toggle`
+event `tabs.docked` GUEST_EVENT `drop`. `shared/keys.ts`: `Backquote` code fallback (§13.13). Commands in `CORE_COMMANDS`: `terminal.toggle`
 (`` Ctrl+` ``), `terminal.new` (`` Ctrl+Shift+` ``). `TabGroups` refusal reason: `docked`.
 
 ## 11. Tests
@@ -200,3 +203,70 @@ events `tabs.docked` and `tabs.panelSelect` GUEST_EVENT `drop`. Commands in `COR
 - e2e: create a shell in the panel, run a command that prints over time, hide the panel, show it, see the output that
   arrived while hidden; move a tab in and out keeping its session; restart the app and find the tab in the panel; a
   browser view shows the panel with its own open state; a guest sees neither the panel nor the docked tab.
+
+## 13. Spec review amendments (2026-11-24)
+
+The build team's blind questions (dev-xavi, dev-hana, qa-carol) found these gaps. **This section overrides the sections
+above where they differ.** The run's `shared/spec-review.md` lists every question and who asked it.
+
+1. **Open state per screen** (Oleg, D8). `open` is shared layout state today (`shared/layout.ts` "Shared state"); only
+   geometry is per view. The Terminal panel's open state moves into `LayoutGeometry` (per view, kept by `layout-sync.ts`,
+   never taken from another view's `layout.set`: `keepGeometry` keeps it as it keeps zone sizes). Its placement (zone,
+   order, hidden) stays shared. A toggle on one screen never opens or closes it on another. A view with no geometry for
+   it yet starts closed.
+2. **Guests: one rule, and the stream stops.** `tabVisible` (`shared/guest-filter.ts`, input from `main/ipc/guest-deps.ts`;
+   `GuestStore.tabVisible`) returns false for a docked tab, so target checks, ports, HTTP routes, overlay origins,
+   downloads and presence all follow. Docking a tab a guest could see is a **narrowing** of that guest (D-30's path:
+   `accessChangedFor`, close 4464, transfers dropped, the reconnect's snapshot has no docked tab); undocking is a
+   widening. No `tabs.removed` / `tabs.added` synthesis. `pluginOfPanelKey` returns undefined for `core/` keys.
+3. **Keys owner is sticky, not DOM focus.** The shell keeps `keysOwner: 'main' | 'panel'` per view, set by a focusin in
+   the panel body or the main area, by the toggle and by `terminal.new`; popups, the palette, dialogs and a window blur
+   do not change it; the body's unmount resets it to `main`. `focusActive` / `giveBack` return focus to the owner's tab.
+   `terminal.toggle` and `terminal.new` are registered by TabsPane always (else xterm types a NUL); the body registers
+   only the panel-scoped overrides while the owner is `panel`.
+4. **Exits never move keys to the main area.** Clean exits close tabs (`tab-manager.ts`: a command on code 0, a shell
+   after `SHELL_MIN_LIFE_MS`), so §1's "stays with its exit mark" holds only for failures. When a panel tab goes, main
+   applies `ViewSelections.exitFocus`'s rule inside the panel (the person's own keys there within 1.5 s → the panel's
+   next tab); otherwise that view goes keys-off. Never the main area by itself. The last panel tab closing leaves the
+   panel open on "No terminals".
+5. **Main selection.** Panel typing and `tabs.panelSelected` never reach `acted` / `typed` / `setActive` / presence;
+   `activeTab` and `byView` are main-area only; docking the `activeTab` hands it back at once, as `viewGone` does. A
+   `tabs.select` / `ctx.sessions.focus` naming a docked tab is ignored by main.
+6. **Reorder.** `tabs.reorder { tabId, toIndex, block? }` keeps a full-order `toIndex`; each strip maps a drop or a
+   Move left / right to the full index of its neighbour in that strip (so a step past a hidden docked tab is visible);
+   main refuses `block` on a docked tab; `tabs.moved` is remapped per strip.
+7. **Browser views.** `tabs.panelSelected` goes to a separate `panelSelected` on `WebConnection` and joins that tab's
+   stream (`ViewTerminals` already follows a set), leaving `selected`, the group join queue and presence alone. The page
+   sends it when the panel is on screen and its selection changes, and on each show; never while hidden.
+   The **`tabs.panelSelect` event is dropped** (nothing sends it in v1); a reloaded view picks the first docked tab.
+8. **Groups.** A `dockedOf` dep: `place` answers `docked` when the tab or its anchor is docked (a plugin's `beside` gets
+   the usual `placed: false`), `panesOf` and `joinOrder` leave docked tabs out, so restore and sync prune them.
+9. **Core panel plumbing.** A `CORE_PANELS` constant (bottom zone, closed) joins `reconcile` and `PanelInfo` only;
+   `placedPanel` and the plugin setters (`setStatus`, `setBadge`, `setHeader`, `setSlots`) refuse `core/` keys.
+10. **Renderer state.** Docked tabs stay in `state.tabs` (one order); `activeId` is never docked (one rule after each
+    reducer step); a page-local `panelActiveId`. Main-area consumers filter docked tabs (TabBar, SplitArea, switcher,
+    `tab.select.N`, Show Beside, Close all, `keepContiguous`); the close-ask wait counts the view's full list. One
+    `SessionRegistry` above both areas (context); `activeChanged(shown)` gets main's visible set plus the panel's shown
+    tab. `detach(container)` is a no-op unless that container is current. Snapshot ordering: a `tabs.list` taken before a
+    dock must not undo it (main sends the current `dock` in every snapshot; the page re-applies docks it saw first).
+11. **Person's moves.** Own "Move to Terminal panel": the panel opens on this screen, selects the tab, takes the keys.
+    Own "Move to tab area": main selects it. A move from another view changes nothing here (keys-off if it was this
+    view's active tab).
+12. **Toggle details.** It unhides a hidden panel into its remembered zone and expands that zone; `Cmd+J` only touches
+    the bottom zone; with a modal open (palette, ApprovalDialog, settings, a terminal overlay) it does nothing.
+    `tab.switchNext / Prev` with panel keys: a plain step in the panel strip, no switcher. `tab.newCommand.*` chords act
+    on the main area.
+13. **Chords on other layouts.** `chordFromEvent` maps `code === 'Backquote'` (Cyrillic `ё`, German dead key, ISO `§`).
+    The `CORE_COMMANDS` comment records D3's Ctrl exception.
+14. **Flags.** Docking clears the flag; `tabs.flag` / `tabs.toggleFlag` refuse a docked tab.
+15. **Restore.** `dock` passes through `tabRecordsOf`, `RestoredTab`, `buildRestorePlan`, `failedRecord`,
+    `restoreTab` / `RestoreTabOptions` / `add`. The panel selection is not saved. A window whose saved tabs are all
+    docked opens its main area on "No tabs yet" (accepted, documented).
+16. **Size across views.** A desktop with the panel closed stays a tab's sizer; a browser showing it takes the size by
+    typing or Fit (accepted).
+17. **No upload entry** on panel terminals in v1. Server mode's hidden page renders no panel body. Guest pages drop any
+    TabInfo carrying `dock`.
+18. **e2e locators.** The panel gets stable locators listed in `test/e2e/SELECTORS.md` (checked by
+    `selectors-guide.test.ts`): the panel region, its strip (`tablist` named "Terminal tabs"), tab names, `+`, tab menu
+    items, the empty state, a test id per panel terminal. The main-area helpers in `test/e2e/fixtures.ts` scope to
+    `[data-split-area]`; new helpers `panelTerminalText` / `panelTypeLine`.
