@@ -102,6 +102,7 @@ export function SlotFrame(props: { frame: SlotFrameInfo; collapseUntilConnected?
         src={frame.src}
         title={`${frame.type} slot`}
         className="slot-frame"
+        forwardKeys
         intro={slotIntro(frame.type)}
         onPageMessage={onPageMessage}
         connect={(deliver) =>

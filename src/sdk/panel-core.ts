@@ -72,6 +72,8 @@ export const SLOT_WIDTH_MESSAGE = 'cc-plugin.slot-width'
 export const READY_MESSAGE = 'cc-plugin.ready'
 export const TAB_DIRTY_MESSAGE = 'cc-plugin.tab-dirty'
 export const TAB_KEY_MESSAGE = 'cc-plugin.tab-key'
+/** The web shell lists the app's chords to a panel or slot frame (a page tab gets them with its intro). */
+export const KEYS_MESSAGE = 'cc-plugin.keys'
 export const TAB_DISCUSS_MESSAGE = 'cc-plugin.tab-discuss'
 /** `ccPanel.upload.pick` / `files`: the files for core's upload flow (design-upload.md §5.2). */
 export const UPLOAD_MESSAGE = 'cc-plugin.upload'
@@ -553,6 +555,7 @@ export class PanelClient {
       this.becomeTab((data as { tab?: { type?: unknown } }).tab?.type)
       this.setForwarded((data as { keys?: unknown }).keys)
     }
+    else if (type === KEYS_MESSAGE) this.setForwarded((data as { keys?: unknown }).keys)
     else if (type === THEME_MESSAGE) {
       this.installBaseStyles((data as { mac?: unknown }).mac === true)
       this.applyTheme((data as { theme?: unknown }).theme)
@@ -595,9 +598,12 @@ export class PanelClient {
     })
   }
 
-  /** The app's chords as the shell listed them with the page tab intro; anything else in the list is dropped. */
+  /**
+   * The app's chords as the shell listed them (a page tab's intro, or `cc-plugin.keys` to a panel or slot in
+   * the web shell); anything else in the list is dropped. The message only comes from the parent window.
+   */
   private setForwarded(raw: unknown): void {
-    if (this.tabApi === undefined || !Array.isArray(raw)) return
+    if (!Array.isArray(raw)) return
     const next = new Set<string>()
     for (const chord of raw.slice(0, MAX_FORWARDED_KEYS)) {
       if (typeof chord === 'string' && chord.length > 0 && chord.length <= MAX_CHORD_LENGTH) next.add(chord)

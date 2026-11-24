@@ -59,7 +59,7 @@ load, the strip shows the title's first letter.
 - Keys: on the desktop the app's own chords (Cmd/Ctrl/Alt chords of the key table, never Escape or the overlay
   keys) typed in a panel or slot page run the app's command and never reach the page, as in a webview panel; the
   command acts on the active tab and the shell takes the keyboard. Other keys, and chords the table lacks, are the
-  page's. (A browser view's panels keep their keys; only page tabs forward there.)
+  page's. In a browser view or a remote window the shell lists the chords to the page and runs one the page forwards, only while that frame holds the keyboard and the person just gave input.
 - `ccPanel.theme.current`: the theme the page's screen shows `{ kind, vars }` (with no theme picked,
   a browser's own light or dark, not the desktop's); the CSS variables are
   already set on `:root` (and `color-scheme` is `kind`), so style with `var(--...)`.

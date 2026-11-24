@@ -107,13 +107,14 @@ export function setForwardedRunner(fn: (id: string, ctx: CommandContext | undefi
  * A chord the page tab `tabId` forwarded: its command runs through the runner TabsPane set (the same
  * gate as a key typed in the shell), for that tab. False when it is not bound, nothing here runs it,
  * or keys are captured (the keybinding editor recording). `code` is the page's word for the key's
- * physical code: it only decides which auto-repeats the shell swallows (HeldChordKeys).
+ * physical code: it only decides which auto-repeats the shell swallows (HeldChordKeys). No `tabId` (a
+ * panel or slot frame names none): the command acts as for a key typed in the shell, on the active tab.
  */
-export function runForwardedChord(chord: string, tabId: string, code?: string): boolean {
+export function runForwardedChord(chord: string, tabId: string | undefined, code?: string): boolean {
   if (captures > 0 || !forwardedRunner) return false
   const id = chords.get(chord)
   if (id === undefined || !handlers.has(id)) return false
-  forwardedRunner(id, { tabId }, chord, code)
+  forwardedRunner(id, tabId === undefined ? undefined : { tabId }, chord, code)
   return true
 }
 

@@ -3,6 +3,8 @@ import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
 import { FrameLoads, type FrameTarget } from '../web/port-relay'
+import { KEYS_MESSAGE, TAB_KEY_MESSAGE } from '../../sdk/panel-core'
+import { forwardedChords, onKeyTable, runForwardedChord } from '../commands/keybindings'
 import { portMessage, themeMessage, withPortFlags } from './frame-messages'
 import { isOneWayPort } from './panel-port-bus'
 
@@ -54,6 +56,13 @@ export function PluginFrame(props: {
   allowPopups?: boolean
   /** The port is made in the shell at the load (HtmlOverlay), not asked of main: asked for at the load. */
   localPort?: boolean
+  /**
+   * A panel or slot in the web shell: the app's chords typed in the page run the app's command (the
+   * desktop's main does that before the frame sees the key, main/tabs/page-tab-keys.ts panelChord). The
+   * shell lists the chords to the page, takes one back only while this frame holds the keyboard and the
+   * browser says the person just gave real input, and runs it for the view's active tab.
+   */
+  forwardKeys?: boolean
 }): React.JSX.Element {
   // The web shell loads the page over HTTP (page-paths.ts); undefined there: no path, an empty frame.
   const url = isWebShell() ? shellPageUrl(props.src) : props.src
@@ -114,6 +123,29 @@ export function PluginFrame(props: {
     return () => window.removeEventListener('message', onMessage)
   }, [])
 
+  // The app's chords for a panel or slot page in the web shell: listed on every load and every new table.
+  const forwardKeys = props.forwardKeys === true && isWebShell()
+  const postKeys = (): void => {
+    frame.current?.contentWindow?.postMessage({ type: KEYS_MESSAGE, keys: forwardedChords() }, '*')
+  }
+  useEffect(() => (forwardKeys ? onKeyTable(postKeys) : undefined), [forwardKeys])
+  useEffect(() => {
+    if (!forwardKeys) return
+    const onKey = (event: MessageEvent): void => {
+      const own = frame.current?.contentWindow
+      if (!own || event.source !== own) return
+      const { type, chord, code } = (event.data ?? {}) as { type?: unknown; chord?: unknown; code?: unknown }
+      // Only a listed chord, only while this frame holds the keyboard, and only while the browser says the
+      // person gave real input a moment ago (a page cannot run app commands from the background).
+      if (type !== TAB_KEY_MESSAGE || typeof chord !== 'string' || document.activeElement !== frame.current) return
+      if (!forwardedChords().includes(chord)) return
+      if ((navigator.userActivation as { isActive?: boolean } | undefined)?.isActive !== true) return
+      runForwardedChord(chord, undefined, typeof code === 'string' && code.length <= 32 ? code : undefined)
+    }
+    window.addEventListener('message', onKey)
+    return () => window.removeEventListener('message', onKey)
+  }, [forwardKeys])
+
   useEffect(() => onTheme((theme) => loads.current?.themeChanged(themeMessage(theme, isMac))), [])
 
   return (
@@ -124,7 +156,10 @@ export function PluginFrame(props: {
       title={props.title}
       sandbox={props.allowPopups === true ? 'allow-scripts allow-popups' : 'allow-scripts'}
       src={url}
-      onLoad={() => loads.current?.loaded(frameKey)}
+      onLoad={() => {
+        loads.current?.loaded(frameKey)
+        if (forwardKeys) postKeys()
+      }}
     />
   )
 }

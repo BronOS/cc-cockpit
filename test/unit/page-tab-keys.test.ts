@@ -17,7 +17,7 @@ import {
   setForwardedRunner,
   captureKeys
 } from '../../src/renderer/commands/keybindings'
-import { chordOfKey, PanelClient, TAB_KEY_MESSAGE, TAB_MESSAGE, type KeyLike, type ThemeRoot } from '../../src/sdk/panel-core'
+import { chordOfKey, KEYS_MESSAGE, PanelClient, TAB_KEY_MESSAGE, TAB_MESSAGE, type KeyLike, type ThemeRoot } from '../../src/sdk/panel-core'
 import { chordFromEvent } from '../../src/shared/keys'
 import { pageTabFrameName, pageTabOfFrameName } from '../../src/shared/page-tabs'
 import { entry, pool, settle, TAB_A, TAB_B } from '../fakes/fake-page-frames'
@@ -251,6 +251,15 @@ describe('web shell: the SDK forwards the chords the shell listed', () => {
       key('Control', 'ControlLeft', { ctrlKey: true })
     ]
     for (const e of samples) expect(chordOfKey(e)).toBe(chordFromEvent(e))
+  })
+
+  it('a panel or slot page (no page tab) takes the list from cc-plugin.keys and forwards the same way', () => {
+    const { c, sent } = client()
+    expect(c.keyDown(key('t', 'KeyT', { ctrlKey: true }))).toBe(false)
+    c.receive({ type: KEYS_MESSAGE, keys: ['ctrl+t', 7] }, [])
+    expect(c.keyDown(key('t', 'KeyT', { ctrlKey: true }))).toBe(true)
+    expect(c.keyDown(key('a', 'KeyA', { ctrlKey: true }))).toBe(false)
+    expect(sent).toEqual([{ type: TAB_KEY_MESSAGE, chord: 'ctrl+t', code: 'KeyT' }])
   })
 
   it('stops and forwards a listed chord, leaves the rest to the page, and sends no repeat', () => {

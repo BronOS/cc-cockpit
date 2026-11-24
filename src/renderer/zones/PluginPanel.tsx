@@ -99,6 +99,7 @@ export function PluginPanel(props: { info: PanelInfo }): React.JSX.Element {
           src={src}
           title={title}
           className="plugin-frame"
+          forwardKeys
           connect={(deliver) => requestPanelPort(panelKey, deliver)}
           // `ccPanel.upload` (design-upload.md §5.2): taken from a panel frame in a zone only, this
           // one; overlays, slots, the settings page and page tabs never route here.
