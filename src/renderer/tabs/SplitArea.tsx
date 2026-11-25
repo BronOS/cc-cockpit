@@ -21,6 +21,7 @@ import {
 } from './pane-layout'
 import { emptyTabsText, shellAllows } from './guest-shell'
 import { PageTabArea, pageFrames, usePageUnavailable } from './PageTabArea'
+import { mainPaneFocused } from './panel-keys'
 import { openedByLine, pageTabMarks, tabLabel } from './tab-label'
 import type { SessionRegistry } from './terminal-session'
 import { TerminalView } from './TerminalView'
@@ -80,6 +81,11 @@ export function SplitArea(props: {
   activeId: string | null
   view: PaneView
   keysOff: boolean
+  /**
+   * The Terminal panel holds this view's keys (design-terminal-panel.md §13.3): no main pane is the
+   * focused one, so a selection moving here (a tab going, an exit) never takes the keyboard (M1).
+   */
+  keysInPanel?: boolean
   sessions: SessionRegistry
   details: ReadonlyMap<string, SessionDetail>
   /** One terminal cell (measured when a terminal has one), for the D5 limits of a divider drag. */
@@ -216,7 +222,7 @@ export function SplitArea(props: {
       {tabs.map((tab) => {
         const shown = view.visible.includes(tab.id)
         const r = shown && tiled ? rectOf(tab.id) : { x: 0, y: 0, w: 1, h: 1 }
-        const focused = tab.id === activeId && !keysOff
+        const focused = mainPaneFocused(tab.id, activeId, keysOff, props.keysInPanel === true)
         const detail = details.get(tab.id)
         const label = tabLabel(tab, detail?.title, detail?.name)
         const asking = detail && ASKS.has(detail.status) ? statusText(detail.status, detail.tool) : undefined
@@ -344,7 +350,7 @@ export function SplitArea(props: {
         tabs={tabs}
         listed={props.listed}
         activeId={activeId}
-        keysOff={keysOff}
+        keysOff={keysOff || props.keysInPanel === true}
         inert={props.inert}
         visible={view.visible}
         zoomed={view.zoomTab !== undefined}

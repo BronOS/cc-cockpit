@@ -117,24 +117,16 @@ function PanelBody({ api }: { api: TerminalPanelApi }): React.JSX.Element {
 
   // A focus ask (the toggle, New Terminal, a pick in the strip, the person's own close, main's exit
   // focus): run once, after the selected tab's TerminalView attached (a child's effect runs first).
+  // The ask is consumed by `take` (panel-focus.ts), so a remounted body has nothing to replay.
   const shellButton = useRef<HTMLButtonElement>(null)
-  const askDone = useRef<object | null>(null)
-  const ask = api.focusAsk
+  const { focusAsks, focusSeq } = api
+  const tabIds = tabs.map((t) => t.id).join(' ')
   useEffect(() => {
-    if (ask === null || askDone.current === ask) return
-    // null: whichever tab the panel shows (the Shell button of an empty panel).
-    const target = ask.tabId ?? activeId
-    if (target === null) {
-      if (tabs.length > 0) return
-      askDone.current = ask
-      shellButton.current?.focus()
-      return
-    }
-    // A named tab that is not the selection (yet): wait for the selection to reach it.
-    if (target !== activeId) return
-    askDone.current = ask
-    sessions.get(target).focus()
-  }, [ask, activeId, tabs.length, sessions])
+    const target = focusAsks.take(activeId, tabIds === '' ? [] : tabIds.split(' '))
+    if (target === undefined) return
+    if ('shell' in target) shellButton.current?.focus()
+    else sessions.get(target.tabId).focus()
+  }, [focusAsks, focusSeq, activeId, tabIds, sessions])
 
   // Drag to reorder within the strip (pointer events, as TabBar: no native drag session).
   const listRef = useRef<HTMLDivElement>(null)

@@ -25,6 +25,15 @@ export function ownerOfFocus(target: FocusTarget | null): KeysOwner | undefined 
   return undefined
 }
 
+/**
+ * Whether a main-area pane is the one with this view's keys: the main selection, the main keys on, and
+ * the Terminal panel not holding them (M1: a main tab going while the panel had the keys moved its
+ * neighbour's `focused`, and its focus effect took the keyboard out of the panel into a Claude prompt).
+ */
+export function mainPaneFocused(tabId: string, activeId: string | null, keysOff: boolean, keysInPanel: boolean): boolean {
+  return tabId === activeId && !keysOff && !keysInPanel
+}
+
 /** The tab a plain step in the panel's strip goes to (wrapping), or undefined for an empty panel. */
 export function panelStep(ids: readonly string[], current: string | null, dir: 1 | -1): string | undefined {
   if (ids.length === 0) return undefined
@@ -38,6 +47,8 @@ export interface PanelKeysContext {
   panel(): { ids: readonly string[]; activeId: string | null }
   /** The main area's keys are off (D3): a frame's chord acts on nothing then. */
   mainKeysOff(): boolean
+  /** The panel's own keys-off (TabsState.panelKeysOff): its selection is nobody's pick. */
+  panelKeysOff(): boolean
   /** The person's close (asks about a running process). */
   close(tabId: string): void
   /** The person picked a panel tab (selected, taken, focused). */
@@ -65,6 +76,8 @@ export function panelCommandHandlers(ctx: PanelKeysContext): Record<string, Comm
         if (!ctx.mainKeysOff()) ctx.close(run.tabId)
         return
       }
+      // The panel's selection moved by itself (its tab exited, another view): never closed unpicked (S3).
+      if (ctx.panelKeysOff()) return
       const { activeId } = ctx.panel()
       if (activeId !== null) ctx.close(activeId)
     },

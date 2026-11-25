@@ -9,9 +9,10 @@ import {
   RESTORE_MARGIN,
   revealZone,
   type AutoHideInput,
-  type AutoHideState
+  type AutoHideState,
+  zoneToReveal
 } from '../../src/renderer/zones/auto-hide'
-import { defaultLayout, movePanel, reconcile, setZoneCollapsed, togglePanel } from '../../src/shared/layout'
+import { defaultLayout, movePanel, reconcile, setZoneCollapsed, togglePanel, type LayoutState } from '../../src/shared/layout'
 
 const MIN = 720
 const LEFT = 280
@@ -249,5 +250,28 @@ describe('newlyShown', () => {
     expect(newlyShown(opened, setZoneCollapsed(opened, 'right', true))).toEqual([])
     // The bottom zone is not a side zone.
     expect(newlyShown(opened, togglePanel(movePanel(base, 'test/notes', 'bottom'), 'test/notes'))).toEqual([])
+  })
+})
+
+// Review S6 (design-terminal-panel.md §1): the Terminal panel's toggle on a panel that is open already
+// in an auto-hidden side zone changes nothing in the layout, so it must ask for the zone by itself.
+describe('zoneToReveal', () => {
+  const placed = (zone: 'left' | 'right' | 'bottom'): LayoutState => {
+    const base = defaultLayout()
+    return {
+      ...base,
+      zones: { ...base.zones, [zone]: { ...base.zones[zone], panels: [{ panelKey: 'core/terminal', open: true, size: 240 }] } }
+    }
+  }
+
+  it('names the auto-hidden side zone the panel sits in', () => {
+    expect(zoneToReveal(placed('right'), 'core/terminal', ['right'])).toBe('right')
+    expect(zoneToReveal(placed('left'), 'core/terminal', ['left', 'right'])).toBe('left')
+  })
+
+  it('nothing for a zone on screen, the bottom zone or a panel not placed', () => {
+    expect(zoneToReveal(placed('right'), 'core/terminal', ['left'])).toBeUndefined()
+    expect(zoneToReveal(placed('bottom'), 'core/terminal', ['left', 'right'])).toBeUndefined()
+    expect(zoneToReveal(defaultLayout(), 'core/terminal', ['left', 'right'])).toBeUndefined()
   })
 })

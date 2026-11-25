@@ -127,3 +127,57 @@ describe('closing in the panel', () => {
     expect(run([{ type: 'closed', tabId: 'p1' }], last).panelActiveId).toBeNull()
   })
 })
+
+// Review S3: the panel's own keys-off. Its selected tab going by itself (an exit, another view's close
+// or move) leaves the neighbour selected but nobody's pick; the person's own close or move does not.
+describe("the panel's keys-off", () => {
+  const start = (): TabsState =>
+    run([{ type: 'loaded', tabs: [tab('a'), docked('p1'), docked('p2')] }, { type: 'panelSelected', tabId: 'p2' }])
+
+  it("an exit or another view's close of the selected panel tab turns the panel's keys off", () => {
+    expect(start().panelKeysOff).toBe(false)
+    expect(run([{ type: 'removed', tabId: 'p2', gen: 1 }], start()).panelKeysOff).toBe(true)
+    expect(run([{ type: 'closed', tabId: 'p2' }], start()).panelKeysOff).toBe(true)
+    expect(run([{ type: 'docked', tabId: 'p2', dock: 'main' }], start()).panelKeysOff).toBe(true)
+  })
+
+  it("the person's own close or move keeps them; an unselected tab going changes nothing", () => {
+    expect(run([{ type: 'closed', tabId: 'p2', own: true }], start()).panelKeysOff).toBe(false)
+    expect(run([{ type: 'docked', tabId: 'p2', dock: 'main', own: true }], start()).panelKeysOff).toBe(false)
+    expect(run([{ type: 'removed', tabId: 'p1', gen: 1 }], start()).panelKeysOff).toBe(false)
+  })
+
+  it("a pick, a focus there, a create there or main's exit focus turn them on again", () => {
+    const off = run([{ type: 'removed', tabId: 'p2', gen: 1 }], start())
+    expect(run([{ type: 'panelSelected', tabId: 'p1' }], off).panelKeysOff).toBe(false)
+    expect(run([{ type: 'panelKeysOn' }], off).panelKeysOff).toBe(false)
+    expect(run([{ type: 'added', tab: docked('p3') }], off).panelKeysOff).toBe(false)
+    // main's exit focus (their own Ctrl+D in the panel): the next tab with the keys on.
+    expect(run([{ type: 'exitFocus', tabId: 'p1', closed: 'p2' }], off).panelKeysOff).toBe(false)
+    // A main-area tab going leaves the panel's keys alone.
+    expect(run([{ type: 'removed', tabId: 'a', gen: 1 }], start()).panelKeysOff).toBe(false)
+  })
+})
+
+// Review S5: a move of a tab the page holds already (a create reply, tabs.added) before the list
+// answered must survive the list, which may have been taken before the move.
+describe('a dock before the list, of a held tab', () => {
+  it('the older list does not undo it', () => {
+    const s = run([
+      { type: 'added', tab: tab('b') },
+      { type: 'docked', tabId: 'b', dock: 'panel' },
+      { type: 'loaded', tabs: [tab('a'), tab('b')] }
+    ])
+    expect(ids(panelTabsOf(s))).toEqual(['b'])
+    expect(s.earlyDocks).toEqual({})
+  })
+
+  it('a move back to the tab area before the list survives a list that still has it docked', () => {
+    const s = run([
+      { type: 'announced', tab: docked('p1') },
+      { type: 'docked', tabId: 'p1', dock: 'main' },
+      { type: 'loaded', tabs: [docked('p1')] }
+    ])
+    expect(ids(mainTabsOf(s))).toEqual(['p1'])
+  })
+})
