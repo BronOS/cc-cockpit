@@ -3,6 +3,7 @@ import { chordKeys, chordOf } from '../commands/keybindings'
 import { isHiddenPage } from '../shell-kind'
 import { CloseGlyph, CommandGlyph, PlusGlyph, ShellGlyph } from '../window-icons'
 import { useShellLayer } from '../zones/use-shell-layer'
+import { keepSelectedInView } from './panel-strip-scroll'
 import { panelTabParts } from './panel-tab-parts'
 import { TerminalPanelContext, type TerminalPanelApi } from './terminal-panel-context'
 import { TerminalView } from './TerminalView'
@@ -132,11 +133,12 @@ function PanelBody({ api }: { api: TerminalPanelApi }): React.JSX.Element {
   // Drag to reorder within the strip (pointer events, as TabBar: no native drag session).
   const listRef = useRef<HTMLDivElement>(null)
   // A narrow zone (a side zone) holds fewer tabs than there are: the strip scrolls past the names'
-  // minimum width (QA Q1), so the selected tab is brought into view and a plain wheel scrolls sideways.
+  // minimum width (QA Q1), so the selected tab is kept in view, on selection and on every change of the
+  // strip's width (QR-N1: narrowing a side zone by its divider), and a plain wheel scrolls sideways.
   useEffect(() => {
-    if (activeId === null) return
-    const el = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-panel-tab-id]') ?? []).find((t) => t.dataset.panelTabId === activeId)
-    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    const list = listRef.current
+    if (activeId === null || list === null) return
+    return keepSelectedInView(list, activeId)
   }, [activeId])
   const onWheel = (e: React.WheelEvent<HTMLDivElement>): void => {
     const list = e.currentTarget
