@@ -1,6 +1,8 @@
 # Terminal panel (design)
 
-Status: designed (2026-11-24), decisions in §10. Not implemented.
+Status: implemented (2026-11-25); designed 2026-11-24, decisions in §10, spec review amendments in §13 (they override the
+sections before them). User docs in `docs/features.md` ("Terminal panel"). e2e: `test/e2e/terminal-panel.spec.ts`, run on
+Linux only.
 
 Why: the person wants a quick console beside their work, as in VS Code's terminal panel or a quake console. Open it, run
 something, close it while it runs, open it again and carry on where they left it. A split pane (`Split down` › Shell)

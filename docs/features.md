@@ -592,6 +592,44 @@ are panes (not overlays or plugin panels). A plugin can open only terminal tabs 
 a page tab can be the anchor. Groups come back after a restart; a tab that failed to restore (and is
 tried again next time) comes back without its group.
 
+## Terminal panel
+
+A place for quick shells that stays put across tabs, as in VS Code's terminal panel: open it, run something, close it
+while it runs, open it again and carry on. It is the core panel **Terminal** (a `>_` icon), in the bottom zone at
+first and closed; like any panel it can move to the left or right zone or be hidden from its header's menu.
+
+- **Toggle** with `Ctrl+\`` (Ctrl on macOS too: Cmd+\` is the system's window cycling) or the zone strip's icon. When
+  the panel is not on screen it opens and takes the keyboard (an empty panel gets a new shell first); when it is on
+  screen and has the keyboard it closes and the keyboard goes back to the main tab area; on screen without the
+  keyboard it takes it. `Ctrl+Shift+\`` opens a new shell in the panel. Both can be rebound in Settings > Keybindings.
+  With a dialog, the palette or a terminal overlay open the toggle does nothing.
+- **Its strip** lists the panel's tabs (name, an exit mark, a ×) and a **New terminal** button: Shell, or one of your
+  custom commands (an entry that opens as an overlay still opens as an overlay). A tab's menu (right-click, or Shift+F10)
+  has Move left, Move right, Restart (an exited one), Move to tab area and Close. An empty panel shows "No terminals"
+  and a Shell button.
+- **Moving tabs**: a shell or command tab's menu in the main strip has **Move to Terminal panel**; the panel opens on
+  this screen with that tab selected and the keyboard. **Move to tab area** brings it back and selects it there. It
+  stays the same tab either way: same process, same output, nothing restarts. Moving a tab out of a split group takes
+  it out of the group. Claude and page tabs stay in the main area.
+- **Hiding never stops anything**: closing the panel, hiding it or collapsing its zone (`Cmd+J`) leaves its tabs
+  running; what they print meanwhile is there when you open it again. Closing a panel tab asks as any running tab does.
+- **Keys**: commands act on the area you last clicked or typed in. With the keyboard in the panel, Cmd+W closes the
+  panel's tab and the tab switch chords step through its tabs (no switcher); everything else (Cmd+1..9, a new Claude
+  tab, flags, split and pane commands) acts on the main area. A menu, the palette or a window switch does not move the
+  keys from one area to the other. When you end a panel tab with your own keys (Ctrl+D or `exit`), the panel's next tab
+  gets the keyboard; the keyboard never jumps to the main area by itself.
+- **Per screen**: each window and each browser view opens and closes the panel on its own (a browser that never opened
+  it starts closed); where the panel sits is shared. Its tabs come back in the panel after a restart (which tab was
+  selected in it does not). Panel tabs are not in the main strip, its tab count, Cmd+1..9 or the switcher, and they
+  have no flag.
+- **Guests** never see the panel or its tabs. Moving a tab a guest can see into the panel takes it from that guest at
+  once (the guest's page reconnects without it); moving it back shows it again.
+
+Limits: one Terminal panel per window, shell and command tabs only. No plugin API and no `ccc` command for it: a plugin
+opens tabs in the main area, though you may move a plugin's command tab into the panel. A window whose tabs are all in
+the panel opens its main area on "No tabs yet". Panel terminals take no file drops or pastes of uploads. In server mode
+the panel is drawn only in browser views.
+
 ## Web access
 
 Open the cockpit in a browser on another device (a laptop, a phone): the same project window, tabs, terminals, panels

@@ -72,6 +72,12 @@ through the real writer; Firefox and WebKit ran only the spike harness, never th
 Finder drop, a packaged Mac's remote window (native chooser, SSH tunnel, My own tunnel), Claude Code attaching an image from
 the pasted path, clipboard cases (Excel, Word, Copy image), a 1 GiB upload over the internet (the plan's Post-Completion list).
 
+The Terminal panel (the core panel `core/terminal`, bottom zone, closed at first: a strip of shell and command tabs that stay
+put across tabs; `TabRecord.dock: 'panel'`, `tabs.dock`, `tabs.panelSelected`, `main/tabs/dock.ts`, `TerminalPanelBody.tsx`;
+open state per view in `LayoutGeometry.terminalOpen`; never a guest's) is implemented; design in `docs/design-terminal-panel.md`
+(§13 overrides the sections before it), user docs in `docs/features.md` ("Terminal panel"). e2e (`terminal-panel.spec.ts`) run on
+Linux only, never macOS.
+
 ## Commands
 
 - `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright). The OAuth spec and the

@@ -46,12 +46,21 @@ export interface Cockpit {
   claudeRuns(): string[][]
   /** Every bracketed paste the fake `claude` received, verbatim, oldest first ($FAKE_CLAUDE_PASTE_LOG). */
   pastes(): string[]
-  /** Text of the visible terminal (the active tab), rows joined with newlines. */
+  /**
+   * Text of the main area's visible terminal (the active tab), rows joined with newlines. Scoped to the main area
+   * (`[data-split-area]`): an open Terminal panel draws a terminal too (design-terminal-panel.md §13.18).
+   */
   terminalText(): Promise<string>
-  /** Wait until the visible terminal shows `text`; the failure message includes what it shows. */
+  /** Wait until the main area's visible terminal shows `text`; the failure message includes what it shows. */
   waitForTerminalText(text: string | RegExp, timeout?: number): Promise<void>
-  /** Click the active terminal and type `text` followed by Enter. */
+  /** Click the main area's active terminal and type `text` followed by Enter. */
   typeLine(text: string): Promise<void>
+  /** Text of the Terminal panel's terminal (its selected tab; the panel open), rows joined with newlines. */
+  panelTerminalText(): Promise<string>
+  /** Wait until the Terminal panel's terminal shows `text`. */
+  waitForPanelTerminalText(text: string | RegExp, timeout?: number): Promise<void>
+  /** Click the Terminal panel's terminal (the panel takes the keys) and type `text` followed by Enter. */
+  panelTypeLine(text: string): Promise<void>
   /** [+] then Claude / Shell. */
   newTab(kind: 'claude' | 'shell'): Promise<void>
   /** Call a hook of src/main/test-hooks.ts inside main. */
@@ -177,7 +186,7 @@ export async function launchCockpit(
     throw err
   }
 
-  const visibleTerminal = page.locator('.terminal-view:not([hidden]) .xterm-rows')
+  const visibleTerminal = page.locator(`${MAIN_TERMINAL} .xterm-rows`)
   const terminalText = async (): Promise<string> => {
     const rows = await visibleTerminal.locator('> div').allInnerTexts()
     return rows.join('\n')
@@ -185,6 +194,7 @@ export async function launchCockpit(
   // The DOM does not say which rows are soft-wrapped, so a long string (a temp path) can be split
   // across rows. Also try the rows glued together so a match does not depend on the window width.
   const terminalTextUnwrapped = async (): Promise<string> => (await terminalText()).replaceAll('\n', '')
+  const panelTerminalText = async (): Promise<string> => (await page.locator(`${PANEL_TERMINAL} .xterm-rows > div`).allInnerTexts()).join('\n')
 
   const cockpit: Cockpit = {
     app,
@@ -236,7 +246,14 @@ export async function launchCockpit(
       }
     },
     typeLine: async (text) => {
-      await page.locator('.terminal-view:not([hidden]) .xterm').click()
+      await page.locator(`${MAIN_TERMINAL} .xterm`).click()
+      await page.keyboard.type(text)
+      await page.keyboard.press('Enter')
+    },
+    panelTerminalText,
+    waitForPanelTerminalText: (text, timeout = 10_000) => waitForText(panelTerminalText, text, timeout, 'the Terminal panel'),
+    panelTypeLine: async (text) => {
+      await page.locator(`${PANEL_TERMINAL} .xterm`).click()
       await page.keyboard.type(text)
       await page.keyboard.press('Enter')
     },
@@ -285,6 +302,29 @@ function reportRefusedBundled(dataDir: string): void {
     }
   } catch {
     // No index (no plugin was ever indexed) or one being written: nothing to report.
+  }
+}
+
+/** The main area's shown terminal: inside the split area, never the Terminal panel's (design-terminal-panel.md §13.18). */
+export const MAIN_TERMINAL = '[data-split-area] .terminal-view:not([hidden])'
+/** The Terminal panel's one drawn terminal (its selected tab), while the panel is open. */
+export const PANEL_TERMINAL = '[data-testid="terminal-panel"] .terminal-view'
+
+/** Poll `read` until it shows `text` (rows as they are, or glued: a long row soft-wraps); the failure names `where`. */
+export async function waitForText(read: () => Promise<string>, text: string | RegExp, timeout: number, where: string): Promise<void> {
+  const hit = (t: string): boolean => (typeof text === 'string' ? t.includes(text) : text.test(t))
+  try {
+    await expect
+      .poll(
+        async () => {
+          const shown = await read()
+          return hit(shown) || hit(shown.replaceAll('\n', ''))
+        },
+        { timeout }
+      )
+      .toBe(true)
+  } catch (err) {
+    throw new Error(`${where} never showed ${String(text)}; it shows:\n${await read()}`, { cause: err })
   }
 }
 

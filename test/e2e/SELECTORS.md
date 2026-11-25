@@ -93,7 +93,10 @@ panes on the default window fall under the auto-zoom size and only one is drawn.
 
 - With one pane shown, `cockpit.terminalText()`, `waitForTerminalText()` and `typeLine()` (`fixtures.ts`)
   and the browser's `terminalText()` / `waitForTerminalText()` (`web-fixtures.ts`) read
-  `.terminal-view:not([hidden])`. Use them only then.
+  `[data-split-area] .terminal-view:not([hidden])` (`MAIN_TERMINAL`: the main area only, never the Terminal
+  panel's). Use them only then. The panel's terminal has its own: `cockpit.panelTerminalText()`,
+  `waitForPanelTerminalText()`, `panelTypeLine()` and the browser's `panelTerminalText()` /
+  `waitForPanelTerminalText()` (`PANEL_TERMINAL`).
 - Right after a new tab, those helpers can still read the tab before it: a second shell's
   `FAKE-SHELL ready` is on the first one's screen too, so waiting for it proves nothing. Take the new
   tab's id (`tabsOf` before and after) and wait on `paneOf(page, id)`, as `newTaggedShell` does.

@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { CockpitApi } from '../../src/shared/ipc'
-import type { Cockpit } from './fixtures'
+import { MAIN_TERMINAL, PANEL_TERMINAL, waitForText, type Cockpit } from './fixtures'
 
 const BROWSER_MAIN = resolve(__dirname, '../fixtures/web-browser/main.cjs')
 
@@ -93,6 +93,10 @@ export interface WebBrowser {
   terminalText(): Promise<string>
   /** Wait until the web shell's visible terminal shows `text`. */
   waitForTerminalText(text: string | RegExp, timeout?: number): Promise<void>
+  /** Text of the web shell's Terminal panel terminal (the panel open on this screen). */
+  panelTerminalText(): Promise<string>
+  /** Wait until the web shell's Terminal panel terminal shows `text`. */
+  waitForPanelTerminalText(text: string | RegExp, timeout?: number): Promise<void>
   /** URLs the page asked to open in a new tab or window, in order (the fixture records and denies them). */
   opened(): Promise<string[]>
   /** The downloads the page started, in order (the fixture saves each under its profile and records the end state). */
@@ -125,8 +129,10 @@ export async function openBrowser(url: string): Promise<WebBrowser> {
     rmSync(profile, { recursive: true, force: true })
     throw err
   }
-  const rows = page.locator('.terminal-view:not([hidden]) .xterm-rows')
+  // The main area's terminal only (`[data-split-area]`): an open Terminal panel draws one too.
+  const rows = page.locator(`${MAIN_TERMINAL} .xterm-rows`)
   const terminalText = async (): Promise<string> => (await rows.locator('> div').allInnerTexts()).join('\n')
+  const panelTerminalText = async (): Promise<string> => (await page.locator(`${PANEL_TERMINAL} .xterm-rows > div`).allInnerTexts()).join('\n')
   return {
     app,
     page,
@@ -148,6 +154,8 @@ export async function openBrowser(url: string): Promise<WebBrowser> {
         throw new Error(`web terminal never showed ${String(text)}; it shows:\n${await terminalText()}`, { cause: err })
       }
     },
+    panelTerminalText,
+    waitForPanelTerminalText: (text, timeout = 10_000) => waitForText(panelTerminalText, text, timeout, 'the web Terminal panel'),
     opened: () => app.evaluate(() => [...((globalThis as { __opened?: string[] }).__opened ?? [])]),
     downloads: () => app.evaluate(() => [...((globalThis as { __downloads?: unknown[] }).__downloads ?? [])]) as Promise<BrowserDownload[]>,
     close: async () => {
