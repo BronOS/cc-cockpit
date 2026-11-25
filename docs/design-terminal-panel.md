@@ -35,7 +35,7 @@ Decisions in one place:
 - **Its strip**: a compact row of the panel's tabs (name or label, the exit mark of an exited process, a ×) and a `+`.
   The `+` menu lists Shell and the custom commands of the new-tab menu (design.md §3 "Custom commands": the same levels
   and entries; an entry that opens as an overlay still opens as an overlay). Drag reorders within the strip. A tab's menu:
-  Rename, Restart (an exited one), Move to tab area, Close.
+  Move left / right, Restart (an exited one), Move to tab area, Close (no Rename: D13, main renames Claude tabs only).
 - **Its body**: the selected tab's terminal, with the tabs' terminal font and theme. An empty panel shows "No terminals"
   and a Shell button.
 - **The toggle** (`` Ctrl+` ``): the panel is not on screen (closed, hidden, its zone collapsed) → it is opened (its zone
