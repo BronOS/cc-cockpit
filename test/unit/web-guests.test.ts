@@ -635,6 +635,32 @@ describe('changes', () => {
   })
 })
 
+describe('Terminal panel: a docked tab (design-terminal-panel.md §13.2)', () => {
+  it('is no guest\'s; docking a tab a guest saw narrows at once (4464 now), moving it back widens (one quiet 4464)', async () => {
+    const s = store()
+    const { token, guestId } = await invited(s, { scope: 'all' })
+    redeemed(s, token)
+    expect(s.tabVisible(guestId, 't1')).toBe(true)
+    const saw = s.guestsSeeing(P, 't1')
+    expect([...saw]).toEqual([guestId])
+    tabs.set('t1', { projectId: P, dock: 'panel' })
+    expect(s.tabVisible(guestId, 't1')).toBe(false)
+    expect(s.guestsSeeing(P, 't1').size).toBe(0)
+    s.tabDockChanged(P, 't1', saw)
+    expect(closed.map((c) => c.code)).toEqual([CLOSE.accessChanged])
+    // A move that changes nothing for the guest (it never saw t2's dock either way) closes nothing.
+    s.tabDockChanged(P, 't2', s.guestsSeeing(P, 't2'))
+    expect(closed).toHaveLength(1)
+    // Back to the main area: a widening, after the quiet period.
+    const before = s.guestsSeeing(P, 't1')
+    tabs.set('t1', { projectId: P })
+    s.tabDockChanged(P, 't1', before)
+    expect(closed).toHaveLength(1)
+    fireTimers()
+    expect(closed.map((c) => c.code)).toEqual([CLOSE.accessChanged, CLOSE.accessChanged])
+  })
+})
+
 describe('live answers', () => {
   it('tabVisible: scope, opened tabs, never another project, never a hidden plugin tab', async () => {
     const s = store()

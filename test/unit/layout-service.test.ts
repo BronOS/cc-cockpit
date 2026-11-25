@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { LayoutService } from '../../src/main/layout/layout-service'
 import type { LayoutView } from '../../src/shared/ipc'
-import { defaultLayout, hidePanel, movePanel, placePanelAt, zoneOf, type LayoutState } from '../../src/shared/layout'
+import { DEFAULT_PANEL_SIZE, TERMINAL_PANEL_KEY, defaultLayout, hidePanel, movePanel, placePanelAt, zoneOf, type LayoutState } from '../../src/shared/layout'
 
 const P = 'aaaaaaaaaaaaaaaa'
 
@@ -33,12 +33,30 @@ function setup(): {
 
 const notes = { id: 'notes', title: 'Notes', defaultZone: 'right' as const }
 
+/** The plugin panels of a view: the core Terminal panel (design-terminal-panel.md §4) is always there besides them. */
+const pluginPanels = (v: LayoutView) => v.panels.filter((p) => p.kind !== 'core')
+const statusOf = (v: LayoutView) => v.panels.find((p) => p.panelKey === 'base/sessions')!
+
 describe('LayoutService.view', () => {
-  it('has no core panels: a project whose plugins declare none has none', () => {
+  it('has one core panel, the Terminal panel: in the bottom zone, closed, drawn by the shell (design-terminal-panel.md §4)', () => {
     const stored = new Map<string, LayoutState>([[P, defaultLayout()]])
     const bare = new LayoutService({ getLayout: (id) => stored.get(id), setLayout: () => {}, publish: () => {} })
-    expect(bare.view(P)!.panels).toEqual([])
-    expect(bare.view(P)!.layout).toEqual(defaultLayout())
+    expect(bare.view(P)!.panels).toEqual([{ panelKey: TERMINAL_PANEL_KEY, title: 'Terminal', icon: '>_', kind: 'core' }])
+    expect(bare.view(P)!.layout.zones.bottom.panels).toEqual([{ panelKey: TERMINAL_PANEL_KEY, open: false, size: DEFAULT_PANEL_SIZE }])
+    expect(bare.view(P)!.layout.zones.left.panels).toEqual([])
+    expect(bare.view(P)!.layout.zones.right.panels).toEqual([])
+  })
+
+  it("refuses a plugin's setters and the upload panel source on the core panel's key (§13.9)", () => {
+    const { service, published } = setup()
+    expect(service.setStatus(P, TERMINAL_PANEL_KEY, { badge: { kind: 'dot' } })).toBe(false)
+    expect(service.setBadge(P, TERMINAL_PANEL_KEY, { kind: 'dot' })).toBe(false)
+    expect(service.setSlots(P, TERMINAL_PANEL_KEY, [])).toBe(false)
+    expect(service.placedPanel(P, TERMINAL_PANEL_KEY)).toBeUndefined()
+    expect(published).toHaveLength(0)
+    // Still a panel of the layout: it can be moved and shown like any.
+    expect(service.show(P, TERMINAL_PANEL_KEY)).toBe(true)
+    expect(zoneOf(published.at(-1)!.layout, TERMINAL_PANEL_KEY)).toBe('bottom')
   })
 
   it('places a declared panel in its default zone, closed, without storing anything', () => {
@@ -46,7 +64,7 @@ describe('LayoutService.view', () => {
     const view = service.view(P)!
     expect(zoneOf(view.layout, 'base/sessions')).toBe('right')
     expect(view.layout.zones.right.panels[0]).toMatchObject({ panelKey: 'base/sessions', open: false })
-    expect(view.panels.map((p) => p.panelKey)).toEqual(['base/sessions'])
+    expect(pluginPanels(view).map((p) => p.panelKey)).toEqual(['base/sessions'])
     expect(service.view(P)!.layout).toEqual(view.layout)
     expect(writes).toHaveLength(0)
   })
@@ -121,7 +139,7 @@ describe('LayoutService.set', () => {
     }
     const view = service.set(P, forged)!
     const placed = ['left', 'right', 'bottom'].flatMap((z) =>
-      view.layout.zones[z as 'left'].panels.map((p) => p.panelKey)
+      view.layout.zones[z as 'left'].panels.map((p) => p.panelKey).filter((k) => k !== TERMINAL_PANEL_KEY)
     )
     expect(placed.sort()).toEqual(all)
   })
@@ -256,7 +274,7 @@ describe('plugin panels', () => {
     service.view(P)
     service.setPluginPanels(P, 'jira', [notes])
     const view = published.at(-1)!
-    expect(view.panels.map((p) => p.panelKey)).toEqual(['base/sessions', 'jira/notes'])
+    expect(pluginPanels(view).map((p) => p.panelKey)).toEqual(['base/sessions', 'jira/notes'])
     expect(zoneOf(view.layout, 'jira/notes')).toBe('right')
   })
 
@@ -266,7 +284,7 @@ describe('plugin panels', () => {
     const placed = movePanel(published.at(-1)!.layout, 'jira/notes', 'bottom')
     service.set(P, placed)
     service.setPluginPanels(P, 'jira', [])
-    expect(published.at(-1)!.panels.map((p) => p.panelKey)).toEqual(['base/sessions'])
+    expect(pluginPanels(published.at(-1)!).map((p) => p.panelKey)).toEqual(['base/sessions'])
     expect(zoneOf(published.at(-1)!.layout, 'jira/notes')).toBeUndefined()
     service.setPluginPanels(P, 'jira', [notes])
     expect(zoneOf(published.at(-1)!.layout, 'jira/notes')).toBe('bottom')
@@ -310,14 +328,14 @@ describe('panel status', () => {
     expect(
       service.setStatus(P, 'base/sessions', { badge: { kind: 'count', count: 3 }, error: 'boom' })
     ).toBe(true)
-    expect(published.at(-1)!.panels[0]).toMatchObject({
+    expect(statusOf(published.at(-1)!)).toMatchObject({
       panelKey: 'base/sessions',
       badge: { kind: 'count', count: 3 },
       error: 'boom'
     })
     service.setStatus(P, 'base/sessions', undefined)
-    expect(published.at(-1)!.panels[0]!.badge).toBeUndefined()
-    expect(published.at(-1)!.panels[0]!.error).toBeUndefined()
+    expect(statusOf(published.at(-1)!).badge).toBeUndefined()
+    expect(statusOf(published.at(-1)!).error).toBeUndefined()
   })
 
   it('refuses a panel that does not exist', () => {
@@ -329,15 +347,15 @@ describe('panel status', () => {
   it('cleans a count (floor, clamp; zero or NaN shows nothing) and a dot', () => {
     const { service, published } = setup()
     service.setStatus(P, 'base/sessions', { badge: { kind: 'count', count: 2.9 } })
-    expect(published.at(-1)!.panels[0]!.badge).toEqual({ kind: 'count', count: 2 })
+    expect(statusOf(published.at(-1)!).badge).toEqual({ kind: 'count', count: 2 })
     service.setStatus(P, 'base/sessions', { badge: { kind: 'count', count: 1e9 } })
-    expect(published.at(-1)!.panels[0]!.badge).toEqual({ kind: 'count', count: 99_999 })
+    expect(statusOf(published.at(-1)!).badge).toEqual({ kind: 'count', count: 99_999 })
     service.setStatus(P, 'base/sessions', { badge: { kind: 'count', count: 0 } })
-    expect(published.at(-1)!.panels[0]!.badge).toBeUndefined()
+    expect(statusOf(published.at(-1)!).badge).toBeUndefined()
     service.setStatus(P, 'base/sessions', { badge: { kind: 'count', count: NaN } })
-    expect(published.at(-1)!.panels[0]!.badge).toBeUndefined()
+    expect(statusOf(published.at(-1)!).badge).toBeUndefined()
     service.setStatus(P, 'base/sessions', { badge: { kind: 'dot' } })
-    expect(published.at(-1)!.panels[0]!.badge).toEqual({ kind: 'dot' })
+    expect(statusOf(published.at(-1)!).badge).toEqual({ kind: 'dot' })
   })
 
   it('sets the badge and the error separately, each keeping the other', () => {
@@ -409,7 +427,7 @@ describe('panel status', () => {
     const { service } = setup()
     service.setPluginPanels(P, 'jira', [notes])
     service.closeProject(P)
-    expect(service.view(P)!.panels).toEqual([])
+    expect(pluginPanels(service.view(P)!)).toEqual([])
   })
 })
 

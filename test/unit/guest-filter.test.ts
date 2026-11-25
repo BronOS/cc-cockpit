@@ -212,6 +212,18 @@ describe('plugins (P)', () => {
     expect(out.seq).toBe(4)
   })
 
+  it("layout: the core Terminal panel is never a guest's, even with every plugin id visible (design-terminal-panel.md §8)", () => {
+    const layout = defaultLayout()
+    layout.zones.bottom.panels = [{ panelKey: 'core/terminal', open: true, size: 1 }]
+    layout.hidden = ['core/terminal']
+    const v: LayoutView = { layout, panels: [{ panelKey: 'core/terminal', title: 'Terminal', kind: 'core' }], reveal: 'core/terminal', appSlots: [], seq: 1 }
+    const out = guestLayout(v, ctx({ pluginVisible: () => true }))
+    expect(out.panels).toEqual([])
+    expect(out.layout.zones.bottom.panels).toEqual([])
+    expect(out.layout.hidden).toEqual([])
+    expect(out.reveal).toBeUndefined()
+  })
+
   it('commands: core and visible plugins, never the owner menu entries, no conflicts', () => {
     const out = guestCommands(
       {

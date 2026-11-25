@@ -37,7 +37,7 @@ import { tabRoomOf, type TabRoom } from '../shared/tab-room'
 import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../shared/tab-commands'
 import { checkPageTabSpec, MAX_PAGE_TABS_PER_PLUGIN, type PageTabSpec } from '../shared/page-tabs'
 import type { TabGroup } from '../shared/tab-groups'
-import type { ProjectView, TabKind, TabRecord } from '../shared/types'
+import type { ProjectView, TabDock, TabKind, TabRecord } from '../shared/types'
 import { ProjectRefusal, type ProjectRegistry } from './projects/registry'
 import { SESSION_ID } from './tabs/claude-argv'
 import { isPluginCommand, isPluginId, resolveCwd, type AnyTabCommand } from './tabs/tab-manager'
@@ -76,6 +76,8 @@ export interface RestoredTab {
   page?: PageTabSpec
   /** Claude and shell tabs only: the guest whose act opened it (D-21); TabManager.restoreTab reads it again. */
   openedByGuest?: string
+  /** Shell and command tabs only: it comes back in the Terminal panel (design-terminal-panel.md §2). */
+  dock?: TabDock
 }
 
 /**
@@ -115,6 +117,7 @@ export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
     if (t.flag !== undefined) record.flag = t.flag.note === undefined ? { color: t.flag.color } : { color: t.flag.color, note: t.flag.note }
     if (t.room !== undefined) record.room = { id: t.room.id, name: t.room.name, coordinator: t.room.coordinator, mark: t.room.mark }
     if (t.page !== undefined) Object.assign(record, pageRecordFields(t.page))
+    if (t.dock !== undefined) record.dock = t.dock
     return record
   })
 }
@@ -162,7 +165,7 @@ export function buildRestorePlan(
   const pagesOf = new Map<string, number>()
   for (const raw of records as unknown[]) {
     if (typeof raw !== 'object' || raw === null) continue
-    const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag, room, env, openedByGuest } = raw as Record<string, unknown>
+    const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag, room, env, openedByGuest, dock } = raw as Record<string, unknown>
     if (kind === 'page') {
       const page = pagePlanOf(raw as Record<string, unknown>)
       if (page === undefined) continue
@@ -220,8 +223,12 @@ export function buildRestorePlan(
       if (e.dropped.length > 0) log?.(`restore: a Claude tab's env dropped (not allowed): ${e.dropped.join(', ')}`)
       if (e.env !== undefined) tab.env = { ...e.env }
     }
-    // Any kind keeps its flag; a damaged one is dropped, not the tab (tabFlagOf).
-    const f = tabFlagOf(flag)
+    // The Terminal panel holds shell and command tabs only: a `dock` on any other record (a hand-edited file) is
+    // dropped and the tab comes back in the main area (design-terminal-panel.md §2).
+    const docked = dock === 'panel' && (kind === 'shell' || kind === 'command')
+    if (docked) tab.dock = 'panel'
+    // Any kind keeps its flag (a docked tab none, D4); a damaged one is dropped, not the tab (tabFlagOf).
+    const f = docked ? undefined : tabFlagOf(flag)
     if (f !== undefined) tab.flag = f
     // D-21: a guest's Claude or shell tab stays the guest's across a restart; a damaged value is dropped.
     if ((kind === 'claude' || kind === 'shell') && typeof openedByGuest === 'string' && openedByGuest.length > 0 && openedByGuest.length <= 64) {
@@ -477,6 +484,7 @@ export class TabRestorer {
     if (tab.room !== undefined) record.room = { ...tab.room }
     if (tab.openedByGuest !== undefined) record.openedByGuest = tab.openedByGuest
     if (tab.page !== undefined) Object.assign(record, pageRecordFields(tab.page))
+    if (tab.dock !== undefined) record.dock = tab.dock
     if (tab.command !== undefined) {
       record.label = tab.command.label
       if (isPluginCommand(tab.command)) {

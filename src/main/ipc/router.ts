@@ -1836,6 +1836,19 @@ export interface TabHandlerDeps {
   viewAck(viewId: ViewId, tabId: string, count: number): void
   viewSelect(viewId: ViewId, tabId: string): void
   /**
+   * The person moves a shell or command tab between the main area and the Terminal panel (main/tabs/dock.ts):
+   * the group, the save, the selections, `tabs.docked` to every view, the guests' reconnects. Throws for a bad
+   * tab. Absent: `tabs.dock` is refused.
+   */
+  dock?(projectId: string, tabId: string, dock: 'panel' | 'main', viewId: ViewId): void
+  /**
+   * The view's Terminal panel shows `tabId` (ViewSelections.panelSelected): never the active tab or presence.
+   * False for a tab that is not a docked tab of the project. Absent: `tabs.panelSelected` changes nothing.
+   */
+  panelSelect?(projectId: string, tabId: string, viewId: ViewId): boolean
+  /** A remote view's panel tab joins its terminal stream (WebConnection.panelSelected, design §13.7). */
+  viewPanelSelect?(viewId: ViewId, tabId: string): void
+  /**
    * Tell the window's views other than `viewId` (ViewRegistry.toOthers): a tab one view created,
    * restarted, flagged (`tabs.added`, merged by id and generation), closed (`tabs.removed`) or moved
    * (`tabs.moved`, at the index main applied). The
@@ -1929,6 +1942,9 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     const p = fields('tabs.create', payload)
     const kind = p.kind
     if (kind !== 'claude' && kind !== 'shell') throw new Error('tabs.create: refused')
+    // The Terminal panel is the owner's (design-terminal-panel.md §8): GUEST_CLASS refused it already; again here,
+    // so a guest's `dock` can never turn into a main-area tab it did not ask for.
+    if (p.dock !== undefined) throw new Error('tabs.create: refused')
     const beside = besideOf(p.beside)
     // The cap, the reservation, the re-check and the note: IpcRouter.openGuestTab, shared with Discuss's new session.
     return router.openGuestTab(
@@ -1950,6 +1966,15 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     // the new tab plain (D15), the same as a group that is full.
     const beside = besideOf(p.beside)
     const withBeside = beside === undefined ? {} : { beside }
+    // `dock`: opened in the Terminal panel (design-terminal-panel.md §3), shell and command tabs only, never beside a
+    // pane (no groups in the panel).
+    const dock = p.dock
+    if (dock !== undefined) {
+      if (dock !== 'panel') throw new Error("tabs.create: dock must be 'panel'")
+      if (kind !== 'shell' && kind !== 'command') throw new Error('tabs.create: only a shell or command tab opens in the Terminal panel')
+      if (beside !== undefined) throw new Error('tabs.create: dock and beside never together')
+    }
+    const withDock = dock === undefined ? {} : { dock: 'panel' as const }
     if (kind === 'command') {
       // A menu entry, by level and id only. Only these two fields are read: a `command` or
       // `label` riding along in the payload is never looked at, so a renderer cannot have main run
@@ -1957,7 +1982,7 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
       const { level, entryId } = p
       if (level !== 'app' && level !== 'project') throw new Error("tabs.create: level must be 'app' or 'project'")
       if (typeof entryId !== 'string') throw new Error('tabs.create: entryId must be a string')
-      return tabs.create(ctx.projectId, { kind, level, entryId, ...withBeside }, ctx.windowId)
+      return tabs.create(ctx.projectId, { kind, level, entryId, ...withBeside, ...withDock }, ctx.windowId)
     }
     if (kind !== 'claude' && kind !== 'shell') throw new Error('tabs.create: unknown kind')
     const cwd = p.cwd
@@ -1965,6 +1990,9 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
       throw new Error('tabs.create: cwd must be a string')
     }
     // No prompt from the renderer: programmatic prompts come through sessions.open (Task 20).
+    if (kind === 'shell') {
+      return tabs.create(ctx.projectId, { kind, ...(cwd === undefined ? {} : { cwd }), ...withBeside, ...withDock }, ctx.windowId)
+    }
     return tabs.create(ctx.projectId, cwd === undefined ? { kind, ...withBeside } : { kind, cwd, ...withBeside }, ctx.windowId)
   }
 
@@ -2140,6 +2168,24 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
       answer.screen = { cols, rows, data }
     }
     tabs.screen?.(ctx.projectId, tabId, answer)
+  })
+
+  // The person's move between the main area and the Terminal panel (design-terminal-panel.md §3). REMOTE `yes`
+  // (an owner's browser moves its own tabs, as tabs.reorder), GUEST_CLASS `no`, and the owner checked again here.
+  router.handleProject('tabs.dock', (ctx, payload, view) => {
+    if (!isOwner(view) || !tabs.dock) throw new Error('tabs.dock: refused')
+    const dock = fields('tabs.dock', payload).dock
+    if (dock !== 'panel' && dock !== 'main') throw new Error("tabs.dock: dock must be 'panel' or 'main'")
+    tabs.dock(ctx.projectId, tabIdOf('tabs.dock', payload), dock, view.viewId)
+  })
+
+  // The view's Terminal panel shows this docked tab (design §13.5, §13.7). `adapted`: a remote view's also joins the
+  // tab's stream, on its own path (never viewSelect, whose one `selected` and group queue are the main area's).
+  router.handleProject('tabs.panelSelected', (ctx, payload, view) => {
+    if (!isOwner(view)) throw new Error('tabs.panelSelected: refused')
+    const tabId = tabIdOf('tabs.panelSelected', payload)
+    const shown = tabs.panelSelect?.(ctx.projectId, tabId, view.viewId) === true
+    if (shown && view.remote) tabs.viewPanelSelect?.(view.viewId, tabId)
   })
 
   // Only the id travels; whether it is one of the sender's project's tabs is main's check (select).

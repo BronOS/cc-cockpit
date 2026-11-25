@@ -18,7 +18,7 @@ import { sameTabRoom, tabRoomOf, type TabRoom } from '../../shared/tab-room'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN } from '../../shared/manifest'
 import { checkPageTabSpec, MAX_PAGE_TABS_PER_PLUGIN, pageTabIconOf, pageTabTitleOf, type PageTabSpec } from '../../shared/page-tabs'
 import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../../shared/tab-commands'
-import type { TabKind } from '../../shared/types'
+import type { TabDock, TabKind } from '../../shared/types'
 import type { Env } from '../env/login-env'
 import { buildPtyEnv } from '../env/pty-env'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
@@ -122,8 +122,10 @@ export interface TabManagerOptions {
    * A clean exit just closed the tab (closeOnCleanExit), after its lifecycle `closed` and its
    * `tabs.removed` went out, in that order. Only this close: never the person's, a plugin's or a
    * window's. Main's exit focus (design.md §3 "Split groups", the D3 exception) hangs off it.
+   * `closed`: where the tab sat, read before it went (its Terminal panel `dock` and its index in the order),
+   * for the panel's own exit focus (design-terminal-panel.md §13.4: the neighbour in the panel's strip).
    */
-  exitClosed?(projectId: string, tabId: string): void
+  exitClosed?(projectId: string, tabId: string, closed?: { dock?: TabDock; index: number }): void
   /**
    * The room registry's side of a member tab (design-rooms.md §1; RoomService wires it to
    * RoomRegistry). Absent = no registry to ask (tests): a restored membership is dropped.
@@ -311,6 +313,8 @@ export interface CreateTabOptions {
    * "opened by <guest>", saved and restored with it. Display and the D-9 close rule only; never a right.
    */
   openedByGuest?: string
+  /** A shell tab opened in the Terminal panel (`tabs.create` with `dock`, the person's own act). */
+  dock?: TabDock
 }
 
 /** A command tab's own copy of its new-tab menu entry (TabCommandsService.resolve). */
@@ -401,6 +405,8 @@ export interface RestoreTabOptions {
    * allowlist): an entry no longer on it is dropped and logged, never applied. Ignored on any other kind.
    */
   env?: Readonly<Record<string, string>>
+  /** A shell or command tab saved in the Terminal panel; ignored (the tab comes back in the main area) on any other kind. */
+  dock?: TabDock
 }
 
 interface Tab {
@@ -434,8 +440,14 @@ interface Tab {
    * not started, and its Restart is the person's own run.
    */
   keepOpen?: true
-  /** Any kind: the person's flag (setFlag / toggleFlag); saved and restored with the tab. */
+  /** Any kind: the person's flag (setFlag / toggleFlag); saved and restored with the tab. Never on a docked tab (D4). */
   flag?: TabFlag
+  /**
+   * Kind 'shell' or 'command' only: the tab sits in the Terminal panel (docs/design-terminal-panel.md §2), moved
+   * there by the person (setDock) or opened there; saved and restored with the tab. Never in a split group, never
+   * the project's active tab (TabGroups' and ViewSelections' `dockedOf` read it through dockOf).
+   */
+  dock?: TabDock
   /**
    * Kind 'claude' only: the tab's room membership (setRoom / clearRoom, the room service) and the
    * person's mark on it (setRoomMark); saved and restored with the tab.
@@ -642,7 +654,7 @@ export class TabManager {
   }
 
   /** Start a tab. Throws (and creates nothing) for an unknown project, a bad cwd or a failed spawn. */
-  create(projectId: string, { kind, cwd, prompt, model, effort, env, openedByGuest }: CreateTabOptions): TabInfo {
+  create(projectId: string, { kind, cwd, prompt, model, effort, env, openedByGuest, dock }: CreateTabOptions): TabInfo {
     // Checked at run time as well: a command tab must come through createCommand, whose caller
     // looked the command up in main's settings, never through a kind someone passed along.
     if (kind !== 'claude' && kind !== 'shell') throw new Error('unknown tab kind')
@@ -651,6 +663,7 @@ export class TabManager {
       throw new Error('only a Claude tab takes a model or effort')
     }
     if (env !== undefined && kind !== 'claude') throw new Error('only a Claude tab takes an env')
+    if (dock !== undefined && (kind !== 'shell' || dock !== 'panel')) throw new Error('only a shell or command tab opens in the Terminal panel')
     // All or nothing, as host-api: a new tab is never started with part of what was asked.
     const checkedEnv = checkSessionEnv(env)
     if (!checkedEnv.ok) throw new Error(checkedEnv.reason)
@@ -659,7 +672,8 @@ export class TabManager {
       ...(model === undefined ? {} : { model }),
       ...(effort === undefined ? {} : { effort }),
       ...(checkedEnv.env === undefined || Object.keys(checkedEnv.env).length === 0 ? {} : { env: checkedEnv.env }),
-      ...guestTag(openedByGuest)
+      ...guestTag(openedByGuest),
+      ...(dock === undefined ? {} : { dock })
     })
     this.changed(projectId)
     return out
@@ -672,8 +686,13 @@ export class TabManager {
    * Code installer (claude-offer.ts: a constant main picked by platform, with `keepOpen`); no IPC or
    * plugin path hands text here. The tab keeps this copy: editing the entry later changes nothing here.
    */
-  createCommand(projectId: string, command: TabCommand, { keepOpen = false }: { keepOpen?: boolean } = {}): TabInfo {
-    const out = this.add(projectId, 'command', undefined, { command: tabCommand(command), ...(keepOpen ? { keepOpen } : {}) })
+  createCommand(projectId: string, command: TabCommand, { keepOpen = false, dock }: { keepOpen?: boolean; dock?: TabDock } = {}): TabInfo {
+    if (dock !== undefined && dock !== 'panel') throw new Error('unknown dock')
+    const out = this.add(projectId, 'command', undefined, {
+      command: tabCommand(command),
+      ...(keepOpen ? { keepOpen } : {}),
+      ...(dock === undefined ? {} : { dock })
+    })
     this.changed(projectId)
     return out
   }
@@ -817,7 +836,11 @@ export class TabManager {
    * validated it before it gets here. A Claude tab keeps the id as its own `sessionId` right
    * away, so quitting again before the SessionStart hook reports does not lose the session.
    */
-  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag, room, page, env, openedByGuest }: RestoreTabOptions): TabInfo {
+  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag, room, page, env, openedByGuest, dock }: RestoreTabOptions): TabInfo {
+    // Re-read like the flag: a shell or command tab keeps its place in the Terminal panel; on any other kind the
+    // field is dropped, never the tab (it comes back in the main area). No flag on a docked tab (D4).
+    const savedDock = dock === 'panel' && (kind === 'shell' || kind === 'command') ? { dock } : {}
+    if (savedDock.dock !== undefined) flag = undefined
     // Re-read like the name: a bad saved flag only loses the flag. Any kind keeps one.
     const savedFlag = flag === undefined ? undefined : tabFlagOf(flag)
     const flagOpt = savedFlag === undefined ? {} : { flag: savedFlag }
@@ -835,7 +858,7 @@ export class TabManager {
       // Restored NOT started: a command may be anything (a deploy, a migration, a cleanup), and
       // the app launching must never run one by itself. The tab comes back stopped with its
       // banner; the user's Restart runs it. The same for a plugin's argv (re-checked by tabCommand).
-      return this.add(projectId, kind, cwd, { command: tabCommand(command), start: false, ...flagOpt })
+      return this.add(projectId, kind, cwd, { command: tabCommand(command), start: false, ...flagOpt, ...savedDock })
     }
     if (command !== undefined) throw new Error('only a command tab has a command')
     if (name !== undefined && kind !== 'claude') throw new Error('only a Claude tab has a name')
@@ -854,7 +877,8 @@ export class TabManager {
       ...flagOpt,
       ...(savedRoom === undefined ? {} : { room: savedRoom }),
       ...(savedEnv.env === undefined ? {} : { env: savedEnv.env }),
-      ...guestTag(openedByGuest)
+      ...guestTag(openedByGuest),
+      ...savedDock
     })
   }
 
@@ -921,6 +945,7 @@ export class TabManager {
       env?: Readonly<Record<string, string>>
       openedByGuest?: string
       keepOpen?: boolean
+      dock?: TabDock
     }
   ): TabInfo {
     const root = this.projectRoot(projectId)
@@ -938,6 +963,7 @@ export class TabManager {
     }
     if (opts.command) tab.command = opts.command
     if (opts.keepOpen === true && kind === 'command') tab.keepOpen = true
+    if (opts.dock === 'panel' && (kind === 'shell' || kind === 'command')) tab.dock = 'panel'
     // Set before start() so the registry's entry is born with it (a restored tab shows its name at once).
     if (opts.name !== undefined) tab.name = opts.name
     if (opts.flag !== undefined) tab.flag = { ...opts.flag }
@@ -1032,6 +1058,8 @@ export class TabManager {
    */
   setFlag(projectId: string, tabId: string, patch: unknown): TabFlag | null {
     const tab = this.require(projectId, tabId)
+    // D4: no flags on Terminal panel tabs (the flag marks tabs in the main strip).
+    if (tab.dock !== undefined) throw new Error('a Terminal panel tab has no flag')
     const checked = checkFlagPatch(patch)
     if (!checked.ok) throw new Error(checked.reason)
     if (checked.value?.color !== undefined) this.lastFlagColor = checked.value.color
@@ -1047,6 +1075,7 @@ export class TabManager {
    */
   toggleFlag(projectId: string, tabId: string): TabFlag | null {
     const tab = this.require(projectId, tabId)
+    if (tab.dock !== undefined) throw new Error('a Terminal panel tab has no flag')
     const next = tab.flag === undefined ? { color: this.lastFlagColor } : undefined
     this.storeFlag(tab, next)
     return next === undefined ? null : { ...next }
@@ -1058,6 +1087,31 @@ export class TabManager {
     else tab.flag = next
     this.notify((l) => l.flagged?.(tab.id, next === undefined ? null : { ...next }))
     this.changed(tab.projectId)
+  }
+
+  /**
+   * Move a shell or command tab of `projectId` into the Terminal panel (`'panel'`) or back to the main area
+   * (undefined): the person's `tabs.dock` only (main/tabs/dock.ts runs the rest: the group, the selections, the
+   * guests, the event). Throws for an unknown or foreign tab and for any other kind. Docking clears the flag (D4).
+   * Saved with the tab (changed). False when the tab already sits there.
+   */
+  setDock(projectId: string, tabId: string, dock: TabDock | undefined): boolean {
+    const tab = this.require(projectId, tabId)
+    if (tab.kind !== 'shell' && tab.kind !== 'command') throw new Error('only a shell or command tab moves to the Terminal panel')
+    if (dock !== undefined && dock !== 'panel') throw new Error('unknown dock')
+    if (tab.dock === dock) return false
+    if (dock === undefined) delete tab.dock
+    else {
+      tab.dock = dock
+      this.storeFlag(tab, undefined)
+    }
+    this.changed(projectId)
+    return true
+  }
+
+  /** Where a tab of `projectId` sits: `'panel'` for the Terminal panel; undefined for the main area or an unknown id. */
+  dockOf(projectId: string, tabId: string): TabDock | undefined {
+    return this.find(projectId, tabId)?.dock
   }
 
   /**
@@ -1683,10 +1737,11 @@ export class TabManager {
       // Exited, then closed: the session registry (and `ccc sessions`, plugin `sessions` events)
       // see the session end and then go, as when the user closes an exited tab. No `tabs.exit`
       // for the renderer, whose banner would flash for one frame: `tabs.removed` instead.
+      const closed = { ...(tab.dock !== undefined ? { dock: tab.dock } : {}), index: (this.order.get(tab.projectId) ?? []).indexOf(tab) }
       this.closeTab(tab)
       this.options.emit(tab.projectId, 'tabs.removed', { tabId: id, gen: tab.gen })
       try {
-        this.options.exitClosed?.(tab.projectId, id)
+        this.options.exitClosed?.(tab.projectId, id, closed)
       } catch (err) {
         this.log(`exit close listener failed: ${errorText(err)}`)
       }
@@ -1761,6 +1816,7 @@ function info(tab: Tab): TabInfo {
   if (tab.openedByGuest !== undefined) out.openedByGuest = tab.openedByGuest
   if (tab.unseen) out.unseen = true
   if (tab.dirtyIn !== undefined) out.dirty = true
+  if (tab.dock !== undefined) out.dock = tab.dock
   if (tab.command) {
     out.label = tab.command.label
     if (isPluginCommand(tab.command)) {

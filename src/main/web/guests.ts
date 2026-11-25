@@ -80,6 +80,8 @@ export interface GuestTabInfo {
   openedBy?: string
   /** A page tab: its plugin. */
   page?: { plugin: string }
+  /** A tab in the Terminal panel (TabInfo.dock): hidden from every guest (design-terminal-panel.md §13.2). */
+  dock?: string
 }
 
 /** Where invite links point, from the web access settings (auth.ts `linkOrigin`). */
@@ -330,7 +332,12 @@ export class GuestStore implements GuestService {
     const tab = this.deps.tabOf(tabId)
     // Another project's tab is never in a guest's scope, whatever its id.
     if (!tab || tab.projectId !== g.projectId) return false
-    const input = { id: tabId, ...(tab.openedBy !== undefined ? { openedBy: tab.openedBy } : {}), ...(tab.page ? { page: tab.page } : {}) }
+    const input = {
+      id: tabId,
+      ...(tab.openedBy !== undefined ? { openedBy: tab.openedBy } : {}),
+      ...(tab.page ? { page: tab.page } : {}),
+      ...(tab.dock !== undefined ? { dock: tab.dock } : {})
+    }
     return tabVisibleRule(this.access({ guest: guestId }), input, g.openedTabs, (p) => this.pluginVisible(g.projectId, p))
   }
 
@@ -646,6 +653,29 @@ export class GuestStore implements GuestService {
     if (touched) {
       this.save()
       this.changed()
+    }
+  }
+
+  /** The live guests of `projectId` that see `tabId` now: what a dock is about to take away (`tabDockChanged`). */
+  guestsSeeing(projectId: string, tabId: string): Set<string> {
+    const out = new Set<string>()
+    for (const g of this.data.guests) if (g.projectId === projectId && this.isLive(g) && this.tabVisible(g.id, tabId)) out.add(g.id)
+    return out
+  }
+
+  /**
+   * A tab of `projectId` moved into or out of the Terminal panel (design-terminal-panel.md §13.2): `sawBefore` are the
+   * guests that saw it before the move (`guestsSeeing`). One that no longer sees it loses it as an unshare does (D-30:
+   * a reconnect at once, its transfers dropped, so no stream, port or page of the tab stays open); one that sees it
+   * now is a widening (one quiet reconnect). Never a `tabs.removed` or `tabs.added` made up for the guest.
+   */
+  tabDockChanged(projectId: string, tabId: string, sawBefore: ReadonlySet<string>): void {
+    for (const g of this.data.guests) {
+      if (g.projectId !== projectId || !this.isLive(g)) continue
+      const sees = this.tabVisible(g.id, tabId)
+      const saw = sawBefore.has(g.id)
+      if (saw && !sees) this.accessChangedFor(g.id)
+      else if (!saw && sees) this.accessChangedFor(g.id, true)
     }
   }
 

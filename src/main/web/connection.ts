@@ -343,6 +343,11 @@ export class WebConnections {
   }
 
   /** A view shows this tab now (router `viewSelect`): join its terminal stream (and its group's). */
+  /** The view's Terminal panel shows a docked tab (router `viewPanelSelect`, design-terminal-panel.md §13.7). */
+  panelSelect(viewId: ViewId, tabId: string): void {
+    this.open.get(viewId)?.terminalPanelSelect(tabId)
+  }
+
   select(viewId: ViewId, tabId: string): void {
     this.open.get(viewId)?.terminalSelect(tabId)
   }
@@ -710,6 +715,18 @@ export class WebConnection {
     // A guest joins only the panes it sees (a split group may hold tabs outside its scope).
     const order = (this.deps.joinOrder?.(this.caller.context.projectId, tabId) ?? [tabId]).filter((t) => this.canSee(t))
     this.terminals?.selectGroup(order)
+  }
+
+  /**
+   * The view's Terminal panel shows this docked tab now (router `viewPanelSelect`; design-terminal-panel.md §13.7).
+   * Joined beside the main area's tabs (ViewTerminals follows a set, so both terminals stream), on its own path:
+   * the main area's `selected`, its group join queue and presence are left alone, where `terminalSelect` would
+   * replace the queue and make `groupsChanged` re-run on the panel tab. Never a guest's (it sees no docked tab:
+   * `canFollow` refuses, and the router refuses the channel).
+   */
+  terminalPanelSelect(tabId: string): void {
+    if (this.closed || !this.caller) return
+    this.terminals?.select(tabId)
   }
 
   /** The project's groups changed: join what the selected tab's group gained (WebConnections.groupsChanged). */

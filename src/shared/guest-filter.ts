@@ -62,6 +62,8 @@ export interface TabVisibilityInput {
   openedBy?: string
   /** A page tab's plugin. */
   page?: { plugin: string }
+  /** A tab in the Terminal panel: never a guest's in v1 (design-terminal-panel.md §8, §13.2, D5). */
+  dock?: string
 }
 
 /**
@@ -78,15 +80,26 @@ export function tabVisible(
 ): boolean {
   if (access.kind === 'owner') return true
   if (access.kind !== 'guest') return false
+  // The Terminal panel and its tabs are the owner's (D5), whatever the scope: every route that asks this rule
+  // (targets, ports, the stream's joins, overlay origins, downloads, presence) hides them alike. Fail closed: any value.
+  if (tab.dock !== undefined) return false
   if (tab.openedBy !== undefined && !pluginVisible(tab.openedBy)) return false
   if (tab.page !== undefined && !pluginVisible(tab.page.plugin)) return false
   return inScope(access.scope, tab.id) || openedTabs.includes(tab.id)
 }
 
-/** The plugin of a panel key (`<pluginId>/<panelId>`); undefined for anything else. */
+/** The owner part of a core panel's key (TERMINAL_PANEL_KEY's): never a plugin id (it has no dot). */
+const CORE_PANEL_OWNER = 'core'
+
+/**
+ * The plugin of a panel key (`<pluginId>/<panelId>`); undefined for anything else, a core panel (`core/terminal`)
+ * included: no plugin owns it, so no plugin's visibility (a guest's, a page token's) can stand for it.
+ */
 export function pluginOfPanelKey(panelKey: string): string | undefined {
   const slash = panelKey.indexOf('/')
-  return slash > 0 ? panelKey.slice(0, slash) : undefined
+  if (slash <= 0) return undefined
+  const plugin = panelKey.slice(0, slash)
+  return plugin === CORE_PANEL_OWNER ? undefined : plugin
 }
 
 const panelVisible = (panelKey: string, ctx: GuestFilterContext): boolean => {

@@ -472,6 +472,8 @@ describe('guest tab handlers', () => {
     await router.dispatch(guest('gW'), 'tabs.create', { kind: 'claude' })
     await expect(router.dispatch(guest('gW'), 'tabs.create', { kind: 'command', level: 'app', entryId: 'x' })).rejects.toThrow(/refused/)
     await expect(router.dispatch(guest('gR'), 'tabs.create', { kind: 'shell' })).rejects.toThrow(/refused/)
+    // The Terminal panel is the owner's (design-terminal-panel.md §8): a guest's `dock` is refused, never dropped.
+    await expect(router.dispatch(guest('gW'), 'tabs.create', { kind: 'shell', dock: 'panel' })).rejects.toThrow(/refused/)
     expect(calls.filter((c) => c[0] === 'create')).toHaveLength(1)
   })
 
