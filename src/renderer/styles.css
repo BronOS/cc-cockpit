@@ -5550,3 +5550,117 @@ ul.settings-alert {
 .upload-held {
   color: var(--cc-fg-muted);
 }
+
+/* ── The Terminal panel (tabs/TerminalPanelBody.tsx, design-terminal-panel.md §1) ── */
+/* The body fills the panel edge to edge: a compact strip of the panel's tabs over the terminal. */
+.panel-body.terminal-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.terminal-panel-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--cc-border);
+}
+.terminal-panel-tabs {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.terminal-panel-tab {
+  position: relative;
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  min-width: 64px;
+  max-width: 220px;
+  border-radius: var(--cc-radius-md);
+}
+.terminal-panel-tab:hover {
+  background: color-mix(in srgb, var(--cc-fg) 6%, transparent);
+}
+.terminal-panel-tab-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 4px 0 8px;
+  font: inherit;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-subtle);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.terminal-panel-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The selected tab reads by weight and a bar under it, not by colour alone (near shades are hard to
+   tell apart for the person this is built for). */
+.terminal-panel-tab.active .terminal-panel-tab-label {
+  color: var(--cc-fg);
+  font-weight: 600;
+}
+.terminal-panel-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+}
+/* An exited process: its name struck through, plus the "(exited)" text. */
+.terminal-panel-tab.exited .terminal-panel-tab-name {
+  text-decoration: line-through;
+}
+.terminal-panel-tab-state {
+  flex: none;
+  font-weight: 400;
+}
+.terminal-panel-tab.dragged {
+  opacity: 0.55;
+}
+.terminal-panel-tab-close {
+  flex: none;
+  opacity: 0.5;
+}
+.terminal-panel-tab:hover .terminal-panel-tab-close,
+.terminal-panel-tab.active .terminal-panel-tab-close,
+.terminal-panel-tab-close:focus-visible {
+  opacity: 1;
+}
+.terminal-panel-new {
+  flex: none;
+}
+/* The terminal itself: the TerminalView fills it (position absolute, as in the split area). */
+.terminal-panel-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.terminal-panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  color: var(--cc-fg-subtle);
+}
+.terminal-panel-empty p {
+  margin: 0;
+}

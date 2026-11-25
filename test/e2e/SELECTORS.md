@@ -24,7 +24,7 @@ fails when one of them is gone from `src/renderer`, so keep that marker for ever
 
 | What | Locate by |
 | --- | --- |
-| The strip | `role=tablist` (no name) |
+| The strip | `role=tablist` (no name); scope to `.zones-centre` when the Terminal panel is open (its strip is a tablist too) |
 | A tab | `getByRole('tab', { name: /^Shell/ })`; the name is the tab's label (a Claude tab's session name or title) plus ` (not started)` / ` (exited)`. A page tab is a tab too (`/notes\.txt/`) |
 | The selected tab | `getByRole('tab', { selected: true })`; its wrapper is `.tab.active[data-tab-id="<tabId>"]` |
 | A tab's wrapper, by id | `.tab[data-tab-id="<tabId>"]` (also `data-flag="<colour>"`, `data-attention`) |
@@ -48,6 +48,30 @@ Traps:
   sits over what you click next, and a click into an iframe (a panel, a page tab, an overlay) never
   reaches the window, so it does not close the menu at all.
 - `Rename` and `Edit note…` open an inline editor (`textbox` `Tab name` / `Note`); Enter saves, Escape cancels.
+
+## Terminal panel (`TerminalPanelBody.tsx`, design-terminal-panel.md)
+
+The panel is the core panel `core/terminal` (default zone bottom, closed). Toggle it with `Control+Backquote`
+(`terminal.toggle`, also on macOS) or its zone-strip icon; `Control+Shift+Backquote` opens a new shell in it.
+Its open state is per view: opening it on the desktop does not open it in a browser view.
+
+| What | Locate by |
+| --- | --- |
+| The panel | `testid:terminal-panel` (also `[data-terminal-panel]`); absent while closed and in server mode's hidden page |
+| The empty panel | `testid:terminal-panel-empty` ("No terminals"), with button `Shell` |
+| Its strip | `getByRole('tablist', { name: 'Terminal tabs' })` |
+| A panel tab | scoped to that tablist: `getByRole('tab', { name: /^Shell/ })`; wrapper `.terminal-panel-tab[data-panel-tab-id="<tabId>"]`, `.active` when selected, `.exited` |
+| Close a panel tab | in the panel: `getByRole('button', { name: 'Close <label>' })` |
+| New terminal | button `New terminal`, then `menu` `New terminal`: `menuitem` `Shell` or a custom command |
+| Tab menu | right-click a panel tab (or Shift+F10 on it), then `menu` `Terminal tab`: `Move left`, `Move right`, `Restart` (exited only), `Move to tab area`, `Close` |
+| Its terminal | `[data-testid="terminal-panel"] .terminal-view` (one: only the selected tab is drawn) |
+| Move a main tab in | the main tab menu's `Move to Terminal panel` (shell and command tabs only) |
+
+- Traps: with the panel open there are two tablists, so a bare `getByRole('tablist')` is ambiguous; scope the
+  main strip to `.zones-centre` and panel tabs to the `Terminal tabs` list (`getByRole('tab', { name: /^Shell/ })`
+  unscoped matches both strips). A docked tab is never in the main strip, `tab.select.N` or the switcher.
+- Keys follow the area last focused: click into the panel's terminal before `Control+W` / `Control+Tab` act
+  there (a plain step through the panel's tabs, no switcher); a click into the main area gives them back.
 
 ## Split panes and their headers (`SplitArea.tsx`, helpers in `split-fixtures.ts`)
 

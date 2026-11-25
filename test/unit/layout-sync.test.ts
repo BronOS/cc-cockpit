@@ -4,6 +4,7 @@ import {
   defaultLayout,
   resizeZone,
   setZoneCollapsed,
+  TERMINAL_PANEL_KEY,
   togglePanel,
   type LayoutState
 } from '../../src/shared/layout'
@@ -224,5 +225,63 @@ describe('LayoutSync for a guest view (localOnly)', () => {
     sync.flush()
     expect(fake.sets).toHaveLength(0)
     expect(memory.saved).toBeDefined()
+  })
+})
+
+// design-terminal-panel.md §13.1 (D8): the Terminal panel's open state is per view. In a browser view it
+// rides with the view's own geometry: a toggle there is never sent, main's open state never shows there,
+// and a view that never toggled it starts closed.
+describe('LayoutSync and the Terminal panel open state', () => {
+  const terminal: PanelInfo = { panelKey: TERMINAL_PANEL_KEY, title: 'Terminal', icon: 'T', kind: 'core' }
+  function withTerminal(open: boolean): LayoutView {
+    const base = defaultLayout()
+    const layout: LayoutState = {
+      ...base,
+      zones: { ...base.zones, bottom: { collapsed: false, size: 260, panels: [{ panelKey: TERMINAL_PANEL_KEY, open, size: 240 }] } }
+    }
+    return { layout, panels: [terminal] }
+  }
+  const openHere = (sync: LayoutSync): boolean | undefined =>
+    sync.get().layout.zones.bottom.panels.find((p) => p.panelKey === TERMINAL_PANEL_KEY)?.open
+
+  it("a browser view starts closed whatever main's layout says, and its toggle stays its own", async () => {
+    const fake = fakeBridge()
+    const memory: { saved?: { terminalOpen?: boolean } } = {}
+    const geometry = { load: () => undefined, save: (g: unknown) => void (memory.saved = g as { terminalOpen?: boolean }) }
+    const sync = new LayoutSync(fake.bridge, geometry)
+    sync.start()
+    fake.gets[0]!.resolve(withTerminal(true))
+    await settle()
+    expect(openHere(sync)).toBe(false)
+    sync.commit((l) => togglePanel(l, TERMINAL_PANEL_KEY))
+    sync.flush()
+    expect(openHere(sync)).toBe(true)
+    expect(fake.sets).toHaveLength(0)
+    expect(memory.saved?.terminalOpen).toBe(true)
+    // main's next view (the desktop closed it there) does not close it here.
+    fake.emit(withTerminal(false))
+    expect(openHere(sync)).toBe(true)
+  })
+
+  it('a view that saved its open state keeps it across a reload', async () => {
+    const fake = fakeBridge()
+    const geometry = { load: () => ({ zones: {}, panels: {}, terminalOpen: true }), save: () => undefined }
+    const sync = new LayoutSync(fake.bridge, geometry)
+    sync.start()
+    fake.gets[0]!.resolve(withTerminal(false))
+    await settle()
+    expect(openHere(sync)).toBe(true)
+  })
+
+  it('the desktop (no geometry store) draws and sends main\'s own value', async () => {
+    const fake = fakeBridge()
+    const sync = new LayoutSync(fake.bridge)
+    sync.start()
+    fake.gets[0]!.resolve(withTerminal(true))
+    await settle()
+    expect(openHere(sync)).toBe(true)
+    sync.commit((l) => togglePanel(l, TERMINAL_PANEL_KEY))
+    expect(fake.sets).toHaveLength(1)
+    expect(fake.sets[0]!.layout.zones.bottom.panels[0]!.open).toBe(false)
   })
 })

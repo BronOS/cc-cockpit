@@ -23,7 +23,11 @@ import { OverlayStack } from '../overlays/OverlayStack'
 import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { OPEN_PLUGIN_SETTINGS_EVENT, targetOf, type SettingsTarget } from '../settings/settings-target'
 import { currentGuest, currentShellChrome, isServerView, isWebShell, takeLoadTab, takeLoadTake, viewAccessHint } from '../shell-kind'
-import { initialTabsState, tabsReducer } from '../state/tabs-store'
+import { initialTabsState, mainTabsOf, panelTabsOf, tabsReducer } from '../state/tabs-store'
+import { showPanel, TERMINAL_PANEL_KEY, togglePanel, zoneOf } from '../../shared/layout'
+import { fullIndexOf, isDocked, stepIndex } from './dock-order'
+import { TerminalPanelContext, type PanelFocusAsk, type TerminalPanelApi } from './terminal-panel-context'
+import { ownerOfFocus, panelCommandHandlers, type KeysOwner } from './panel-keys'
 import { ignoresMainSelect, paneView, type PaneView } from '../state/groups-state'
 import { usePrefs } from '../prefs/prefs-store'
 import type { GroupsReply } from '../../shared/ipc'
@@ -134,6 +138,28 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     return window.cockpit.on('window.state', (s) => setFullScreen(s.fullScreen))
   }, [chrome])
   const [state, dispatch] = useReducer(tabsReducer, initialTabsState)
+  // The two strips of the one order (design-terminal-panel.md §2): the main tab area shows no docked
+  // tab (its strip, count, `tab.select.N`, the switcher, the split area), the Terminal panel only those.
+  const mainTabs = useMemo(() => mainTabsOf({ tabs: state.tabs }), [state.tabs])
+  const panelTabs = useMemo(() => panelTabsOf({ tabs: state.tabs }), [state.tabs])
+  // Which area has this view's keys (§13.3, D10): set by a focusin in the panel body or the main area,
+  // by the toggle and New Terminal; popups, the palette, dialogs and a window blur leave it; the
+  // body's unmount resets it to the main area. While 'panel', Close Tab, the tab switch chords and
+  // New Shell act on the panel (its handlers below), and a give-back returns the keyboard there.
+  const [keysOwner, setKeysOwnerState] = useState<KeysOwner>('main')
+  const keysOwnerRef = useRef<KeysOwner>('main')
+  const setKeysOwner = useCallback((owner: KeysOwner): void => {
+    keysOwnerRef.current = owner
+    setKeysOwnerState(owner)
+  }, [])
+  // The panel's body is mounted (the panel is on this screen): told by the body itself.
+  const [panelShown, setPanelShownState] = useState(false)
+  const panelShownRef = useRef(false)
+  // The latest ask to give the panel the keyboard (terminal-panel-context.ts).
+  const [panelFocus, setPanelFocus] = useState<PanelFocusAsk | null>(null)
+  const askPanelFocus = useCallback((tabId: string | null): void => setPanelFocus({ tabId }), [])
+  // This view's own `tabs.dock` calls on the way: their `tabs.docked` event is the person's own move.
+  const ownDocks = useRef(new Set<string>())
   // The split view (SplitArea): the terminal area's size and about one cell of the terminal font,
   // for D5's automatic zoom and minimums; what this view shows of its selection.
   const [area, setArea] = useState<Size>({ width: 0, height: 0 })
@@ -250,6 +276,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     viewRef.current = view
     autoZoomRef.current = autoZoom
   }, [state, view, autoZoom])
+  /**
+   * `ids` (what the main area shows) plus the Terminal panel's selected tab while the panel is on this
+   * screen: the terminals this view shows, whose pending takes a selection elsewhere must not cancel
+   * (SessionRegistry.activeChanged, §13.10).
+   */
+  const withPanelShown = useCallback((ids: readonly string[]): string[] => {
+    const p = stateRef.current.panelActiveId
+    return panelShownRef.current && p !== null && !ids.includes(p) ? [...ids, p] : [...ids]
+  }, [])
   // The terminal entry of uploads (terminal-drop.ts, design-upload.md §4.3): the upload controller lives
   // outside React and asks this view, at the paste, whether its keys are off (D3's or a refused frame's:
   // no command, and no paste, acts on a pane then) and this view's terminal of the tab, for the paste main
@@ -450,11 +485,24 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     // that close left the view keys off.
     const offExitFocus = window.cockpit.on('tabs.exitFocus', ({ tabId, closed }) => {
       dispatch({ type: 'exitFocus', tabId, closed })
+      // Inside the Terminal panel (§13.4): main picked the panel's next tab from this view's own keys
+      // there; the reducer selected it, and it gets the keyboard once it is the panel's selection.
+      if (isDocked(stateRef.current.tabs.find((t) => t.id === tabId)) && panelShownRef.current) {
+        setKeysOwner('panel')
+        askPanelFocus(tabId)
+      }
+    })
+    // A tab moved between the main area and the Terminal panel (main's `tabs.dock`, any view's). This
+    // view's own move is marked so (ownDocks); its reply does the rest (the panel opening, the keys).
+    const offDocked = window.cockpit.on('tabs.docked', ({ tabId, dock }) => {
+      dispatch({ type: 'docked', tabId, dock, own: ownDocks.current.has(tabId) })
     })
     // A tab main started on its own (a plugin's ctx.sessions.open). One that arrives before the
     // list answered may or may not be in it (main takes the list after it awaits the restore):
     // 'loaded' merges by id and generation, so it is neither duplicated nor dropped.
     const offAdded = window.cockpit.on('tabs.added', (tab) => {
+      // A guest page never holds a docked tab (§13.17, fail closed: main never sends one to a guest).
+      if (access !== 'owner' && isDocked(tab)) return
       dispatch({ type: 'announced', tab })
     })
     // Another view of the window moved a tab: main's clamped index (the reducer clamps again
@@ -470,7 +518,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const offGroups = window.cockpit.on('groups.changed', applyGroups)
     attachTabs()
       .then((tabs) => {
-        dispatch({ type: 'loaded', tabs })
+        dispatch({ type: 'loaded', tabs: access === 'owner' ? tabs : tabs.filter((t) => !isDocked(t)) })
         // The web shell opened with `?tab=` (a session chip of another project, server mode's
         // `project.goto`): that tab, once the list holds it. Batched with 'loaded', so the first
         // selection reported and the load take are already that tab's; an id not in the list
@@ -494,9 +542,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       offAdded()
       offMoved()
       offGroups()
+      offDocked()
       sessions.disposeAll()
     }
-  }, [sessions])
+  }, [sessions, access, setKeysOwner, askPanelFocus])
 
   // main keeps the selection for plugins (SessionInfo.active: "the tab the person is looking
   // at"); every way it changes (a click, a key, a close, main's tabs.select, the first list) ends
@@ -512,11 +561,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     // A take waiting on another tab (a selection whose terminal had not attached) is dropped, so
     // a programmatic change after it (a close, main's tabs.select) never takes for that tab. The
     // panes the selection shows keep theirs (a split group selected takes for every pane, D2).
-    sessions.activeChanged(viewRef.current.visible.includes(state.activeId) ? viewRef.current.visible : state.activeId)
+    // The Terminal panel's shown tab keeps its take too (§13.10: the view shows both areas).
+    sessions.activeChanged(withPanelShown(viewRef.current.visible.includes(state.activeId) ? viewRef.current.visible : [state.activeId]))
     window.cockpit.invoke('tabs.selected', { tabId: state.activeId }).catch((err: unknown) => {
       console.warn('reporting the selected tab failed', err)
     })
-  }, [state.activeId, state.keysOff, sessions])
+  }, [state.activeId, state.keysOff, sessions, withPanelShown])
 
   // Whether this view is on screen (a minimized window, a background browser tab): main lets only
   // a visible view size a tab's pty (main/tabs/terminal-sizes.ts). Told on mount (a page loading
@@ -554,14 +604,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       const zoomed = { ...s.zoomed }
       if (g && z !== undefined && z !== tabId) delete zoomed[g.id]
       const shown = paneView(s.groups, tabId, zoomed, autoZoomRef.current).visible
-      sessions.takeOnSelect(tabId, shown)
+      sessions.takeOnSelect(tabId, withPanelShown(shown))
       dispatch({ type: 'selected', tabId })
     },
-    [sessions]
+    [sessions, withPanelShown]
   )
   /** A tab this view's person made (the + menu, a new-tab command): added, selected and taken. */
   const addPicked = (tab: TabInfo): void => {
-    sessions.takeOnSelect(tab.id)
+    sessions.takeOnSelect(tab.id, withPanelShown([tab.id]))
     dispatch({ type: 'added', tab })
   }
 
@@ -625,9 +675,13 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             askUnsaved(tabId, done)
             return
           }
+          const docked = isDocked(stateRef.current.tabs.find((t) => t.id === tabId))
           sessions.dispose(tabId)
           dispatch({ type: 'closed', tabId, own })
           intents.current.delete(tabId)
+          // The person's own close of a panel tab with the panel's keys: the panel's next tab takes them
+          // (as D3's own close in a group), the Shell button when it was the last one.
+          if (own && docked && keysOwnerRef.current === 'panel' && panelShownRef.current) askPanelFocus(null)
           done?.(true)
         },
         (err: unknown) => {
@@ -746,7 +800,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (!allows.arrange) return
     const g = state.groups.find((x) => x.id === groupId)
     const first = g ? state.tabs.find((t) => leavesOf(g.root).includes(t.id)) : undefined
-    if (first) run(window.cockpit.invoke('tabs.reorder', { tabId: first.id, toIndex, block: true }))
+    if (!g || !first) return
+    // `toIndex` counts the main strip's other tabs; main counts the whole order (§13.6).
+    const full = fullIndexOf(state.tabs.map((t) => t.id), mainTabs.map((t) => t.id), leavesOf(g.root), toIndex)
+    run(window.cockpit.invoke('tabs.reorder', { tabId: first.id, toIndex: full, block: true }))
   }
   /**
    * A member dragged out of its segment (D9, D17): a plain reorder, which main turns into leaving the
@@ -755,8 +812,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const detach = (tabId: string, toIndex: number): void => {
     if (!allows.arrange) return
     intents.current.set(tabId, 'leave')
+    const full = fullIndexOf(state.tabs.map((t) => t.id), mainTabs.map((t) => t.id), [tabId], toIndex)
     run(
-      window.cockpit.invoke('tabs.reorder', { tabId, toIndex }).finally(() => {
+      window.cockpit.invoke('tabs.reorder', { tabId, toIndex: full }).finally(() => {
         intents.current.delete(tabId)
       })
     )
@@ -860,10 +918,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const [besidePick, setBesidePick] = useState<{ edge: 'right' | 'down' } | null>(null)
   const besideItems = useMemo((): CommandInfo[] => {
     if (!besidePick) return []
-    return state.tabs
+    return mainTabs
       .filter((t) => t.id !== state.activeId && isPaneKind(t.kind))
       .map((t) => ({ id: t.id, title: tabLabel(t, own.get(t.id)?.title, own.get(t.id)?.name), source: 'core' as const }))
-  }, [besidePick, state.tabs, state.activeId, own])
+  }, [besidePick, mainTabs, state.activeId, own])
 
   // The strip's "+": main shows the project picker, or focuses the one already open.
   // The web shell has no host picker to show (`projects.showPicker` is `no`-class): its "+" goes to
@@ -879,9 +937,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // main accepted it, so the strip never shows an order main doesn't have.
   const reorder = (tabId: string, toIndex: number): void => {
     if (!allows.arrange) return
+    // `toIndex` is a strip's (among its other tabs, TabBar's drag or the panel's): main's reorder
+    // takes the full order, so it lands beside the same neighbour (§13.6).
+    const s = stateRef.current
+    const docked = isDocked(s.tabs.find((t) => t.id === tabId))
+    const strip = (docked ? panelTabsOf(s) : mainTabsOf(s)).map((t) => t.id)
+    const full = fullIndexOf(s.tabs.map((t) => t.id), strip, [tabId], toIndex)
     run(
-      window.cockpit.invoke('tabs.reorder', { tabId, toIndex }).then(() => {
-        dispatch({ type: 'moved', tabId, toIndex })
+      window.cockpit.invoke('tabs.reorder', { tabId, toIndex: full }).then(() => {
+        dispatch({ type: 'moved', tabId, toIndex: full })
       })
     )
   }
@@ -955,10 +1019,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     setRoomFor(room.id)
   }
 
+  // The tab menu's Move left / right, within its own strip (the main area's or the panel's).
   const move = (tabId: string, delta: -1 | 1): void => {
-    const from = state.tabs.findIndex((t) => t.id === tabId)
-    if (from < 0) return
-    reorder(tabId, Math.max(0, Math.min(state.tabs.length - 1, from + delta)))
+    const s = stateRef.current
+    const docked = isDocked(s.tabs.find((t) => t.id === tabId))
+    const to = stepIndex((docked ? panelTabsOf(s) : mainTabsOf(s)).map((t) => t.id), tabId, delta)
+    if (to !== undefined) reorder(tabId, to)
   }
 
   // main refused a close for unsaved changes this view did not know of yet: the page tab's question,
@@ -1159,6 +1225,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       settingsRoot.current?.focus()
       return
     }
+    // The Terminal panel holds this view's keys (§13.3): they go back there, never to the main area.
+    if (keysOwnerRef.current === 'panel' && panelShownRef.current) {
+      askPanelFocus(null)
+      return
+    }
     // D3: the keys are off until the person clicks a pane or uses a chord.
     if (stateRef.current.keysOff) return
     const id = stateRef.current.activeId
@@ -1166,7 +1237,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     // A page tab has no terminal (sessions.get would make one): its frame takes the focus.
     if (stateRef.current.tabs.find((t) => t.id === id)?.kind === 'page') pageFrames().focus(id)
     else sessions.get(id).focus()
-  }, [sessions])
+  }, [sessions, askPanelFocus])
   // A pane focus chord's destination (pane-commands.ts `focusPane`): given the keyboard here, after the
   // commit, by the shell's own call. The chord's 'selected' alone is not enough (the external review's
   // CRITICAL, round 4): typed in a frame whose pick had not committed yet (frame to frame, a window that
@@ -1188,6 +1259,107 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   }, [paneFocus, focusActive])
   /** A popup went: give the keyboard back (focusActive) only for the person's close (focus-give-back.ts). */
   const giveBack = useCallback((cause: CloseCause): void => giveBackRule.current?.closed(cause, focusActive), [focusActive])
+  // ---- The Terminal panel (design-terminal-panel.md; the body is TerminalPanelBody.tsx) ----
+  /** Show the panel on this screen: a hidden one comes back to its remembered zone, a closed one opens, its zone expands (§13.12). */
+  const openTerminalPanel = (): void => layout.commit((l) => showPanel(l, TERMINAL_PANEL_KEY, 'bottom'))
+  /** Close it on this screen (D2: its placement's open state; the zone and the other panels stay). */
+  const closeTerminalPanel = (): void =>
+    layout.commit((l) => {
+      const zone = zoneOf(l, TERMINAL_PANEL_KEY)
+      return zone && l.zones[zone].panels.find((p) => p.panelKey === TERMINAL_PANEL_KEY)?.open === true ? togglePanel(l, TERMINAL_PANEL_KEY) : l
+    })
+  /** The person picked a panel tab (its strip, a switch chord): selected, taken as a click would, given the keys. */
+  const panelPick = (tabId: string): void => {
+    sessions.takeOnSelect(tabId, [...viewRef.current.visible, tabId])
+    dispatch({ type: 'panelSelected', tabId })
+    setKeysOwner('panel')
+    askPanelFocus(tabId)
+  }
+  /** A new shell or command tab in the panel (its +, New Terminal, New Shell with the panel's keys). */
+  const panelCreate = (what: { kind: 'shell' } | { kind: 'command'; level: TabCommandLevel; entryId: string }): void => {
+    // Only the owner has a panel (D5); main refuses `dock` from a guest too.
+    if (access !== 'owner') return
+    run(
+      window.cockpit.invoke('tabs.create', { ...what, dock: 'panel' }).then((tab) => {
+        // null: a command entry that opens as an overlay (§1: it still does).
+        if (!tab) return
+        sessions.takeOnSelect(tab.id, [...viewRef.current.visible, tab.id])
+        dispatch({ type: 'added', tab })
+        setKeysOwner('panel')
+        askPanelFocus(tab.id)
+      })
+    )
+  }
+  /**
+   * The person's move of a tab between the main area and the panel (§13.11, D11): into the panel it
+   * opens the panel here, is selected there and takes the keys; out of it the main area selects it.
+   */
+  const dockTab = (tabId: string, dock: 'panel' | 'main'): void => {
+    if (access !== 'owner') return
+    ownDocks.current.add(tabId)
+    // Out of its split group first (main removes it): this view's own move, so D3's own rule applies.
+    if (dock === 'panel') intents.current.set(tabId, 'leave')
+    run(
+      window.cockpit
+        .invoke('tabs.dock', { tabId, dock })
+        .then(() => {
+          dispatch({ type: 'docked', tabId, dock, own: true })
+          if (dock === 'panel') {
+            if (!panelShownRef.current) openTerminalPanel()
+            sessions.takeOnSelect(tabId, [...viewRef.current.visible.filter((id) => id !== tabId), tabId])
+            setKeysOwner('panel')
+            askPanelFocus(tabId)
+          } else {
+            sessions.takeOnSelect(tabId, withPanelShown([tabId]))
+            setKeysOwner('main')
+            setPaneFocus({ tabId })
+          }
+        })
+        .finally(() => {
+          ownDocks.current.delete(tabId)
+          intents.current.delete(tabId)
+        })
+    )
+  }
+  /**
+   * `terminal.toggle` (§1, §13.3, §13.12): not on screen, it is shown (an empty panel gets a shell) and
+   * takes the keys; on screen with the keys, it closes and the keys go back to the main area; on
+   * screen without them, it takes them. The command gate already refused it under a modal.
+   */
+  const toggleTerminal = (): void => {
+    if (access !== 'owner') return
+    if (!panelShownRef.current) {
+      openTerminalPanel()
+      if (panelTabsOf(stateRef.current).length === 0) {
+        panelCreate({ kind: 'shell' })
+        return
+      }
+      // Showing it is the person's gesture: its tab takes the size here, as a click would.
+      const p = stateRef.current.panelActiveId
+      if (p !== null) sessions.takeOnSelect(p, [...viewRef.current.visible, p])
+      setKeysOwner('panel')
+      askPanelFocus(null)
+      return
+    }
+    if (keysOwnerRef.current === 'panel') {
+      closeTerminalPanel()
+      setKeysOwner('main')
+      giveBack('person')
+      return
+    }
+    setKeysOwner('panel')
+    askPanelFocus(null)
+  }
+  /** `terminal.new`: a new shell in the panel, shown and focused. */
+  const newTerminal = (): void => {
+    if (access !== 'owner') return
+    if (!panelShownRef.current) openTerminalPanel()
+    panelCreate({ kind: 'shell' })
+  }
+  const panelActions = useRef({ pick: panelPick, create: panelCreate, dock: dockTab, toggle: toggleTerminal, newTerminal })
+  useEffect(() => {
+    panelActions.current = { pick: panelPick, create: panelCreate, dock: dockTab, toggle: toggleTerminal, newTerminal }
+  })
   /**
    * A press on a strip tab. On the page tab that is the focused pane already it changes no selection,
    * so PageTabArea's select effect does not run again, and the press itself focused the strip's
@@ -1255,7 +1427,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       const s = stateRef.current
       const order = s.activeId ? touchRecent(recent.current, s.activeId) : recent.current
       const mods = heldModifiers(chordOf(dir === 1 ? SWITCH_NEXT : SWITCH_PREV))
-      const next = openSwitcher(s.tabs, order, dir, mods, sticky)
+      const next = openSwitcher(mainTabsOf(s), order.filter((id) => !isDocked(s.tabs.find((t) => t.id === id))), dir, mods, sticky)
       if (!next) return
       setSwitcher(next)
       if (!next.shown) {
@@ -1278,7 +1450,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   useEffect(() => {
     const open = switcherRef.current
     if (!open) return
-    const ids = new Set(state.tabs.map((t) => t.id))
+    const ids = new Set(mainTabs.map((t) => t.id))
     const order = open.order.filter((id) => ids.has(id))
     if (order.length === open.order.length) return
     if (order.length < 2) {
@@ -1287,7 +1459,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     }
     const at = order.indexOf(open.order[open.index] ?? '')
     setSwitcher({ ...open, order, index: at >= 0 ? at : Math.min(open.index, order.length - 1) })
-  }, [state.tabs, endSwitcher, setSwitcher])
+  }, [mainTabs, endSwitcher, setSwitcher])
   const closePalette = useCallback(
     (cause: CloseCause): void => {
       setPaletteCommands(null)
@@ -1443,10 +1615,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           return s.keysOff && !s.focusRefused ? null : s.activeId
         },
         refused: () => stateRef.current.keysOff && stateRef.current.focusRefused,
-        pick: (tabId) => dispatch({ type: 'selected', tabId }),
+        pick: (tabId) => {
+          // A page tab's frame is in the main area: the keys are the main area's again.
+          setKeysOwner('main')
+          dispatch({ type: 'selected', tabId })
+        },
         refuse: () => dispatch({ type: 'focusRefused' })
       }),
-    []
+    [setKeysOwner]
   )
   const wasOffering = useRef(false)
   useEffect(() => {
@@ -1488,7 +1664,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
 
   useEffect(() => {
     const select = (n: number) => (): void => {
-      const tab = stateRef.current.tabs[n - 1]
+      // The main strip's n-th tab: docked tabs are not counted (§1).
+      const tab = mainTabsOf(stateRef.current)[n - 1]
       if (tab) pickTab(tab.id)
     }
     const selects: Record<string, () => void> = {}
@@ -1675,6 +1852,92 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     }
   }, [closeSettings, openSettings, toggleSettings, switchTabs, endSwitcher, setSwitcher, pickTab, access])
 
+  // The Terminal panel's chords (design-terminal-panel.md §6, §13.3): registered for the page's life, by
+  // this pane, never by the panel's body (closed, the body is gone, and with no handler the chord would
+  // reach xterm, which types it: a NUL for Ctrl+`).
+  useEffect(
+    () =>
+      registerHandlers({
+        'terminal.toggle': () => panelActions.current.toggle(),
+        'terminal.new': () => panelActions.current.newTerminal()
+      }),
+    []
+  )
+  // While the panel holds the keys (and is on screen) Close Tab, the tab switch chords and New Shell
+  // act on the panel: overrides on the handler stack, so activeTabHandlers stays the main area's
+  // (§6). Registered after the main handlers above and re-run whenever they are (the same deps), so
+  // a re-registration of theirs never lands on top of these. Every other command is the main area's.
+  useEffect(() => {
+    if (keysOwner !== 'panel' || !panelShown) return undefined
+    return registerHandlers(
+      panelCommandHandlers({
+        panel: () => ({ ids: panelTabsOf(stateRef.current).map((t) => t.id), activeId: stateRef.current.panelActiveId }),
+        mainKeysOff: () => stateRef.current.keysOff,
+        close: (tabId) => actions.current.close(tabId),
+        pick: (tabId) => panelActions.current.pick(tabId),
+        newShell: () => panelActions.current.create({ kind: 'shell' })
+      })
+    )
+  }, [keysOwner, panelShown, closeSettings, openSettings, toggleSettings, switchTabs, endSwitcher, setSwitcher, pickTab, access])
+  // Who holds the keys (§13.3): a focus moving into the panel's body or into the main area (its strip,
+  // a pane) decides; anything else (a menu, the palette, a dialog, nothing) leaves it as it is.
+  useEffect(() => {
+    const onFocusIn = (e: FocusEvent): void => {
+      const owner = ownerOfFocus(e.target instanceof Element ? e.target : null)
+      if (owner !== undefined) setKeysOwner(owner)
+    }
+    document.addEventListener('focusin', onFocusIn, true)
+    return () => document.removeEventListener('focusin', onFocusIn, true)
+  }, [setKeysOwner])
+  // A browser view streams the panel's tab only once main is told it shows it (§13.7): when the panel
+  // is on screen and its selection changes, and on each show; never while it is hidden.
+  useEffect(() => {
+    if (!panelShown || state.panelActiveId === null || access !== 'owner') return
+    window.cockpit.invoke('tabs.panelSelected', { tabId: state.panelActiveId }).catch((err: unknown) => {
+      console.warn('reporting the panel selection failed', err)
+    })
+  }, [panelShown, state.panelActiveId, access])
+  // What the panel's body reads (terminal-panel-context.ts). The functions are made once and reach the
+  // current actions through refs, so the body's effects never run again for a new callback.
+  const panelFns = useMemo(
+    () => ({
+      labelOf: (tab: TabInfo) => tabLabel(tab),
+      select: (tabId: string) => panelActions.current.pick(tabId),
+      createShell: () => panelActions.current.create({ kind: 'shell' }),
+      createCommand: (level: TabCommandLevel, entryId: string) => panelActions.current.create({ kind: 'command', level, entryId }),
+      loadCommands: () => panelExtras.current.loadCommands(),
+      close: (tabId: string) => actions.current.close(tabId),
+      restart: (tabId: string) => panelExtras.current.restart(tabId),
+      moveToMain: (tabId: string) => panelActions.current.dock(tabId, 'main'),
+      reorder: (tabId: string, toIndex: number) => panelExtras.current.reorder(tabId, toIndex),
+      move: (tabId: string, delta: -1 | 1) => panelExtras.current.move(tabId, delta),
+      shown: (on: boolean) => {
+        panelShownRef.current = on
+        setPanelShownState(on)
+        // The body's unmount gives the keys back to the main area (§13.3).
+        if (!on) setKeysOwner('main')
+      },
+      menuClosed: () => panelExtras.current.giveBack()
+    }),
+    [setKeysOwner]
+  )
+  const panelExtras = useRef({ loadCommands: loadMenuCommands, restart, reorder, move, giveBack: () => giveBack('person') })
+  useEffect(() => {
+    panelExtras.current = { loadCommands: loadMenuCommands, restart, reorder, move, giveBack: () => giveBack('person') }
+  })
+  const panelApi = useMemo(
+    (): TerminalPanelApi => ({
+      ...panelFns,
+      tabs: panelTabs,
+      activeId: state.panelActiveId,
+      sessions,
+      commands: menuCommands,
+      canWrite: access === 'owner',
+      focusAsk: panelFocus
+    }),
+    [panelFns, panelTabs, state.panelActiveId, sessions, menuCommands, access, panelFocus]
+  )
+
   // The split view's commands (D10). They read the state through refs, like the handlers above, and
   // act through the same group channels as the strip's menus.
   const paneActions = useRef({ openSplit, groupEdit, ungroup, area, cellNow })
@@ -1698,7 +1961,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             const s = stateRef.current
             // The focused tab is the anchor; the pick lists the other tabs (every kind is a pane).
             if (!s.tabs.some((t) => t.id === tabId)) return
-            if (s.tabs.filter((t) => isPaneKind(t.kind)).length > 1) setBesidePick({ edge })
+            if (mainTabsOf(s).filter((t) => isPaneKind(t.kind)).length > 1) setBesidePick({ edge })
           },
           minShare: (axis) => {
             const { area: a, cellNow: c } = paneActions.current
@@ -1729,9 +1992,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         slots={layout.appSlots}
         onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen} />
       {chrome.updateNotice && <UpdateNotice inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen} />}
+      <TerminalPanelContext.Provider value={panelApi}>
       <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen}>
         <TabBar
-          tabs={state.tabs}
+          tabs={mainTabs}
           // D18: with the keys off no pane is focused, and no tab shows as the selected one either.
           activeId={state.keysOff ? null : state.activeId}
           onSelect={selectFromStrip}
@@ -1774,6 +2038,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             intents.current.set(tabId, 'leave')
             void groupEdit(window.cockpit.invoke('groups.remove', { tabId }), tabId)
           }}
+          {...(access === 'owner' ? { onDock: (tabId: string) => dockTab(tabId, 'panel') } : {})}
         />
         {closeNotices.map((n) => (
           <p key={n.tabId} role="status" className="guest-close-notice" data-kind={n.kind} data-testid="guest-close-notice">
@@ -1794,7 +2059,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           </p>
         )}
         <SplitArea
-          tabs={state.tabs}
+          tabs={mainTabs}
           activeId={state.activeId}
           view={view}
           keysOff={state.keysOff}
@@ -1816,6 +2081,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           access={access}
         />
       </Zones>
+      </TerminalPanelContext.Provider>
       {paletteCommands && (
         <CommandPalette
           commands={paletteCommands}
@@ -1854,7 +2120,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       )}
       {switcher?.shown && (
         <TabSwitcher
-          tabs={switcher.order.flatMap((id) => state.tabs.find((t) => t.id === id) ?? [])}
+          tabs={switcher.order.flatMap((id) => mainTabs.find((t) => t.id === id) ?? [])}
           index={switcher.index}
           sessions={own}
           onPick={(tabId) => endSwitcher(tabId, 'person')}

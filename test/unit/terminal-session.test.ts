@@ -109,6 +109,7 @@ interface Session {
   answerScreen(id: number, scrollback: number): void
   write(data: string, reset?: boolean, size?: { cols: number; rows: number }, local?: boolean): void
   attach(container: HTMLElement): void
+  detach(container?: HTMLElement): void
   takeOnLoad(): void
   takeOnSelect(): void
   focus(): void
@@ -802,5 +803,38 @@ describe('the uploads entry on a terminal', () => {
     expect(reg.pasteMode('t')).toEqual({ bracketed: false })
     reg.disposeAll()
     expect(reg.pasteMode('t')).toBeUndefined()
+  })
+})
+
+// design-terminal-panel.md §4 and §13.10: a tab moving between the main tab area and the Terminal panel
+// is attached to its new pane, and the old pane's cleanup may run after that (another commit).
+describe('detaching a pane the terminal has left', () => {
+  it("the old pane's late detach keeps the new pane; the new pane's own detach takes it off", () => {
+    const { s, resized } = session(false)
+    const oldPane = laidOutPane()
+    const newPane = laidOutPane()
+    s.attach(oldPane)
+    s.attach(newPane)
+    s.detach(oldPane)
+    // Still on the new pane: a resize there is measured and reported.
+    drag(150, 45)
+    expect(resized.at(-1)).toEqual([150, 45])
+    s.detach(newPane)
+    const before = resized.length
+    drag(90, 30)
+    expect(resized).toHaveLength(before)
+  })
+
+  it('a detach keeps the session: its output is still parsed and acked, and the registry hands out the same one', () => {
+    const acks: number[] = []
+    const registry = new SessionRegistry(() => ({ input: () => undefined, ack: (n) => acks.push(n), resize: () => undefined }))
+    const first = registry.get('t9')
+    made.push({ dispose: () => registry.disposeAll() })
+    const paneA = laidOutPane()
+    first.attach(paneA)
+    first.detach(paneA)
+    registry.write('t9', 'hello')
+    expect(acks).toEqual([5])
+    expect(registry.get('t9')).toBe(first)
   })
 })

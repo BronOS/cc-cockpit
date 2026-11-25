@@ -221,9 +221,15 @@ export class LayoutSync {
     this.set({ layout: this.display(view.layout), panels: view.panels, appSlots: view.appSlots ?? NO_SLOTS })
   }
 
-  /** Main's layout as this view draws it: under its own geometry in geometry mode. */
+  /**
+   * Main's layout as this view draws it: under its own geometry in geometry mode. The Terminal panel's
+   * open state is part of it (LayoutGeometry.terminalOpen, design-terminal-panel.md §13.1, D8): a browser
+   * view that never toggled it here starts with it closed, whatever the desktop shows.
+   */
   private display(layout: LayoutState): LayoutState {
-    return this.geometry && this.local ? withGeometry(layout, this.local) : layout
+    if (!this.geometry) return layout
+    const own: LayoutGeometry = this.local ?? { zones: {}, panels: {} }
+    return withGeometry(layout, own.terminalOpen === undefined ? { ...own, terminalOpen: false } : own)
   }
 
   private set(next: LayoutSnapshot): void {

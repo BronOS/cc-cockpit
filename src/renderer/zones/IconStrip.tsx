@@ -7,6 +7,7 @@ import { useShellLayer } from './use-shell-layer'
 import { shellPageUrl } from '../web/page-paths'
 import { viewAccessHint } from '../shell-kind'
 import { shellAllows } from '../tabs/guest-shell'
+import { ShellGlyph } from '../window-icons'
 
 const ZONE_NAMES: Record<ZoneId, string> = { left: 'Left', right: 'Right', bottom: 'Bottom' }
 
@@ -67,6 +68,8 @@ export function MaskIcon({
  */
 function PanelGlyph({ info }: { info: PanelInfo }): React.JSX.Element {
   const [failed, setFailed] = useState<string | undefined>(undefined)
+  // A core panel draws the shell's own glyph (the Terminal panel: a prompt, design-terminal-panel.md §1).
+  if (info.kind === 'core') return <ShellGlyph size={18} className="panel-icon-core" />
   if (info.iconSrc && failed !== info.iconSrc) {
     return <MaskIcon src={info.iconSrc} onFail={setFailed} />
   }

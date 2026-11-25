@@ -1,10 +1,11 @@
 import { Fragment, useRef } from 'react'
 import type { PanelInfo } from '../../shared/ipc'
-import { MIN_SIZE, type PanelPlacement, type ZoneId, type ZoneState } from '../../shared/layout'
+import { MIN_SIZE, TERMINAL_PANEL_KEY, type PanelPlacement, type ZoneId, type ZoneState } from '../../shared/layout'
 import { MoreGlyph } from '../window-icons'
 import { MENU_WIDTH, ZONE_MENU_TRIGGER } from './IconStrip'
 import { PanelHeaderActions, PanelHeaderMeta, PanelSettingsGear } from './PanelHeaderBar'
 import { PluginPanel } from './PluginPanel'
+import { TerminalPanelBody } from '../tabs/TerminalPanelBody'
 import { viewAccessHint } from '../shell-kind'
 import { shellAllows } from '../tabs/guest-shell'
 import { Splitter } from './Splitter'
@@ -135,7 +136,9 @@ export function PanelArea(props: {
                     <MoreGlyph />
                   </button>}
                 </header>
-                <PluginPanel info={info} />
+                {/* A core panel (`kind: 'core'`, no frame, no plugin) is drawn by the shell itself: today only
+                    the Terminal panel (design-terminal-panel.md §4); an unknown core key draws nothing. */}
+                {info.kind === 'core' ? (info.panelKey === TERMINAL_PANEL_KEY ? <TerminalPanelBody /> : null) : <PluginPanel info={info} />}
               </section>
               {!last && (
                 <Splitter

@@ -6,6 +6,7 @@ import type { TabInfo } from '../../shared/ipc'
 import type { TabFlag } from '../../shared/tab-flag'
 import { groupOf, leavesOf, removeLeaf, type GroupsSnapshot } from '../../shared/tab-groups'
 import { successorInGroup } from '../tabs/pane-layout'
+import { isDocked } from '../tabs/dock-order'
 import {
   applyOrder,
   initialGroupsView,
@@ -57,6 +58,17 @@ export interface TabsState extends GroupsViewState {
    * the keys on), while D3's keys off picks nothing from a frame, whatever the evidence.
    */
   focusRefused: boolean
+  /**
+   * The Terminal panel's selected tab in this view (design-terminal-panel.md §2 "Selection", §13.10):
+   * page-local, never saved, a docked tab or null when the panel has none. `activeId` is the main
+   * area's and is never a docked tab (the rule after every step, tabsReducer).
+   */
+  panelActiveId: string | null
+  /**
+   * `tabs.docked` events for tabs the page does not hold yet, before the list answered: the list may
+   * have been taken before the move, and must not undo it (§13.10). Applied by 'loaded'.
+   */
+  earlyDocks: Record<string, 'panel' | 'main'>
 }
 
 /**
@@ -131,6 +143,16 @@ export type TabsAction =
    * stricter kind is never relaxed by a page).
    */
   | { type: 'focusRefused' }
+  /**
+   * A tab moved between the main tab area and the Terminal panel (`tabs.docked`, or this view's own
+   * `tabs.dock` reply). `own`: the person's move in this view (design §13.11): into the panel it
+   * becomes the panel's selection, out of it the main area's, keys on. A move from elsewhere changes
+   * no selection here, except that a docked-away active tab leaves the main area as a close would,
+   * keys off (D3: nothing done elsewhere moves this view's keys).
+   */
+  | { type: 'docked'; tabId: string; dock: 'panel' | 'main'; own?: boolean }
+  /** The person (or the page's own rule) selected a tab of the Terminal panel. */
+  | { type: 'panelSelected'; tabId: string }
 
 export const initialTabsState: TabsState = {
   ...initialGroupsView,
@@ -140,14 +162,66 @@ export const initialTabsState: TabsState = {
   listed: false,
   closedEarly: [],
   removedEarly: {},
-  focusRefused: false
+  focusRefused: false,
+  panelActiveId: null,
+  earlyDocks: {}
 }
 
 export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
-  const next = settleGroups(state, step(state, action))
+  const next = settleDocks(state, settleGroups(state, step(state, action)))
   // The refusal's kind of keys off ends with the keys off: whatever turned them on again (a pick, a
   // chord, the check picking a frame) or another rule took them off anew (D3, set in its own cases).
   return next.focusRefused && !next.keysOff ? { ...next, focusRefused: false } : next
+}
+
+/** The main tab area's tabs (the strip, its count, `tab.select.N`, the split area): no docked tab. */
+export function mainTabsOf(state: Pick<TabsState, 'tabs'>): TabInfo[] {
+  return state.tabs.filter((t) => !isDocked(t))
+}
+
+/** The Terminal panel's tabs, in the one order. */
+export function panelTabsOf(state: Pick<TabsState, 'tabs'>): TabInfo[] {
+  return state.tabs.filter((t) => isDocked(t))
+}
+
+/**
+ * The nearest tab of one area to where `from` stood in `before` (it may be gone from `tabs`, or have
+ * moved to the other area): the next one to its right in the one order, else to its left; null for none.
+ */
+function nearestIn(tabs: readonly TabInfo[], before: readonly TabInfo[], from: string, panel: boolean): string | null {
+  const held = new Map(tabs.map((t) => [t.id, t]))
+  const fits = (id: string): boolean => {
+    const t = held.get(id)
+    return t !== undefined && isDocked(t) === panel
+  }
+  const order = before.some((t) => t.id === from) ? before.map((t) => t.id) : tabs.map((t) => t.id)
+  const at = order.indexOf(from)
+  if (at >= 0) {
+    for (let i = at + 1; i < order.length; i++) if (fits(order[i]!)) return order[i]!
+    for (let i = at - 1; i >= 0; i--) if (fits(order[i]!)) return order[i]!
+  }
+  return tabs.find((t) => isDocked(t) === panel)?.id ?? null
+}
+
+/**
+ * After every step (design-terminal-panel.md §13.10): the main area's selection is never a docked
+ * tab (it goes to the nearest main tab, as a close would), and the panel's is a held docked tab
+ * whenever the panel has one (the nearest to the one that went, else the first: a reloaded view picks
+ * the first docked tab, §13.7).
+ */
+function settleDocks(before: TabsState, s: TabsState): TabsState {
+  if (s === before) return s
+  let next = s
+  const byId = new Map(s.tabs.map((t) => [t.id, t]))
+  if (s.activeId !== null && isDocked(byId.get(s.activeId))) {
+    next = { ...next, activeId: nearestIn(s.tabs, s.tabs, s.activeId, false) }
+  }
+  const p = s.panelActiveId
+  if (p === null || !isDocked(byId.get(p))) {
+    const pick = p === null ? (s.tabs.find((t) => isDocked(t))?.id ?? null) : nearestIn(s.tabs, before.tabs, p, true)
+    if (pick !== p) next = { ...next, panelActiveId: pick }
+  }
+  return next
 }
 
 /**
@@ -186,7 +260,7 @@ function step(state: TabsState, action: TabsAction): TabsState {
       const tabs = [
         ...action.tabs
           .filter((t) => !state.closedEarly.includes(t.id) && !removedBefore(t, removedEarly))
-          .map((t) => settle(newer(known.get(t.id), t), earlyExits)),
+          .map((t) => withDock(settle(newer(known.get(t.id), t), earlyExits), state.earlyDocks[t.id])),
         // Not in the list: announced or created after it was taken. A tab that closed since
         // (this page's Close, or main's `tabs.removed`) has already left `state.tabs`, so a tab
         // held here is still alive.
@@ -200,7 +274,8 @@ function step(state: TabsState, action: TabsAction): TabsState {
         earlyExits,
         listed: true,
         closedEarly: [],
-        removedEarly
+        removedEarly,
+        earlyDocks: {}
       }
     }
     case 'added':
@@ -211,6 +286,12 @@ function step(state: TabsState, action: TabsAction): TabsState {
       const existing = state.tabs.find((t) => t.id === action.tab.id)
       const tab = settle(newer(existing, action.tab), earlyExits)
       const tabs = existing ? state.tabs.map((t) => (t.id === tab.id ? tab : t)) : [...state.tabs, tab]
+      // A tab made in or for the Terminal panel is the panel's selection, never the main area's (an
+      // own create selects it there; one announced from elsewhere only fills an empty panel).
+      if (isDocked(tab)) {
+        const panelActiveId = action.type === 'added' ? tab.id : (state.panelActiveId ?? tab.id)
+        return { ...state, tabs, panelActiveId, earlyExits }
+      }
       const activeId = action.type === 'added' ? tab.id : (state.activeId ?? tab.id)
       return { ...state, tabs, activeId, earlyExits }
     }
@@ -260,7 +341,9 @@ function step(state: TabsState, action: TabsAction): TabsState {
       return tabsReducer({ ...state, earlyExits }, { type: 'closed', tabId: action.tabId })
     }
     case 'selected': {
-      if (!state.tabs.some((t) => t.id === action.tabId)) return state
+      // A docked tab is never the main area's (main ignores a select naming one too, §13.5).
+      const target = state.tabs.find((t) => t.id === action.tabId)
+      if (!target || isDocked(target)) return state
       // Selecting a member that this view's zoom hides unzooms its group first (design §1 "Zoom").
       const g = groupOf(state.groups, action.tabId)
       const zoomedTab = g ? state.zoomed[g.id] : undefined
@@ -307,6 +390,13 @@ function step(state: TabsState, action: TabsAction): TabsState {
       return { ...state, zoomed: { ...state.zoomed, [g.id]: action.tabId } }
     }
     case 'exitFocus': {
+      // Inside the Terminal panel (§13.4, D9): the panel's next tab, picked by main's own record of
+      // this view's keys there; the shell gives it the keyboard (TabsPane). Never the main area.
+      const to = state.tabs.find((t) => t.id === action.tabId)
+      if (isDocked(to)) {
+        if (state.tabs.some((t) => t.id === action.closed)) return state
+        return state.panelActiveId === action.tabId ? state : { ...state, panelActiveId: action.tabId }
+      }
       if (!state.keysOff || state.activeId === null) return state
       if (state.tabs.some((t) => t.id === action.closed) || !state.tabs.some((t) => t.id === action.tabId)) return state
       const shown = groupOf(state.groups, state.activeId)
@@ -315,6 +405,31 @@ function step(state: TabsState, action: TabsAction): TabsState {
     }
     case 'keysOn':
       return state.keysOff ? { ...state, keysOff: false } : state
+    case 'docked': {
+      const tab = state.tabs.find((t) => t.id === action.tabId)
+      if (!tab) {
+        // Its snapshot has not come yet: before the list, the list may be older than the move.
+        return state.listed ? state : { ...state, earlyDocks: { ...state.earlyDocks, [action.tabId]: action.dock } }
+      }
+      const moved = withDock(tab, action.dock)
+      const tabs = moved === tab ? state.tabs : state.tabs.map((t) => (t.id === tab.id ? moved : t))
+      let next: TabsState = { ...state, tabs }
+      if (action.dock === 'panel') {
+        if (action.own === true) next = { ...next, panelActiveId: tab.id }
+        if (state.activeId === tab.id) {
+          // As a close would (the neighbour that slides in), keys off unless it was this view's own move.
+          next = { ...next, activeId: nearestIn(tabs, state.tabs, tab.id, false), keysOff: action.own !== true, focusRefused: false }
+        }
+      } else if (action.own === true) {
+        next = { ...next, activeId: tab.id, keysOff: false, focusRefused: false }
+      }
+      return next
+    }
+    case 'panelSelected': {
+      const tab = state.tabs.find((t) => t.id === action.tabId)
+      if (!tab || !isDocked(tab) || state.panelActiveId === tab.id) return state
+      return { ...state, panelActiveId: tab.id }
+    }
     case 'focusRefused':
       return state.activeId === null || state.keysOff ? state : { ...state, keysOff: true, focusRefused: true }
     case 'moved': {
@@ -371,6 +486,20 @@ function step(state: TabsState, action: TabsAction): TabsState {
       }
     }
   }
+}
+
+/**
+ * `tab` in the area `dock` says (undefined: as it is). Docking clears the flag (main clears it too,
+ * §13.14: no flags on panel tabs).
+ */
+function withDock(tab: TabInfo, dock: 'panel' | 'main' | undefined): TabInfo {
+  if (dock === undefined || (dock === 'panel') === isDocked(tab)) return tab
+  const next = { ...tab }
+  if (dock === 'panel') {
+    next.dock = 'panel'
+    delete next.flag
+  } else delete next.dock
+  return next
 }
 
 function omit(rec: Record<string, string>, key: string): Record<string, string> {

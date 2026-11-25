@@ -228,6 +228,8 @@ export function TabBar(props: {
   /** Show beside: `tabId` goes at `edge` of `at`'s pane. */
   onShowBeside: (tabId: string, at: string, edge: 'right' | 'down') => void
   onMoveOut: (tabId: string) => void
+  /** "Move to Terminal panel" on a shell or command tab (design-terminal-panel.md §1); absent: not offered (a guest's view). */
+  onDock?: (tabId: string) => void
 }): React.JSX.Element {
   const { tabs, activeId, groups, onPaneDrag } = props
   // Settings › Appearance › Tabs; pushed by main, so every window's strip follows a pick.
@@ -903,6 +905,15 @@ export function TabBar(props: {
                   Move out of group
                 </button>
               )}
+            </>
+          )}
+          {/* The Terminal panel (design-terminal-panel.md §1): a shell or command tab moves there, keeping its session. */}
+          {props.onDock && (menuTab.kind === 'shell' || menuTab.kind === 'command') && (
+            <>
+              <div role="separator" className="menu-separator" />
+              <button type="button" role="menuitem" onClick={() => props.onDock?.(menu.tabId)}>
+                Move to Terminal panel
+              </button>
             </>
           )}
           {/* A member tab's room entries (tab-room.ts): the person's mark, and the room view. */}

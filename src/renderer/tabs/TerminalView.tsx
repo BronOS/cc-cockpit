@@ -26,8 +26,11 @@ export function TerminalView(props: {
    * counts as a click there (design-upload.md §4.1).
    */
   onSelect?: () => void
+  /** Takes uploads from this device when its kind does (default); false for a Terminal panel terminal. */
+  uploads?: boolean
 }): React.JSX.Element {
   const { tab, shown, focused, sessions } = props
+  const uploads = props.uploads !== false
   const host = useRef<HTMLDivElement>(null)
   // Read at the drop, so the attach below does not run again on every render's new callback.
   const select = useRef(props.onSelect)
@@ -42,10 +45,13 @@ export function TerminalView(props: {
     const session = sessions.get(tab.id)
     // Uploads from this device (design-upload.md §4.1): a Claude or shell tab of the web shell, not a
     // read guest's view (a UI hint: main refuses by the view's role); command and page tabs take nothing.
-    const entry = takesUploads(kind, isWebShell(), viewAccessHint()) ? { tabId: tab.id, select: () => select.current?.() } : undefined
+    // Never on a Terminal panel terminal in v1 (`uploads` false, design-terminal-panel.md §13.17).
+    const entry = uploads && takesUploads(kind, isWebShell(), viewAccessHint()) ? { tabId: tab.id, select: () => select.current?.() } : undefined
     session.attach(el, entry)
-    return () => session.detach()
-  }, [sessions, tab.id, kind])
+    // Its own pane only: by the time this runs the terminal may be attached elsewhere already (a tab
+    // moved between the main area and the Terminal panel), and that attach must stay.
+    return () => session.detach(el)
+  }, [sessions, tab.id, kind, uploads])
 
   useEffect(() => {
     if (focused) sessions.get(tab.id).focus()

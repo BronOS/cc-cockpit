@@ -484,7 +484,14 @@ export class TerminalSession {
     return { bracketed: this.term.modes.bracketedPasteMode }
   }
 
-  detach(): void {
+  /**
+   * Leave the pane. `container`: only when it is still the one attached (a TerminalView's own
+   * cleanup): a tab moving between the main tab area and the Terminal panel is attached to its new
+   * pane, possibly in an earlier commit than the old pane's cleanup runs (design-terminal-panel.md
+   * §13.10), and that late cleanup must not take the terminal off the pane that now shows it.
+   */
+  detach(container?: HTMLElement): void {
+    if (container !== undefined && container !== this.container) return
     this.removeContainerListeners()
     this.container?.classList.remove('terminal-crop', 'terminal-crop-cols', 'terminal-crop-rows')
     this.observer?.disconnect()
