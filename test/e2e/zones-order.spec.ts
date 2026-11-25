@@ -21,7 +21,8 @@ async function declare(c: Cockpit, page: Page = c.page, count = 3): Promise<void
     { id: 'b', title: 'Beta', defaultZone: 'right' },
     { id: 'c', title: 'Gamma', defaultZone: 'right' }
   ])
-  await expect(page.locator('.icon-strip .panel-icon[data-panel]')).toHaveCount(count)
+  // The test panels only: the bottom strip also shows the core Terminal panel (design-terminal-panel.md §4).
+  await expect(page.locator('.icon-strip .panel-icon[data-panel^="t/"]')).toHaveCount(count)
 }
 
 /** Press on an icon, move in steps past the drag threshold to (x, y), optionally release. */

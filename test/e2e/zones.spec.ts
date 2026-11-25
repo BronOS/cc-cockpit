@@ -92,7 +92,9 @@ test('move a panel to the bottom zone, hide and unhide it, collapse a zone, reop
     await expect(sessionsPanel(page, 'bottom')).toBeVisible()
     await expect(sessionsIcon(page, 'left')).toHaveCount(0)
     await expect(sessionsIcon(page, 'bottom')).toHaveAttribute('aria-pressed', 'true')
+    // The bottom zone also holds the core Terminal panel (closed, design-terminal-panel.md §4): Sessions joins after it.
     expect((await layout(cockpit)).layout.zones.bottom.panels.map((p) => p.panelKey)).toEqual([
+      'core/terminal',
       'stand/sessions'
     ])
 
