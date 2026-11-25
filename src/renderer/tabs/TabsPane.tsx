@@ -26,7 +26,8 @@ import { currentGuest, currentShellChrome, isServerView, isWebShell, takeLoadTab
 import { initialTabsState, mainTabsOf, panelTabsOf, tabsReducer } from '../state/tabs-store'
 import { showPanel, TERMINAL_PANEL_KEY, togglePanel, zoneOf } from '../../shared/layout'
 import { fullIndexOf, isDocked, stepIndex } from './dock-order'
-import { TerminalPanelContext, type PanelFocusAsk, type TerminalPanelApi } from './terminal-panel-context'
+import { TerminalPanelContext, type TerminalPanelApi } from './terminal-panel-context'
+import { PanelFocusAsks } from './panel-focus'
 import { ownerOfFocus, panelCommandHandlers, type KeysOwner } from './panel-keys'
 import { ignoresMainSelect, paneView, type PaneView } from '../state/groups-state'
 import { usePrefs } from '../prefs/prefs-store'
@@ -156,8 +157,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const [panelShown, setPanelShownState] = useState(false)
   const panelShownRef = useRef(false)
   // The latest ask to give the panel the keyboard (terminal-panel-context.ts).
-  const [panelFocus, setPanelFocus] = useState<PanelFocusAsk | null>(null)
-  const askPanelFocus = useCallback((tabId: string | null): void => setPanelFocus({ tabId }), [])
+  const [panelFocus] = useState(() => new PanelFocusAsks())
+  const [focusSeq, setFocusSeq] = useState(0)
+  const askPanelFocus = useCallback((tabId: string | null): void => {
+    panelFocus.ask(tabId)
+    setFocusSeq((n) => n + 1)
+  }, [panelFocus])
   // This view's own `tabs.dock` calls on the way: their `tabs.docked` event is the person's own move.
   const ownDocks = useRef(new Set<string>())
   // The split view (SplitArea): the terminal area's size and about one cell of the terminal font,
@@ -1261,7 +1266,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const giveBack = useCallback((cause: CloseCause): void => giveBackRule.current?.closed(cause, focusActive), [focusActive])
   // ---- The Terminal panel (design-terminal-panel.md; the body is TerminalPanelBody.tsx) ----
   /** Show the panel on this screen: a hidden one comes back to its remembered zone, a closed one opens, its zone expands (§13.12). */
-  const openTerminalPanel = (): void => layout.commit((l) => showPanel(l, TERMINAL_PANEL_KEY, 'bottom'))
+  const [revealAsk, setRevealAsk] = useState<{ panelKey: string } | null>(null)
+  const openTerminalPanel = (): void => {
+    layout.commit((l) => showPanel(l, TERMINAL_PANEL_KEY, 'bottom'))
+    // Open already, in a side zone the window auto-hid: the layout does not change, so Zones is asked (S6).
+    setRevealAsk({ panelKey: TERMINAL_PANEL_KEY })
+  }
   /** Close it on this screen (D2: its placement's open state; the zone and the other panels stay). */
   const closeTerminalPanel = (): void =>
     layout.commit((l) => {
@@ -1873,6 +1883,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       panelCommandHandlers({
         panel: () => ({ ids: panelTabsOf(stateRef.current).map((t) => t.id), activeId: stateRef.current.panelActiveId }),
         mainKeysOff: () => stateRef.current.keysOff,
+        panelKeysOff: () => stateRef.current.panelKeysOff,
         close: (tabId) => actions.current.close(tabId),
         pick: (tabId) => panelActions.current.pick(tabId),
         newShell: () => panelActions.current.create({ kind: 'shell' })
@@ -1885,6 +1896,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const onFocusIn = (e: FocusEvent): void => {
       const owner = ownerOfFocus(e.target instanceof Element ? e.target : null)
       if (owner !== undefined) setKeysOwner(owner)
+      // A focus in the panel is the person reaching it: its keys are on again (S3).
+      if (owner === 'panel' && stateRef.current.panelKeysOff) dispatch({ type: 'panelKeysOn' })
     }
     document.addEventListener('focusin', onFocusIn, true)
     return () => document.removeEventListener('focusin', onFocusIn, true)
@@ -1914,12 +1927,16 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       shown: (on: boolean) => {
         panelShownRef.current = on
         setPanelShownState(on)
-        // The body's unmount gives the keys back to the main area (§13.3).
-        if (!on) setKeysOwner('main')
+        // The body's unmount gives the keys back to the main area (§13.3), and an ask made for the
+        // panel before it went is nobody's (S4).
+        if (!on) {
+          setKeysOwner('main')
+          panelFocus.drop()
+        }
       },
       menuClosed: () => panelExtras.current.giveBack()
     }),
-    [setKeysOwner]
+    [setKeysOwner, panelFocus]
   )
   const panelExtras = useRef({ loadCommands: loadMenuCommands, restart, reorder, move, giveBack: () => giveBack('person') })
   useEffect(() => {
@@ -1933,9 +1950,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       sessions,
       commands: menuCommands,
       canWrite: access === 'owner',
-      focusAsk: panelFocus
+      focusAsks: panelFocus,
+      focusSeq
     }),
-    [panelFns, panelTabs, state.panelActiveId, sessions, menuCommands, access, panelFocus]
+    [panelFns, panelTabs, state.panelActiveId, sessions, menuCommands, access, panelFocus, focusSeq]
   )
 
   // The split view's commands (D10). They read the state through refs, like the handlers above, and
@@ -1993,7 +2011,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen} />
       {chrome.updateNotice && <UpdateNotice inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen} />}
       <TerminalPanelContext.Provider value={panelApi}>
-      <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen}>
+      <Zones controller={layout} revealAsk={revealAsk} inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen}>
         <TabBar
           tabs={mainTabs}
           // D18: with the keys off no pane is focused, and no tab shows as the selected one either.
@@ -2063,6 +2081,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           activeId={state.activeId}
           view={view}
           keysOff={state.keysOff}
+          keysInPanel={keysOwner === 'panel' && panelShown}
           sessions={sessions}
           details={own}
           cell={cellNow}

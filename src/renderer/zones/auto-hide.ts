@@ -22,6 +22,8 @@
 //  - Widths are the zone's own saved size (resizable, capped like the CSS cap), so a zone dragged
 //    wide gives way sooner and needs more room to come back.
 
+import { zoneOf, type LayoutState } from '../../shared/layout'
+
 export type SideZone = 'left' | 'right'
 export const SIDE_ZONES: readonly SideZone[] = ['left', 'right']
 /** Hidden in this order as the window narrows; restored in the reverse. */
@@ -139,4 +141,15 @@ export function newlyShown(prev: ZonesLike, next: ZonesLike): SideZone[] {
     const wasOpen = new Set(before.collapsed ? [] : before.panels.filter((p) => p.open).map((p) => p.panelKey))
     return after.panels.some((p) => p.open && !wasOpen.has(p.panelKey))
   })
+}
+
+/**
+ * The auto-hidden side zone a panel the person asked to see sits in, or undefined (not placed, in
+ * the bottom zone, or its zone is on screen). The Terminal panel's toggle (design-terminal-panel.md
+ * §1, the review's S6): a panel that is already open in an auto-hidden zone changes nothing in the
+ * layout, so `newlyShown` never sees it, and only this ask brings the zone back.
+ */
+export function zoneToReveal(layout: LayoutState, panelKey: string, hidden: readonly SideZone[]): SideZone | undefined {
+  const zone = zoneOf(layout, panelKey)
+  return (zone === 'left' || zone === 'right') && hidden.includes(zone) ? zone : undefined
 }

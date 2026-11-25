@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { setZoneCollapsed } from '../../shared/layout'
 import { registerHandlers } from '../commands/keybindings'
-import type { SideZone } from './auto-hide'
+import { zoneToReveal, type SideZone } from './auto-hide'
 import { useAutoHide } from './use-auto-hide'
 import { Zone } from './Zone'
 import type { LayoutController } from './use-layout'
@@ -17,6 +17,11 @@ export function Zones(props: {
   controller: LayoutController
   /** A modal screen covers the window (settings): nothing here may take the focus or a key. */
   inert?: boolean
+  /**
+   * The person asked to see this panel (the Terminal panel's toggle): its zone comes back when it is
+   * auto-hidden (auto-hide.ts zoneToReveal). Each ask is a new object, run once.
+   */
+  revealAsk?: { panelKey: string } | null
 }): React.JSX.Element {
   const { controller } = props
   const upper = useRef<HTMLDivElement>(null)
@@ -44,6 +49,14 @@ export function Zones(props: {
       'zone.toggleRight': () => toggleSide('right')
     })
   }, [])
+
+  const { revealAsk } = props
+  useEffect(() => {
+    if (!revealAsk) return
+    const { controller, autoHide } = latest.current
+    const zone = zoneToReveal(controller.layout, revealAsk.panelKey, autoHide.hidden)
+    if (zone !== undefined) autoHide.reveal(zone)
+  }, [revealAsk])
 
   return (
     <div className="zones" inert={props.inert}>

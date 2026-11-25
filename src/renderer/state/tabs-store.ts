@@ -69,6 +69,12 @@ export interface TabsState extends GroupsViewState {
    * have been taken before the move, and must not undo it (§13.10). Applied by 'loaded'.
    */
   earlyDocks: Record<string, 'panel' | 'main'>
+  /**
+   * The panel's own D3 (design-terminal-panel.md §6): its selected tab went or left the panel without
+   * this view's own close or move (an exit, another view), so the neighbour now selected is nobody's
+   * pick and Close Tab there acts on nothing until the person picks or focuses a panel tab.
+   */
+  panelKeysOff: boolean
 }
 
 /**
@@ -133,6 +139,8 @@ export type TabsAction =
   | { type: 'exitFocus'; tabId: string; closed: string }
   /** The person clicked a pane or used a chord: the keys are on again after D3 took them off. */
   | { type: 'keysOn' }
+  /** The person focused the panel's terminal or strip: the panel's keys are on again. */
+  | { type: 'panelKeysOn' }
   /**
    * The shell's focus check blurred a frame for want of evidence (frame-focus.ts checkFrames): the
    * keyboard is on nothing, so the view goes keys off (the final review's MAJOR). With the outline
@@ -164,11 +172,12 @@ export const initialTabsState: TabsState = {
   removedEarly: {},
   focusRefused: false,
   panelActiveId: null,
-  earlyDocks: {}
+  earlyDocks: {},
+  panelKeysOff: false
 }
 
 export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
-  const next = settleDocks(state, settleGroups(state, step(state, action)))
+  const next = panelKeys(state, action, settleDocks(state, settleGroups(state, step(state, action))))
   // The refusal's kind of keys off ends with the keys off: whatever turned them on again (a pick, a
   // chord, the check picking a frame) or another rule took them off anew (D3, set in its own cases).
   return next.focusRefused && !next.keysOff ? { ...next, focusRefused: false } : next
@@ -209,6 +218,26 @@ function nearestIn(tabs: readonly TabInfo[], before: readonly TabInfo[], from: s
  * whenever the panel has one (the nearest to the one that went, else the first: a reloaded view picks
  * the first docked tab, §13.7).
  */
+/**
+ * The panel's keys-off (TabsState.panelKeysOff): set when the panel's selected tab went or left the
+ * panel by anything but this view's own close or move; cleared by the person's own pick, create or
+ * focus there and by main's exit focus (their own Ctrl+D in the panel, §13.4).
+ */
+function panelKeys(before: TabsState, action: TabsAction, s: TabsState): TabsState {
+  const was = before.panelActiveId
+  const own = (action.type === 'closed' || action.type === 'docked') && action.own === true
+  const left = was !== null && s.panelActiveId !== was && !s.tabs.some((t) => t.id === was && isDocked(t))
+  if (left && !own) return s.panelKeysOff ? s : { ...s, panelKeysOff: true }
+  const on =
+    action.type === 'panelKeysOn' ||
+    action.type === 'panelSelected' ||
+    (action.type === 'added' && isDocked(action.tab)) ||
+    (action.type === 'exitFocus' && s.panelActiveId === action.tabId && isDocked(s.tabs.find((t) => t.id === action.tabId))) ||
+    (own && left) ||
+    (action.type === 'docked' && action.own === true && action.dock === 'panel')
+  return on && s.panelKeysOff ? { ...s, panelKeysOff: false } : s
+}
+
 function settleDocks(before: TabsState, s: TabsState): TabsState {
   if (s === before) return s
   let next = s
@@ -405,15 +434,18 @@ function step(state: TabsState, action: TabsAction): TabsState {
     }
     case 'keysOn':
       return state.keysOff ? { ...state, keysOff: false } : state
+    case 'panelKeysOn':
+      return state.panelKeysOff ? { ...state, panelKeysOff: false } : state
     case 'docked': {
       const tab = state.tabs.find((t) => t.id === action.tabId)
-      if (!tab) {
-        // Its snapshot has not come yet: before the list, the list may be older than the move.
-        return state.listed ? state : { ...state, earlyDocks: { ...state.earlyDocks, [action.tabId]: action.dock } }
-      }
+      // Before the list answered, every move is remembered for it, held tab or not: the list may
+      // have been taken before the move and must not undo it (§13.10; a tab held from a create reply
+      // or `tabs.added` is in the list too).
+      const early = state.listed ? state.earlyDocks : { ...state.earlyDocks, [action.tabId]: action.dock }
+      if (!tab) return state.listed ? state : { ...state, earlyDocks: early }
       const moved = withDock(tab, action.dock)
       const tabs = moved === tab ? state.tabs : state.tabs.map((t) => (t.id === tab.id ? moved : t))
-      let next: TabsState = { ...state, tabs }
+      let next: TabsState = { ...state, tabs, earlyDocks: early }
       if (action.dock === 'panel') {
         if (action.own === true) next = { ...next, panelActiveId: tab.id }
         if (state.activeId === tab.id) {

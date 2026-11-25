@@ -6,15 +6,8 @@
 import { createContext } from 'react'
 import type { TabCommandMenu, TabInfo } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
+import type { PanelFocusAsks } from './panel-focus'
 import type { SessionRegistry } from './terminal-session'
-
-/**
- * A request to give the keyboard to the panel: `tabId`'s terminal once it is the panel's selection, or
- * (null) whichever tab the panel shows, its Shell button when it has none. Each ask is a new object, run once.
- */
-export interface PanelFocusAsk {
-  tabId: string | null
-}
 
 export interface TerminalPanelApi {
   /** The panel's tabs (docked), in the one order. */
@@ -26,8 +19,10 @@ export interface TerminalPanelApi {
   commands: TabCommandMenu | null
   /** This view may write (open, close, restart, move tabs): only the owner ever has a panel. */
   canWrite: boolean
-  /** The latest focus ask (null: none yet). */
-  focusAsk: PanelFocusAsk | null
+  /** The focus asks (panel-focus.ts): the body takes one when `focusSeq` or its selection changes. */
+  focusAsks: PanelFocusAsks
+  /** Bumped by every ask, so the body's effect runs for it. */
+  focusSeq: number
   /** Label of a panel tab, as the main strip names it. */
   labelOf(tab: TabInfo): string
   /** The person picked a tab in the panel's strip. */

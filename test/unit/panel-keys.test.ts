@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ownerOfFocus, panelCommandHandlers, panelStep } from '../../src/renderer/tabs/panel-keys'
+import { mainPaneFocused, ownerOfFocus, panelCommandHandlers, panelStep } from '../../src/renderer/tabs/panel-keys'
 import { SWITCH_NEXT, SWITCH_PREV } from '../../src/renderer/tabs/tab-switcher'
 
 // design-terminal-panel.md §6, §13.3 (D10): the keys follow the area the person last focused, and the
@@ -32,11 +32,12 @@ describe('panelStep', () => {
 })
 
 describe('panelCommandHandlers', () => {
-  function setup(ids: string[], activeId: string | null, keysOff = false) {
+  function setup(ids: string[], activeId: string | null, keysOff = false, panelOff = false) {
     const calls: string[] = []
     const h = panelCommandHandlers({
       panel: () => ({ ids, activeId }),
       mainKeysOff: () => keysOff,
+      panelKeysOff: () => panelOff,
       close: (id) => calls.push(`close ${id}`),
       pick: (id) => calls.push(`pick ${id}`),
       newShell: () => calls.push('newShell')
@@ -76,5 +77,40 @@ describe('panelCommandHandlers', () => {
     const a = setup([], null)
     a.h['tab.newShell']!()
     expect(a.calls).toEqual(['newShell'])
+  })
+})
+
+// Review S3: the panel's selection moved by itself (its tab exited, another view moved or closed it):
+// Close Tab must not close the neighbour nobody picked.
+describe("the panel's keys-off", () => {
+  function handlers(panelOff: boolean) {
+    const calls: string[] = []
+    const h = panelCommandHandlers({
+      panel: () => ({ ids: ['p1', 'p2'], activeId: 'p2' }),
+      mainKeysOff: () => false,
+      panelKeysOff: () => panelOff,
+      close: (id) => calls.push(`close ${id}`),
+      pick: (id) => calls.push(`pick ${id}`),
+      newShell: () => calls.push('newShell')
+    })
+    return { h, calls }
+  }
+
+  it('Close Tab closes nothing while the panel is keys-off; a step is a pick and still works', () => {
+    const { h, calls } = handlers(true)
+    h['tab.close']!()
+    h[SWITCH_NEXT]!()
+    expect(calls).toEqual(['pick p1'])
+  })
+})
+
+// Review M1: a main tab going while the panel holds the keys must not make its neighbour the focused
+// pane (its TerminalView focus effect would take the keyboard into a Claude prompt).
+describe('mainPaneFocused', () => {
+  it('only the main selection with the main keys on and the panel not holding them', () => {
+    expect(mainPaneFocused('a', 'a', false, false)).toBe(true)
+    expect(mainPaneFocused('a', 'a', false, true)).toBe(false)
+    expect(mainPaneFocused('a', 'a', true, false)).toBe(false)
+    expect(mainPaneFocused('b', 'a', false, false)).toBe(false)
   })
 })
