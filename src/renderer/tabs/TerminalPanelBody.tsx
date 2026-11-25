@@ -3,6 +3,7 @@ import { chordKeys, chordOf } from '../commands/keybindings'
 import { isHiddenPage } from '../shell-kind'
 import { CloseGlyph, CommandGlyph, PlusGlyph, ShellGlyph } from '../window-icons'
 import { useShellLayer } from '../zones/use-shell-layer'
+import { panelTabParts } from './panel-tab-parts'
 import { TerminalPanelContext, type TerminalPanelApi } from './terminal-panel-context'
 import { TerminalView } from './TerminalView'
 
@@ -130,6 +131,17 @@ function PanelBody({ api }: { api: TerminalPanelApi }): React.JSX.Element {
 
   // Drag to reorder within the strip (pointer events, as TabBar: no native drag session).
   const listRef = useRef<HTMLDivElement>(null)
+  // A narrow zone (a side zone) holds fewer tabs than there are: the strip scrolls past the names'
+  // minimum width (QA Q1), so the selected tab is brought into view and a plain wheel scrolls sideways.
+  useEffect(() => {
+    if (activeId === null) return
+    const el = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-panel-tab-id]') ?? []).find((t) => t.dataset.panelTabId === activeId)
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeId])
+  const onWheel = (e: React.WheelEvent<HTMLDivElement>): void => {
+    const list = e.currentTarget
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && list.scrollWidth > list.clientWidth) list.scrollLeft += e.deltaY
+  }
   const press = useRef<{ tabId: string; x: number; pointerId: number } | null>(null)
   const [drag, setDrag] = useState<{ tabId: string; toIndex: number } | null>(null)
   const dragRef = useRef(drag)
@@ -177,12 +189,14 @@ function PanelBody({ api }: { api: TerminalPanelApi }): React.JSX.Element {
           className="terminal-panel-tabs"
           role="tablist"
           aria-label="Terminal tabs"
+          onWheel={onWheel}
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
         >
           {tabs.map((tab) => {
             const label = api.labelOf(tab)
+            const parts = panelTabParts(tab, label)
             const selected = tab.id === activeId
             return (
               <div
@@ -195,7 +209,7 @@ function PanelBody({ api }: { api: TerminalPanelApi }): React.JSX.Element {
                   role="tab"
                   aria-selected={selected}
                   className="terminal-panel-tab-label"
-                  title={label}
+                  title={parts.title}
                   onPointerDown={(e) => onPointerDown(e, tab.id)}
                   onClick={() => {
                     if (!justDragged.current) api.select(tab.id)
@@ -214,10 +228,12 @@ function PanelBody({ api }: { api: TerminalPanelApi }): React.JSX.Element {
                     setMenu({ tabId: tab.id, x: r.left, y: r.bottom + 2 })
                   }}
                 >
-                  {tab.kind === 'command' ? <CommandGlyph size={12} className="tab-kind" /> : <ShellGlyph size={12} className="tab-kind" />}
-                  <span className="terminal-panel-tab-name">{label}</span>
-                  {/* Exited: a mark by shape (a struck-through name and this text), never by colour alone. */}
-                  {tab.notStarted ? <span className="terminal-panel-tab-state"> (not started)</span> : tab.exit ? <span className="terminal-panel-tab-state"> (exited)</span> : null}
+                  {/* The state is a shape on the icon (panel-tab-parts.ts), never visible text or a colour alone. */}
+                  <span className="terminal-panel-tab-icon" data-state={parts.state ?? undefined}>
+                    {parts.icon === 'command' ? <CommandGlyph size={12} className="tab-kind" /> : <ShellGlyph size={12} className="tab-kind" />}
+                  </span>
+                  <span className="terminal-panel-tab-name">{parts.name}</span>
+                  {parts.stateText !== '' && <span className="visually-hidden">{parts.stateText}</span>}
                 </button>
                 {canWrite && (
                   <button type="button" className="terminal-panel-tab-close icon-button sm" aria-label={`Close ${label}`} onClick={() => api.close(tab.id)}>
