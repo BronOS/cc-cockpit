@@ -28,7 +28,7 @@ import { showPanel, TERMINAL_PANEL_KEY, togglePanel, zoneOf } from '../../shared
 import { fullIndexOf, isDocked, stepIndex } from './dock-order'
 import { TerminalPanelContext, type TerminalPanelApi } from './terminal-panel-context'
 import { PanelFocusAsks } from './panel-focus'
-import { ownerOfFocus, panelCommandHandlers, type KeysOwner } from './panel-keys'
+import { mainSelectHandlers, ownerOfFocus, panelCommandHandlers, type KeysOwner } from './panel-keys'
 import { ignoresMainSelect, paneView, type PaneView } from '../state/groups-state'
 import { usePrefs } from '../prefs/prefs-store'
 import type { GroupsReply } from '../../shared/ipc'
@@ -153,6 +153,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     keysOwnerRef.current = owner
     setKeysOwnerState(owner)
   }, [])
+  // The same (stable) setter for the person's main-area selections (pickTab, addPicked, the pane focus
+  // chord), through a ref: pickTab runs in effects' callbacks (endSwitcher), where a direct setState is
+  // flagged though it never runs synchronously there.
+  const takeMainKeys = useRef(() => setKeysOwner('main'))
   // The panel's body is mounted (the panel is on this screen): told by the body itself.
   const [panelShown, setPanelShownState] = useState(false)
   const panelShownRef = useRef(false)
@@ -610,6 +614,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       if (g && z !== undefined && z !== tabId) delete zoomed[g.id]
       const shown = paneView(s.groups, tabId, zoomed, autoZoomRef.current).visible
       sessions.takeOnSelect(tabId, withPanelShown(shown))
+      // The person's own main selection: the keys come to the main area even from the panel (R2-S1).
+      takeMainKeys.current()
       dispatch({ type: 'selected', tabId })
     },
     [sessions, withPanelShown]
@@ -617,6 +623,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   /** A tab this view's person made (the + menu, a new-tab command): added, selected and taken. */
   const addPicked = (tab: TabInfo): void => {
     sessions.takeOnSelect(tab.id, withPanelShown([tab.id]))
+    takeMainKeys.current()
     dispatch({ type: 'added', tab })
   }
 
@@ -1232,7 +1239,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     }
     // The Terminal panel holds this view's keys (§13.3): they go back there, never to the main area.
     if (keysOwnerRef.current === 'panel' && panelShownRef.current) {
-      askPanelFocus(null)
+      // Not to a panel tab nobody picked (S3's keys-off, review R2-N1): the keyboard goes nowhere then.
+      if (!stateRef.current.panelKeysOff) askPanelFocus(null)
       return
     }
     // D3: the keys are off until the person clicks a pane or uses a chord.
@@ -1321,7 +1329,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             askPanelFocus(tabId)
           } else {
             sessions.takeOnSelect(tabId, withPanelShown([tabId]))
-            setKeysOwner('main')
+            takeMainKeys.current()
             setPaneFocus({ tabId })
           }
         })
@@ -1673,19 +1681,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   }, [settingsOpen, closeSettings])
 
   useEffect(() => {
-    const select = (n: number) => (): void => {
-      // The main strip's n-th tab: docked tabs are not counted (§1).
-      const tab = mainTabsOf(stateRef.current)[n - 1]
-      if (tab) pickTab(tab.id)
-    }
-    const selects: Record<string, () => void> = {}
-    for (let n = 1; n <= 9; n++) selects[`tab.select.${n}`] = select(n)
     const off = registerHandlers({
-      ...selects,
+      ...mainSelectHandlers({
+        mainTabIds: () => mainTabsOf(stateRef.current).map((t) => t.id),
+        pick: pickTab,
+        create: (kind) => actions.current.create(kind),
+        takeMainKeys: () => takeMainKeys.current()
+      }),
       [SWITCH_NEXT]: () => switchTabs(1, !fromKey.current),
       [SWITCH_PREV]: () => switchTabs(-1, !fromKey.current),
-      'tab.newClaude': () => actions.current.create('claude'),
-      'tab.newShell': () => actions.current.create('shell'),
       // Close Tab and the flag chord, for the frame's tab when a frame's chord names one (D23 R1 keys off).
       ...activeTabHandlers({
         state: () => stateRef.current,
@@ -1986,7 +1990,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             return dragMinShare(axis === 'row' ? a.width : a.height, axis, c())
           },
           report: setError,
-          focusPane: (tabId) => setPaneFocus({ tabId })
+          focusPane: (tabId) => {
+            // A pane focus chord is the person's: the keys come to the main area (R2-S1).
+            takeMainKeys.current()
+            setPaneFocus({ tabId })
+          }
         })
       ),
     []

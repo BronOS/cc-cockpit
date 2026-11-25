@@ -34,6 +34,42 @@ export function mainPaneFocused(tabId: string, activeId: string | null, keysOff:
   return tabId === activeId && !keysOff && !keysInPanel
 }
 
+export interface MainSelectContext {
+  /** The main strip's tabs, in order (docked tabs are not counted, §1). */
+  mainTabIds(): readonly string[]
+  /** The person's selection of a main tab (TabsPane pickTab). */
+  pick(tabId: string): void
+  /** The person's new main tab (TabsPane create). */
+  create(kind: 'claude' | 'shell'): void
+  /** The keys go to the main area (TabsPane setKeysOwner('main')). */
+  takeMainKeys(): void
+}
+
+/**
+ * The main area's selecting chords: `tab.select.1`..`9`, New Claude and New Shell. Each is the person
+ * asking for a main tab, so the keys come to the main area first, even while the Terminal panel holds
+ * them (review R2-S1: M1's gate kept them in the panel, the main tab selected under an unfocused
+ * terminal). With the panel's keys, the panel's own New Shell sits above this one on the handler stack.
+ */
+export function mainSelectHandlers(ctx: MainSelectContext): Record<string, CommandHandler> {
+  const handlers: Record<string, CommandHandler> = {}
+  for (let n = 1; n <= 9; n++) {
+    handlers[`tab.select.${n}`] = () => {
+      const id = ctx.mainTabIds()[n - 1]
+      if (id === undefined) return
+      ctx.takeMainKeys()
+      ctx.pick(id)
+    }
+  }
+  for (const kind of ['claude', 'shell'] as const) {
+    handlers[kind === 'claude' ? 'tab.newClaude' : 'tab.newShell'] = () => {
+      ctx.takeMainKeys()
+      ctx.create(kind)
+    }
+  }
+  return handlers
+}
+
 /** The tab a plain step in the panel's strip goes to (wrapping), or undefined for an empty panel. */
 export function panelStep(ids: readonly string[], current: string | null, dir: 1 | -1): string | undefined {
   if (ids.length === 0) return undefined
