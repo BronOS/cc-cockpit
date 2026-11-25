@@ -22,6 +22,8 @@ const TRANSPORT: Record<string, Record<string, string>> = {
     'if (view.remote) tabs.viewAck(view.viewId, tabId, count)': "a browser's own flow-control ack",
     "if (view.remote) throw new Error('tabs.screen: refused')": 'tabs.screen is the desktop page only (a guest is always remote)',
     'if (view.remote) tabs.viewSelect(view.viewId, tabId)': "a browser's own selected tab (terminal join)",
+    'if (shown && view.remote) tabs.viewPanelSelect?.(view.viewId, tabId)':
+      "a browser's own Terminal panel tab (terminal join); the handler checked isOwner first",
     "if (view.remote && !deps.server) throw new Error(`${channel}: only the desktop page may widen a guest's access`)":
       'D-11 widening helper; its handlers check isOwner first (owner())',
     'return deps.linkAnswer(ctx.windowId, requestId, allow, view.remote)': 'links.answer: after its isOwner check, remote may only Deny on a desktop',

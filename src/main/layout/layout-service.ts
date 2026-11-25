@@ -31,6 +31,7 @@ import {
   type SlotPosition
 } from '../../shared/slots'
 import {
+  TERMINAL_PANEL_KEY,
   ZONE_IDS,
   geometryOf,
   isZoneId,
@@ -46,6 +47,19 @@ import {
 } from '../../shared/layout'
 import { pluginOfPanelKey } from '../../shared/guest-filter'
 import { pluginFileUrl } from '../plugins/plugin-protocol'
+
+/**
+ * The panels core draws itself (design-terminal-panel.md §4, §13.9): `PanelInfo.kind` `core`, no frame, no plugin.
+ * They join `reconcile` (so a stored placement is kept and a new layout gets them, closed, in their default zone)
+ * and the `PanelInfo` list, and nothing else: a plugin's status, badge, header and slot setters and the upload
+ * panel source (`placedPanel`) refuse a core key. Guests never get one (guest-filter.ts `pluginOfPanelKey`).
+ */
+const CORE_PANELS: ReadonlyArray<{ panelKey: string; defaultZone: ZoneId; title: string; icon: string }> = [
+  { panelKey: TERMINAL_PANEL_KEY, defaultZone: 'bottom', title: 'Terminal', icon: '>_' }
+]
+
+/** A core panel's key (`core/…`): never a plugin's, so no plugin path may write to it. */
+export const isCorePanelKey = (panelKey: string): boolean => CORE_PANELS.some((p) => p.panelKey === panelKey)
 
 /** A panel a plugin's manifest declares (design §5: id, title, entry, defaultZone). */
 export interface PluginPanelDef {
@@ -287,7 +301,7 @@ export class LayoutService {
    * same plugin.
    */
   placedPanel(projectId: string, panelKey: unknown): { pluginId: string; panelId: string } | undefined {
-    if (typeof panelKey !== 'string') return undefined
+    if (typeof panelKey !== 'string' || isCorePanelKey(panelKey)) return undefined
     const pluginId = pluginOfPanelKey(panelKey)
     if (pluginId === undefined) return undefined
     const stored = this.deps.getLayout(projectId)
@@ -312,7 +326,7 @@ export class LayoutService {
    * not exist for the project. A count is clamped to a non-negative integer; 0 shows no badge.
    */
   setStatus(projectId: string, panelKey: string, status: PanelStatus | undefined): boolean {
-    if (!this.hasKey(projectId, panelKey)) return false
+    if (!this.hasKey(projectId, panelKey) || isCorePanelKey(panelKey)) return false
     const clean = status ? cleanStatus(status) : undefined
     const map = this.status.get(projectId) ?? new Map<string, PanelStatus>()
     if (clean) map.set(panelKey, clean)
@@ -354,7 +368,7 @@ export class LayoutService {
    * The same placements again publish nothing.
    */
   setSlots(projectId: string, panelKey: string, placements: readonly SlotPlacement[] | null): boolean {
-    if (!this.hasKey(projectId, panelKey)) return false
+    if (!this.hasKey(projectId, panelKey) || isCorePanelKey(panelKey)) return false
     const map = this.placements.get(projectId) ?? new Map<string, SlotPlacement[]>()
     const before = JSON.stringify(map.get(panelKey) ?? null)
     if (placements === null || placements.length === 0) map.delete(panelKey)
@@ -418,7 +432,7 @@ export class LayoutService {
 
   /** Replace the fields `change` names (an undefined value clears one) and keep the others. */
   private patch(projectId: string, panelKey: string, change: PanelStatus): boolean {
-    if (!this.hasKey(projectId, panelKey)) return false
+    if (!this.hasKey(projectId, panelKey) || isCorePanelKey(panelKey)) return false
     const current = this.status.get(projectId)?.get(panelKey)
     const next: PanelStatus = { ...current }
     if ('badge' in change) {
@@ -469,7 +483,8 @@ export class LayoutService {
   }
 
   private available(projectId: string): AvailablePanel[] {
-    const out: AvailablePanel[] = []
+    // Core panels first: a new layout lists them before the plugins' in their zone; closed (defaultOpen absent).
+    const out: AvailablePanel[] = CORE_PANELS.map((p) => ({ panelKey: p.panelKey, defaultZone: p.defaultZone }))
     for (const [pluginId, panels] of this.plugin.get(projectId) ?? []) {
       for (const p of panels) {
         out.push({
@@ -498,7 +513,8 @@ export class LayoutService {
       const out = s ? { ...info, ...s } : info
       return frames ? { ...out, slots: frames } : out
     }
-    const out: PanelInfo[] = []
+    // A core panel has no status, header or slots of a plugin's (the setters refuse its key): drawn by the shell.
+    const out: PanelInfo[] = CORE_PANELS.map((p) => ({ panelKey: p.panelKey, title: p.title, icon: p.icon, kind: 'core' as const }))
     for (const [pluginId, panels] of this.plugin.get(projectId) ?? []) {
       for (const p of panels) {
         out.push(

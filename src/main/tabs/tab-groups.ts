@@ -63,6 +63,12 @@ export interface TabGroupsDeps {
    */
   kindOf?(projectId: string, tabId: string): TabKind | undefined
   /**
+   * Whether a live tab of the project sits in the Terminal panel (TabManager.dockOf; design-terminal-panel.md
+   * §13.8): a docked tab is never a pane. A placement naming one (as the tab or the anchor) is refused (`docked`),
+   * a group loaded or synced with one prunes it, and a view's join order leaves it out. Absent: none is.
+   */
+  dockedOf?(projectId: string, tabId: string): boolean
+  /**
    * Put the project's tabs in this order (TabManager.setOrder): a permutation of `order()`. Not a
    * save by itself: the service calls `changed` once the whole edit is applied.
    */
@@ -198,7 +204,7 @@ export class TabGroups {
     const group = groupOf(this.groupsOf(projectId), tabId)
     if (!group) return [tabId]
     const k = this.deps.kindOf
-    return [tabId, ...leavesOf(group.root).filter((t) => t !== tabId && (!k || k(projectId, t) !== 'page'))]
+    return [tabId, ...leavesOf(group.root).filter((t) => t !== tabId && (!k || k(projectId, t) !== 'page') && !this.docked(projectId, t))]
   }
 
   /**
@@ -222,6 +228,9 @@ export class TabGroups {
     if (!this.mayBePane(projectId, intent.tabId) || !this.mayBePane(projectId, intent.at)) {
       return { ok: false, reason: 'not-a-pane' }
     }
+    // A Terminal panel tab is never a pane (design-terminal-panel.md §13.8). A plugin's `beside` naming one gets
+    // the usual `placed: false` (createBeside), so it learns nothing about where the tab sits.
+    if (this.docked(projectId, intent.tabId) || this.docked(projectId, intent.at)) return { ok: false, reason: 'docked' }
     const order = this.deps.order(projectId)
     const result = place(this.groupsOf(projectId), order, intent, {
       mint: this.mint,
@@ -281,6 +290,8 @@ export class TabGroups {
     const order = this.deps.order(projectId)
     const from = order.indexOf(tabId)
     if (from < 0) throw new Error('unknown tab')
+    // A Terminal panel tab has no group to drag (design-terminal-panel.md §13.6); a plain move lands it outside any.
+    if (block && this.docked(projectId, tabId)) throw new Error('a Terminal panel tab has no group to move')
     let groups = this.groupsOf(projectId)
     const group = groupOf(groups, tabId)
     let next: string[]
@@ -655,9 +666,15 @@ export class TabGroups {
     return kind === undefined || isPaneKind(kind)
   }
 
-  /** The ids of `order` that may be panes: the liveness a load or a sync checks leaves against. */
+  /** The ids of `order` that may be panes: the liveness a load or a sync checks leaves against (never a docked tab). */
   private panesOf(projectId: string, order: readonly string[]): string[] {
-    return this.deps.kindOf ? order.filter((t) => isPaneKind(this.deps.kindOf!(projectId, t))) : [...order]
+    const kinds = this.deps.kindOf ? order.filter((t) => isPaneKind(this.deps.kindOf!(projectId, t))) : [...order]
+    return kinds.filter((t) => !this.docked(projectId, t))
+  }
+
+  /** A live tab of the project in the Terminal panel (`dockedOf`); false when the dep is absent. */
+  private docked(projectId: string, tabId: string): boolean {
+    return this.deps.dockedOf?.(projectId, tabId) === true
   }
 
   /** Run `fn` with this project's snapshot held until it returns, then publish once. */

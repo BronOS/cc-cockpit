@@ -213,6 +213,7 @@ import { commandOverlaySpec, loginShellOf } from './tabs/claude-argv'
 import { menuWithKeys, openTabCommand, tabCommandsOf, TabCommandsService } from './tabs/tab-commands'
 import { TabManager } from './tabs/tab-manager'
 import { TabGroups } from './tabs/tab-groups'
+import { dockTab } from './tabs/dock'
 import type { PluginPlacement } from './plugins/host-api'
 import { viewInputHandler } from './tabs/view-input'
 import { createGuestCloseAsks, settleGoneCloseAsks, settleGuestCloseAsks } from './tabs/guest-close-asks'
@@ -2276,7 +2277,10 @@ function start(server: boolean): void {
   // last (design-web.md §5.1). Functions: `tabs` is defined just below.
   const selections = new ViewSelections({
     isTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
-    setActive: (projectId, tabId) => sessions.setActive(projectId, tabId)
+    setActive: (projectId, tabId) => sessions.setActive(projectId, tabId),
+    // A Terminal panel tab is never a main selection or the active tab (design-terminal-panel.md §13.5).
+    dockedOf: (projectId, tabId) => tabs.dockOf(projectId, tabId) !== undefined,
+    activeOf: (projectId) => sessions.activeTab(projectId)
   })
   const tabs = new TabManager({
     backend: new NodePtyBackend(),
@@ -2342,7 +2346,19 @@ function start(server: boolean): void {
     // most recently used remaining pane of the group (design.md §3 "Split groups", the D3 exception);
     // after the group's snapshot and `tabs.removed`, so the page has already dropped the pane.
     // `tabGroups` is defined below; this runs only at an exit.
-    exitClosed: (projectId, tabId) => {
+    exitClosed: (projectId, tabId, closed) => {
+      // A Terminal panel tab (D9, design-terminal-panel.md §13.4): only by the same rule, only to the panel's next
+      // tab (the one that took its place in the strip, else the one before it); never to the main area.
+      if (closed?.dock !== undefined) {
+        const order = tabs.list(projectId)
+        const docked = order.filter((t) => t.dock !== undefined).map((t) => t.id)
+        const after = order.slice(closed.index).find((t) => t.dock !== undefined)?.id
+        const next = after !== undefined ? [after, ...docked.filter((t) => t !== after)] : docked.slice().reverse()
+        for (const to of selections.panelExitFocus(projectId, tabId, next)) {
+          views.toView(to.viewId, 'tabs.exitFocus', { tabId: to.tabId, closed: tabId })
+        }
+        return
+      }
       const panes = tabGroups.departedPanes(tabId)
       if (!panes) return
       // A guest's view is handed only a pane it sees (design-guests §7).
@@ -2412,6 +2428,8 @@ function start(server: boolean): void {
     order: (projectId) => tabs.list(projectId).map((t) => t.id),
     // Every tab kind may be a pane (shared/tab-groups.ts isPaneKind); a kind outside it is refused and pruned.
     kindOf: (projectId, tabId) => tabs.kindOf(projectId, tabId),
+    // A Terminal panel tab never is (design-terminal-panel.md §13.8): refused (`docked`), pruned, never joined.
+    dockedOf: (projectId, tabId) => tabs.dockOf(projectId, tabId) !== undefined,
     setOrder: (projectId, ids) => tabs.setOrder(projectId, ids),
     publish: (projectId, snapshot) => sendToProject(projectId, 'groups.changed', snapshot),
     changed: (projectId) => restorer.tabsChanged(projectId),
@@ -2525,7 +2543,13 @@ function start(server: boolean): void {
       if (windows.windowIdOf(p.id) === undefined) continue
       const t = tabs.list(p.id).find((x) => x.id === tabId)
       if (t === undefined) continue
-      return { projectId: p.id, ...(t.openedBy !== undefined ? { openedBy: t.openedBy } : {}), ...(t.page !== undefined ? { page: { plugin: t.page.plugin } } : {}) }
+      return {
+        projectId: p.id,
+        ...(t.openedBy !== undefined ? { openedBy: t.openedBy } : {}),
+        ...(t.page !== undefined ? { page: { plugin: t.page.plugin } } : {}),
+        // A Terminal panel tab is no guest's (design-terminal-panel.md §13.2): the one visibility rule hides it.
+        ...(t.dock !== undefined ? { dock: t.dock } : {})
+      }
     }
     return undefined
   }
@@ -3734,7 +3758,8 @@ function start(server: boolean): void {
     userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
     acted: (projectId, tabId, viewId) => {
       selections.typed(projectId, viewId, tabId)
-      presence.typed(viewId, tabId)
+      // Keys into a Terminal panel tab are the panel's record only (ViewSelections.typed): no presence (§13.5).
+      if (tabs.dockOf(projectId, tabId) === undefined) presence.typed(viewId, tabId)
     }
   })
   const guestTabs = guestTabDeps({
@@ -3792,6 +3817,30 @@ function start(server: boolean): void {
     list: (projectId) => tabs.list(projectId),
     viewAck: (viewId, tabId, count) => webConnections.ack(viewId, tabId, count),
     viewSelect: (viewId, tabId) => webConnections.select(viewId, tabId),
+    // The Terminal panel (design-terminal-panel.md §3, §13): the person's move (main/tabs/dock.ts), the panel's own
+    // selection per view (never the active tab or presence) and a browser's join of that tab's stream.
+    dock: (projectId, tabId, dock, viewId) =>
+      dockTab(
+        {
+          kindOf: (p, t) => tabs.kindOf(p, t),
+          dockOf: (p, t) => tabs.dockOf(p, t),
+          ungroup: (p, t) => void tabGroups.remove(p, t),
+          setDock: (p, t, d) => tabs.setDock(p, t, d),
+          docked: (p, t) => selections.docked(p, t),
+          undocked: (p, t) => selections.undocked(p, t),
+          announce: (p, payload) => sendToProject(p, 'tabs.docked', payload),
+          guestsSeeing: (p, t) => guestStore.guestsSeeing(p, t),
+          guestsChanged: (p, t, saw) => guestStore.tabDockChanged(p, t, saw),
+          selectIn: (v, t) => void views.toView(v, 'tabs.select', { tabId: t }),
+          log: warnLog
+        },
+        projectId,
+        tabId,
+        dock,
+        viewId
+      ),
+    panelSelect: (projectId, tabId, viewId) => selections.panelSelected(projectId, viewId, tabId),
+    viewPanelSelect: (viewId, tabId) => webConnections.panelSelect(viewId, tabId),
     // A tab one view opened, restarted, flagged or closed, told to the window's other views (the
     // desktop and the browsers show one tab strip, design-web.md §5.1).
     others: (windowId, viewId, event) => views.toOthers(windowId, viewId, event.channel, event.payload),
@@ -3807,7 +3856,8 @@ function start(server: boolean): void {
     // the window as the tab as stored (`tabs.added` merges it by id and generation).
     select: (projectId, tabId, viewId) => {
       selections.acted(projectId, viewId, tabId)
-      if (tabs.list(projectId).some((t) => t.id === tabId)) presence.viewSelected(viewId, tabId)
+      // A Terminal panel tab is never the main selection (ViewSelections refuses it) nor presence (§13.5).
+      if (tabs.list(projectId).some((t) => t.id === tabId && t.dock === undefined)) presence.viewSelected(viewId, tabId)
       const seen = tabs.markSeen(projectId, tabId)
       if (seen) sendToProject(projectId, 'tabs.added', seen)
     },
@@ -3870,8 +3920,10 @@ function start(server: boolean): void {
     if (options.kind === 'command') {
       // By id, from main's own settings, looked up after the wait: an entry deleted meanwhile
       // is refused rather than run from a stale menu. The entry also says tab or overlay.
+      // `dock`: in the Terminal panel (an entry that opens as an overlay still does, design-terminal-panel.md §1).
+      const dock = options.dock
       return openTabCommand(tabCommands.resolve(projectId, options.level, options.entryId), {
-        tab: (entry) => tabs.createCommand(projectId, entry),
+        tab: (entry) => tabs.createCommand(projectId, entry, dock === undefined ? {} : { dock }),
         // A terminal overlay in the asking window: the command tab's argv, cwd and env (the
         // overlays' env() is buildPtyEnv with a window token, which is what a command tab
         // gets too). Nothing waits for its result and nothing about it is saved or restored; it
@@ -3888,7 +3940,8 @@ function start(server: boolean): void {
     return tabs.create(projectId, {
       kind: options.kind,
       ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-      ...(openedByGuest !== undefined ? { openedByGuest } : {})
+      ...(openedByGuest !== undefined ? { openedByGuest } : {}),
+      ...(options.kind === 'shell' && options.dock !== undefined ? { dock: options.dock } : {})
     })
   }
 
@@ -4031,7 +4084,8 @@ function start(server: boolean): void {
         select: (viewId, id) => views.toView(viewId, 'tabs.select', { tabId: id }),
         server,
         goto: (viewId, projectId, id) => views.toView(viewId, 'project.goto', { projectId, tabId: id }),
-        whoOf: (viewId) => views.whoOf(viewId)
+        whoOf: (viewId) => views.whoOf(viewId),
+        docked: (projectId, id) => tabs.dockOf(projectId, id) !== undefined
       },
       entry.projectId,
       tabId,

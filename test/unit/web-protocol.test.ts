@@ -613,6 +613,30 @@ describe('split groups in a browser view', () => {
     await later()
     expect(m.joined()).toEqual(['b', 'a', 'c', 'x'])
   })
+
+  it("a Terminal panel tab joins beside the main area's tab and leaves its selection and group queue alone (§13.7)", async () => {
+    const m = groupMirror()
+    const groups = new Map<string, string[]>([['a', ['a', 'b']], ['b', ['b', 'a']]])
+    const { connect, conns } = setup({
+      mirror: m.mirror,
+      hasTab: (projectId, tabId) => projectId === 'p1' && ['a', 'b', 'c', 'd'].includes(tabId),
+      joinOrder: (projectId, tabId) => (projectId === 'p1' ? (groups.get(tabId) ?? [tabId]) : [tabId])
+    })
+    connect('p1')
+    conns.select('web:1', 'b')
+    m.snapshot('b')
+    await later()
+    m.snapshot('a')
+    await later()
+    conns.panelSelect('web:1', 'd')
+    expect(m.joined()).toEqual(['b', 'a', 'd'])
+    m.snapshot('d')
+    // The main area's group gains c: still b's group that is followed, never the panel tab's.
+    groups.set('b', ['b', 'a', 'c'])
+    conns.groupsChanged('p1')
+    await later()
+    expect(m.joined()).toEqual(['b', 'a', 'd', 'c'])
+  })
 })
 
 

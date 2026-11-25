@@ -121,6 +121,7 @@ export const checkGroupName = checkSessionName
 export type GroupRefusalReason =
   | 'unknown-tab' // a tab id that is not a live tab of the project
   | 'not-a-pane' // a live tab of the project whose kind is not in isPaneKind (none today: every kind is a pane)
+  | 'docked' // a tab in the Terminal panel (design-terminal-panel.md §2): never in a group, as the tab placed or the anchor
   | 'same-tab' // a tab placed beside itself
   | 'bad-edge'
   | 'not-grouped' // removeLeaf of a plain tab

@@ -15,6 +15,11 @@
 // never acts for the project: its select or keys never set the active tab, it is never `lastActing` (server
 // mode's overlay holder), and its going away hands nothing back. Otherwise Discuss and every plugin would
 // retarget to a guest's click.
+//
+// The Terminal panel (docs/design-terminal-panel.md §13.5) has its own selection per view (`panelByView`): a docked
+// tab is never a view's main selection, never the project's active tab, and never in `recent`, so nothing that follows
+// the active tab (the sessions strip, `ccc` defaults, Discuss) lands on a panel shell. A panel tab's exit hands the
+// view's keys on only by the same rule as a pane's (`panelExitFocus`), and only to another panel tab (D9).
 import { desktopViewId, isRemoteViewId, type ViewId, type Who } from '../../shared/views'
 
 export interface ViewSelectionsDeps {
@@ -22,6 +27,10 @@ export interface ViewSelectionsDeps {
   isTab(projectId: string, tabId: string): boolean
   /** SessionRegistry.setActive: the project's active tab. */
   setActive(projectId: string, tabId: string | undefined): void
+  /** Whether a tab of the project sits in the Terminal panel (TabManager.dockOf). Absent: none does. */
+  dockedOf?(projectId: string, tabId: string): boolean
+  /** The project's active tab now (SessionRegistry.activeTab): a dock of it hands it back (`docked`). */
+  activeOf?(projectId: string): string | undefined
   /** Clock for the exit focus's "typed just now" (EXIT_FOCUS_TYPED_MS); tests inject one. Default Date.now. */
   now?: () => number
 }
@@ -43,6 +52,10 @@ export class ViewSelections {
   private readonly recent = new Map<ViewId, string[]>()
   /** viewId -> the tab the person last typed into there, and when (main's clock). */
   private readonly typedAt = new Map<ViewId, { tabId: string; at: number }>()
+  /** viewId -> the Terminal panel tab it shows (`tabs.panelSelected`, or typed into). Never the active tab. */
+  private readonly panelByView = new Map<ViewId, { projectId: string; tabId: string }>()
+  /** viewId -> the panel tab the person last typed into there, and when: the panel's exit focus. */
+  private readonly panelTypedAt = new Map<ViewId, { tabId: string; at: number }>()
   private readonly now: () => number
 
   constructor(private readonly deps: ViewSelectionsDeps) {
@@ -54,7 +67,7 @@ export class ViewSelections {
    * tab becomes it (this view acted last). The caller resolved `projectId` from the view itself.
    */
   acted(projectId: string, viewId: ViewId, tabId: string): void {
-    if (!this.deps.isTab(projectId, tabId)) return
+    if (!this.deps.isTab(projectId, tabId) || this.isDocked(projectId, tabId)) return
     this.byView.delete(viewId)
     this.byView.set(viewId, { projectId, tabId })
     const recent = this.recent.get(viewId) ?? []
@@ -67,7 +80,7 @@ export class ViewSelections {
    * focus), never the project's active tab. The router checked the tab is one the guest sees.
    */
   guestActed(projectId: string, viewId: ViewId, tabId: string): void {
-    if (!this.deps.isTab(projectId, tabId)) return
+    if (!this.deps.isTab(projectId, tabId) || this.isDocked(projectId, tabId)) return
     this.byView.delete(viewId)
     this.byView.set(viewId, { projectId, tabId, guest: true })
     const recent = this.recent.get(viewId) ?? []
@@ -76,7 +89,7 @@ export class ViewSelections {
 
   /** A write guest typed into `tabId` (view-input.ts guestViewInputHandler): as `guestActed`, timed for the exit focus. */
   guestTyped(projectId: string, viewId: ViewId, tabId: string): void {
-    if (!this.deps.isTab(projectId, tabId)) return
+    if (!this.deps.isTab(projectId, tabId) || this.isDocked(projectId, tabId)) return
     this.guestActed(projectId, viewId, tabId)
     this.typedAt.set(viewId, { tabId, at: this.now() })
   }
@@ -88,6 +101,8 @@ export class ViewSelections {
    */
   typed(projectId: string, viewId: ViewId, tabId: string): void {
     if (!this.deps.isTab(projectId, tabId)) return
+    // Keys into a Terminal panel tab: the panel's own record only (design §13.5), never the active tab.
+    if (this.isDocked(projectId, tabId)) return this.panelTyped(projectId, viewId, tabId)
     this.acted(projectId, viewId, tabId)
     this.typedAt.set(viewId, { tabId, at: this.now() })
   }
@@ -124,6 +139,85 @@ export class ViewSelections {
     return out
   }
 
+  /**
+   * `viewId`'s Terminal panel shows `tabId` now (`tabs.panelSelected`): a docked tab of the project only. The view's
+   * own panel record; the main selection, the active tab and presence stay as they were (design §13.5).
+   */
+  panelSelected(projectId: string, viewId: ViewId, tabId: string): boolean {
+    if (!this.deps.isTab(projectId, tabId) || !this.isDocked(projectId, tabId)) return false
+    this.panelByView.set(viewId, { projectId, tabId })
+    return true
+  }
+
+  /** The person typed into a docked tab in `viewId`: its panel selection, timed for the panel's exit focus. */
+  private panelTyped(projectId: string, viewId: ViewId, tabId: string): void {
+    this.panelByView.set(viewId, { projectId, tabId })
+    this.panelTypedAt.set(viewId, { tabId, at: this.now() })
+  }
+
+  /** The Terminal panel tab `viewId` last showed or typed into, if any (it may have closed since). */
+  panelSelectionOf(viewId: ViewId): string | undefined {
+    return this.panelByView.get(viewId)?.tabId
+  }
+
+  /**
+   * A Terminal panel tab's process exited and closed it, leaving `next` (the panel tabs left, the closed one's
+   * neighbour first). D9 (design §13.4): a view whose panel showed it AND sent it the person's own keys within
+   * EXIT_FOCUS_TYPED_MS ended it itself, so its keys go to `next[0]`; every other view goes keys-off. Never the main
+   * area. A guest never sees a docked tab, so no guest view is ever named. Returns the selects to send, one per view.
+   */
+  panelExitFocus(projectId: string, closedTabId: string, next: readonly string[]): Array<{ viewId: ViewId; tabId: string }> {
+    const out: Array<{ viewId: ViewId; tabId: string }> = []
+    const now = this.now()
+    for (const [viewId, sel] of this.panelByView) {
+      if (sel.projectId !== projectId || sel.tabId !== closedTabId) continue
+      const typed = this.panelTypedAt.get(viewId)
+      const ownAct = typed?.tabId === closedTabId && now - typed.at <= EXIT_FOCUS_TYPED_MS && now >= typed.at
+      if (ownAct && next.length > 0) out.push({ viewId, tabId: next[0]! })
+      this.panelByView.delete(viewId)
+    }
+    return out
+  }
+
+  /**
+   * `tabId` just moved into the Terminal panel (main/tabs/dock.ts, after TabManager.setDock). Views showing it in
+   * their main area lose that selection (their page moves it to a neighbour and reports it), and when it was the
+   * project's active tab the newest remaining main selection becomes active at once, as `viewGone` does (none:
+   * no active tab), so nothing that follows the active tab is left on a panel shell meanwhile.
+   */
+  docked(projectId: string, tabId: string): void {
+    for (const [viewId, s] of [...this.byView]) {
+      if (s.projectId === projectId && s.tabId === tabId) this.byView.delete(viewId)
+    }
+    for (const [viewId, recent] of this.recent) {
+      if (recent.includes(tabId)) this.recent.set(viewId, recent.filter((t) => t !== tabId))
+    }
+    for (const [viewId, t] of [...this.typedAt]) if (t.tabId === tabId) this.typedAt.delete(viewId)
+    if (this.deps.activeOf?.(projectId) !== tabId) return
+    this.deps.setActive(projectId, this.newestSelection(projectId))
+  }
+
+  /** `tabId` moved back to the main area: no view's panel shows it any more. */
+  undocked(projectId: string, tabId: string): void {
+    for (const [viewId, s] of [...this.panelByView]) {
+      if (s.projectId === projectId && s.tabId === tabId) this.panelByView.delete(viewId)
+    }
+    for (const [viewId, t] of [...this.panelTypedAt]) if (t.tabId === tabId) this.panelTypedAt.delete(viewId)
+  }
+
+  /** The newest owner view's main selection of the project that is still a main-area tab, if any. */
+  private newestSelection(projectId: string): string | undefined {
+    let next: string | undefined
+    for (const s of this.byView.values()) {
+      if (s.guest !== true && s.projectId === projectId && this.deps.isTab(s.projectId, s.tabId) && !this.isDocked(s.projectId, s.tabId)) next = s.tabId
+    }
+    return next
+  }
+
+  private isDocked(projectId: string, tabId: string): boolean {
+    return this.deps.dockedOf?.(projectId, tabId) === true
+  }
+
   /** The tab `viewId` last selected (or typed into), if any. */
   selectionOf(viewId: ViewId): string | undefined {
     return this.byView.get(viewId)?.tabId
@@ -148,15 +242,14 @@ export class ViewSelections {
   viewGone(viewId: ViewId): void {
     this.recent.delete(viewId)
     this.typedAt.delete(viewId)
+    this.panelByView.delete(viewId)
+    this.panelTypedAt.delete(viewId)
     const gone = this.byView.get(viewId)
     if (!gone) return
     this.byView.delete(viewId)
     // A guest's view never set the active tab, so its going hands nothing back.
     if (gone.guest === true) return
-    let next: string | undefined
-    for (const s of this.byView.values()) {
-      if (s.guest !== true && s.projectId === gone.projectId && this.deps.isTab(s.projectId, s.tabId)) next = s.tabId
-    }
+    const next = this.newestSelection(gone.projectId)
     if (next !== undefined) this.deps.setActive(gone.projectId, next)
   }
 
@@ -167,6 +260,11 @@ export class ViewSelections {
       this.byView.delete(viewId)
       this.recent.delete(viewId)
       this.typedAt.delete(viewId)
+    }
+    for (const [viewId, s] of [...this.panelByView]) {
+      if (s.projectId !== projectId) continue
+      this.panelByView.delete(viewId)
+      this.panelTypedAt.delete(viewId)
     }
   }
 }
@@ -186,6 +284,12 @@ export interface FocusTabDeps {
   goto(viewId: ViewId, projectId: string, tabId: string): boolean
   /** Who a live view is bound to (ViewRegistry.whoOf); undefined for a view main no longer has. */
   whoOf(viewId: ViewId): Who | undefined
+  /**
+   * Whether the tab sits in the Terminal panel (TabManager.dockOf): a focus naming one is ignored (design-terminal-
+   * panel.md §13.5), since a `tabs.select` of a panel tab would take a view's main area to the owner's panel.
+   * Absent: none does.
+   */
+  docked?(projectId: string, tabId: string): boolean
 }
 
 /**
@@ -205,6 +309,7 @@ export interface FocusTabDeps {
 export function focusTabInView(deps: FocusTabDeps, projectId: string, tabId: string, view?: ViewId): boolean {
   const windowId = deps.windowOfProject(projectId)
   if (windowId === undefined) return false
+  if (deps.docked?.(projectId, tabId) === true) return false
   if (view !== undefined && deps.windowOfView(view) === windowId) return deps.select(view, tabId)
   // A guest's view (or a remote view main no longer has, which might have been one) moves nothing beyond itself
   // (design-guests §7, 03f): no raise, no desktop selection, no goto to another project.
