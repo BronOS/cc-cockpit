@@ -42,6 +42,7 @@ import {
   withGeometry,
   zoneOf,
   type AvailablePanel,
+  type LayoutGeometry,
   type LayoutState,
   type ZoneId
 } from '../../shared/layout'
@@ -206,12 +207,26 @@ export class LayoutService {
     // the same trap view() avoids. They keep their stored place instead, until declared.
     const pending = this.pendingPanels(projectId, stored)
     const sent = normalizeLayout(raw)
-    const next = keepPlaces(opts.keepGeometry === true ? withGeometry(sent, geometryOf(stored)) : sent, stored, pending)
+    const next = keepPlaces(opts.keepGeometry === true ? withGeometry(sent, this.keptGeometry(projectId, stored)) : sent, stored, pending)
     const pendingAvailable = pending.map((panelKey) => ({ panelKey, defaultZone: zoneOf(stored, panelKey) ?? 'left' }))
     const layout = reconcile(next, [...this.available(projectId), ...pendingAvailable])
     this.deps.setLayout(projectId, layout)
     // The page gets the layout of the panels it can show, as from view().
     return this.viewOf(projectId, reconcile(layout, this.available(projectId)))
+  }
+
+  /**
+   * The geometry a remote view's edit keeps (`keepGeometry`): the stored one, with the Terminal panel's open state
+   * as the desktop has it. A stored layout made before the panel existed (or never stored since: view() stores
+   * nothing) has no `core/terminal` placement, so `geometryOf` would name no open state and a browser's first
+   * placement, open, would open it on the desktop too. Its open state is read from the stored layout as reconciled
+   * (closed when new, its remembered state when hidden), so a browser never opens it anywhere but its own screen.
+   */
+  private keptGeometry(projectId: string, stored: LayoutState): LayoutGeometry {
+    const geometry = geometryOf(stored)
+    if (geometry.terminalOpen !== undefined) return geometry
+    const terminalOpen = geometryOf(reconcile(stored, this.available(projectId))).terminalOpen
+    return terminalOpen === undefined ? geometry : { ...geometry, terminalOpen }
   }
 
   /**

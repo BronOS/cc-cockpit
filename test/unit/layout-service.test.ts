@@ -47,6 +47,25 @@ describe('LayoutService.view', () => {
     expect(bare.view(P)!.layout.zones.right.panels).toEqual([])
   })
 
+  it("a browser's first placement of the Terminal panel, open, never opens it on the desktop (keepGeometry)", () => {
+    const { service, stored } = setup()
+    // A layout stored before the panel existed: no core/terminal placement.
+    expect(zoneOf(stored.get(P)!, TERMINAL_PANEL_KEY)).toBeUndefined()
+    const opened = (): LayoutState => {
+      const l = structuredClone(service.view(P)!.layout)
+      l.zones.bottom.panels = l.zones.bottom.panels.map((p) => (p.panelKey === TERMINAL_PANEL_KEY ? { ...p, open: true } : p))
+      return l
+    }
+    service.set(P, opened(), { keepGeometry: true })
+    expect(stored.get(P)!.zones.bottom.panels.find((p) => p.panelKey === TERMINAL_PANEL_KEY)).toMatchObject({ open: false })
+    // Placed and closed now: a browser's open still keeps the desktop's closed one.
+    service.set(P, opened(), { keepGeometry: true })
+    expect(stored.get(P)!.zones.bottom.panels.find((p) => p.panelKey === TERMINAL_PANEL_KEY)).toMatchObject({ open: false })
+    // The desktop's own edit opens it.
+    service.set(P, opened())
+    expect(stored.get(P)!.zones.bottom.panels.find((p) => p.panelKey === TERMINAL_PANEL_KEY)).toMatchObject({ open: true })
+  })
+
   it("refuses a plugin's setters and the upload panel source on the core panel's key (§13.9)", () => {
     const { service, published } = setup()
     expect(service.setStatus(P, TERMINAL_PANEL_KEY, { badge: { kind: 'dot' } })).toBe(false)
