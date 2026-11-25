@@ -29,7 +29,10 @@ export interface ViewSelectionsDeps {
   setActive(projectId: string, tabId: string | undefined): void
   /** Whether a tab of the project sits in the Terminal panel (TabManager.dockOf). Absent: none does. */
   dockedOf?(projectId: string, tabId: string): boolean
-  /** The project's active tab now (SessionRegistry.activeTab): a dock of it hands it back (`docked`). */
+  /**
+   * The tab the project's window shows now, any kind (SessionRegistry.selectedTab, never activeTab, which names
+   * Claude tabs only, so a docked shell would never match): a dock of it hands it back (`docked`).
+   */
   activeOf?(projectId: string): string | undefined
   /** Clock for the exit focus's "typed just now" (EXIT_FOCUS_TYPED_MS); tests inject one. Default Date.now. */
   now?: () => number
@@ -41,6 +44,24 @@ export interface ViewSelectionsDeps {
  * few hundred; a command that ends seconds after the last key did so on its own.
  */
 export const EXIT_FOCUS_TYPED_MS = 1500
+
+/**
+ * main's deps for ViewSelections (index.ts), over the real TabManager and SessionRegistry: one place, so a unit test
+ * runs the same wiring. `activeOf` is the registry's `selectedTab` (any kind): its Claude-only `activeTab` made
+ * a docked selected shell keep the project's selection (review S2).
+ */
+export function viewSelectionsDeps(
+  tabs: { list(projectId: string): ReadonlyArray<{ id: string }>; dockOf(projectId: string, tabId: string): unknown },
+  sessions: { setActive(projectId: string, tabId: string | undefined): void; selectedTab(projectId: string): string | undefined }
+): ViewSelectionsDeps {
+  return {
+    isTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
+    setActive: (projectId, tabId) => sessions.setActive(projectId, tabId),
+    // A Terminal panel tab is never a main selection or the active tab (design-terminal-panel.md §13.5).
+    dockedOf: (projectId, tabId) => tabs.dockOf(projectId, tabId) !== undefined,
+    activeOf: (projectId) => sessions.selectedTab(projectId)
+  }
+}
 
 /** Tabs remembered per view for the exit focus's most recently used order (more than a group's 8 panes). */
 const RECENT_CAP = 32

@@ -548,10 +548,22 @@ describe('the Terminal panel\'s open state is geometry (design-terminal-panel.md
     expect(TERMINAL_PANEL_KEY).toBe('core/terminal')
   })
 
-  it('geometryOf carries it only when the panel is placed', () => {
+  it('geometryOf carries it when the panel is placed or hidden (its remembered entry), else not', () => {
     expect(geometryOf(defaultLayout()).terminalOpen).toBeUndefined()
     expect(geometryOf(withTerminal(false)).terminalOpen).toBe(false)
     expect(geometryOf(withTerminal(true)).terminalOpen).toBe(true)
+    expect(geometryOf(hidePanel(withTerminal(true), TERMINAL_PANEL_KEY)).terminalOpen).toBe(true)
+    expect(geometryOf(hidePanel(withTerminal(false), TERMINAL_PANEL_KEY)).terminalOpen).toBe(false)
+  })
+
+  it("withGeometry sets a hidden Terminal panel's remembered open state, so Unhide brings back this view's (review S1)", () => {
+    const hidden = hidePanel(withTerminal(true), TERMINAL_PANEL_KEY)
+    const mine = withGeometry(hidden, { zones: {}, panels: {}, terminalOpen: false })
+    expect(mine.remembered[TERMINAL_PANEL_KEY]).toMatchObject({ open: false, hidden: true })
+    expect(panel(unhidePanel(mine, TERMINAL_PANEL_KEY, 'bottom'), TERMINAL_PANEL_KEY).open).toBe(false)
+    // Another remembered panel's open state is left alone.
+    const both = hidePanel(togglePanel(hidden, 'jira/log'), 'jira/log')
+    expect(withGeometry(both, { zones: {}, panels: {}, terminalOpen: false }).remembered['jira/log']).toMatchObject({ open: true })
   })
 
   it('withGeometry applies it to the Terminal panel only, and keeps the other panels\' open state', () => {

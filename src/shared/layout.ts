@@ -305,7 +305,7 @@ export interface LayoutGeometry {
   panels: Record<string, number>
   /**
    * The Terminal panel's open state, per view (design-terminal-panel.md §13.1, D8): the `open` of the
-   * TERMINAL_PANEL_KEY placement, carried with the geometry so a toggle on one screen never opens or closes it
+   * TERMINAL_PANEL_KEY placement (or of its remembered entry while it is hidden), carried with the geometry so a toggle on one screen never opens or closes it
    * on another (`keepGeometry` keeps the stored one, as it keeps zone sizes). Absent: the layout's own value.
    */
   terminalOpen?: boolean
@@ -321,7 +321,9 @@ export function geometryOf(layout: LayoutState): LayoutGeometry {
     zones[z] = { size: zone.size, collapsed: zone.collapsed }
     for (const p of zone.panels) panels[p.panelKey] = p.size
   }
-  const terminal = ZONE_IDS.flatMap((z) => layout.zones[z].panels).find((p) => p.panelKey === TERMINAL_PANEL_KEY)
+  // Placed, else hidden (its remembered entry): a Hide / Unhide carries the open state in `remembered`, which is
+  // shared, so it is this view's too (review S1; unhidePanel and reconcile restore `open` from there).
+  const terminal = ZONE_IDS.flatMap((z) => layout.zones[z].panels).find((p) => p.panelKey === TERMINAL_PANEL_KEY) ?? layout.remembered[TERMINAL_PANEL_KEY]
   return terminal ? { zones, panels, terminalOpen: terminal.open } : { zones, panels }
 }
 
@@ -347,7 +349,7 @@ export function withGeometry(layout: LayoutState, geometry: LayoutGeometry): Lay
     }
   }
   const remembered: Record<string, RememberedPlacement> = {}
-  for (const [key, m] of Object.entries(layout.remembered)) remembered[key] = { ...m, size: sizeOf(key, m.size) }
+  for (const [key, m] of Object.entries(layout.remembered)) remembered[key] = { ...m, size: sizeOf(key, m.size), open: openOf(key, m.open) }
   const next: LayoutState = { zones, hidden: layout.hidden, remembered }
   return JSON.stringify(next) === JSON.stringify(layout) ? layout : next
 }

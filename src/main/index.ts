@@ -236,7 +236,7 @@ import {
   pluginFocusViewOf,
   type PageSelectTarget
 } from './guest-wiring'
-import { focusTabInView, ViewSelections } from './tabs/view-selections'
+import { focusTabInView, ViewSelections, viewSelectionsDeps } from './tabs/view-selections'
 import { isTestRun } from './test-run'
 import { electronDialogs } from './dialogs/electron-dialog'
 import { serverDialogs, type Dialogs } from './dialogs/dialogs'
@@ -2275,13 +2275,13 @@ function start(server: boolean): void {
   })
   // Each view's selected tab and the project's active tab, the selection of the view that acted
   // last (design-web.md §5.1). Functions: `tabs` is defined just below.
-  const selections = new ViewSelections({
-    isTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
-    setActive: (projectId, tabId) => sessions.setActive(projectId, tabId),
-    // A Terminal panel tab is never a main selection or the active tab (design-terminal-panel.md §13.5).
-    dockedOf: (projectId, tabId) => tabs.dockOf(projectId, tabId) !== undefined,
-    activeOf: (projectId) => sessions.activeTab(projectId)
-  })
+  // Lazy: `tabs` is made below, and the deps are read only on a call (as the inline arrows were).
+  const selections = new ViewSelections(
+    viewSelectionsDeps(
+      { list: (projectId) => tabs.list(projectId), dockOf: (projectId, tabId) => tabs.dockOf(projectId, tabId) },
+      { setActive: (projectId, tabId) => sessions.setActive(projectId, tabId), selectedTab: (projectId) => sessions.selectedTab(projectId) }
+    )
+  )
   const tabs = new TabManager({
     backend: new NodePtyBackend(),
     // A page tab opened while the window shows another tab gets the unseen dot (design-editor.md §1).

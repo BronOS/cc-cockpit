@@ -10,7 +10,8 @@ import { buildRestorePlan, tabRecordsOf } from '../../src/main/restore'
 import { dockTab, type DockDeps } from '../../src/main/tabs/dock'
 import { TabGroups } from '../../src/main/tabs/tab-groups'
 import { TabManager } from '../../src/main/tabs/tab-manager'
-import { EXIT_FOCUS_TYPED_MS, focusTabInView, ViewSelections } from '../../src/main/tabs/view-selections'
+import { EXIT_FOCUS_TYPED_MS, focusTabInView, ViewSelections, viewSelectionsDeps } from '../../src/main/tabs/view-selections'
+import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { pluginOfPanelKey, tabVisible } from '../../src/shared/guest-filter'
 import type { TabKind, TabRecord } from '../../src/shared/types'
 import type { ViewId } from '../../src/shared/views'
@@ -228,6 +229,34 @@ describe('ViewSelections: the panel has its own selection (§13.5, §13.4)', () 
     t.sel.typed(P, D, 'd1')
     t.tick(EXIT_FOCUS_TYPED_MS + 1)
     expect(t.sel.panelExitFocus(P, 'd1', ['d2'])).toEqual([])
+  })
+})
+
+describe("docking the window's selected shell hands the selection back, through the real registry (review S2)", () => {
+  it('main wiring (viewSelectionsDeps over TabManager and SessionRegistry)', () => {
+    const sessions = new SessionRegistry({ projectName: () => 'p', broadcast: () => {}, write: () => {} })
+    const tabs = new TabManager({
+      backend,
+      projectPath: (id) => (id === P ? root : undefined),
+      loginEnv: () => ({ PATH: '/usr/bin', SHELL: '/bin/zsh', HOME: '/home/u' }),
+      hooksPath: '/data/hooks.json',
+      binDir: '/data/bin',
+      sock: () => undefined,
+      lifecycle: { started: (t) => sessions.tabStarted(t), closed: (id) => sessions.tabClosed(id) },
+      emit: () => {},
+      log: () => undefined
+    })
+    const selections = new ViewSelections(viewSelectionsDeps(tabs, sessions))
+    const claude = tabs.create(P, { kind: 'claude' })
+    const shell = tabs.create(P, { kind: 'shell' })
+    selections.acted(P, 'desktop:1' as ViewId, claude.id)
+    selections.acted(P, 'web:1' as ViewId, shell.id)
+    expect(sessions.selectedTab(P)).toBe(shell.id)
+    // The dock step's selection part (dock.ts: setDock, then docked).
+    tabs.setDock(P, shell.id, 'panel')
+    selections.docked(P, shell.id)
+    expect(sessions.selectedTab(P)).toBe(claude.id)
+    expect(sessions.activeTab(P)).toBe(claude.id)
   })
 })
 

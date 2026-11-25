@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { LayoutService } from '../../src/main/layout/layout-service'
 import type { LayoutView } from '../../src/shared/ipc'
-import { DEFAULT_PANEL_SIZE, TERMINAL_PANEL_KEY, defaultLayout, hidePanel, movePanel, placePanelAt, zoneOf, type LayoutState } from '../../src/shared/layout'
+import {
+  DEFAULT_PANEL_SIZE,
+  TERMINAL_PANEL_KEY,
+  defaultLayout,
+  hidePanel,
+  movePanel,
+  placePanelAt,
+  showPanel,
+  unhidePanel,
+  zoneOf,
+  type LayoutState
+} from '../../src/shared/layout'
 
 const P = 'aaaaaaaaaaaaaaaa'
 
@@ -64,6 +75,30 @@ describe('LayoutService.view', () => {
     // The desktop's own edit opens it.
     service.set(P, opened())
     expect(stored.get(P)!.zones.bottom.panels.find((p) => p.panelKey === TERMINAL_PANEL_KEY)).toMatchObject({ open: true })
+  })
+
+  it("Hide / Unhide from a browser keep the desktop's Terminal panel open state (review S1)", () => {
+    const { service, stored } = setup()
+    const terminalOf = (l: LayoutState) => l.zones.bottom.panels.find((p) => p.panelKey === TERMINAL_PANEL_KEY)
+    // The desktop places it closed, then hides it: the remembered entry holds closed.
+    service.set(P, service.view(P)!.layout)
+    service.set(P, hidePanel(service.view(P)!.layout, TERMINAL_PANEL_KEY))
+    expect(stored.get(P)!.remembered[TERMINAL_PANEL_KEY]).toMatchObject({ open: false, hidden: true })
+    // A browser whose own state is open unhides it: still closed on the desktop.
+    const browserView = structuredClone(service.view(P)!.layout)
+    browserView.remembered[TERMINAL_PANEL_KEY]!.open = true
+    service.set(P, unhidePanel(browserView, TERMINAL_PANEL_KEY, 'bottom'), { keepGeometry: true })
+    expect(terminalOf(stored.get(P)!)).toMatchObject({ open: false })
+    // The desktop opens it; a browser whose own state is closed hides it: the remembered entry keeps the desktop's open.
+    service.set(P, showPanel(service.view(P)!.layout, TERMINAL_PANEL_KEY))
+    expect(terminalOf(stored.get(P)!)).toMatchObject({ open: true })
+    const closedHere = structuredClone(service.view(P)!.layout)
+    closedHere.zones.bottom.panels = closedHere.zones.bottom.panels.map((p) => (p.panelKey === TERMINAL_PANEL_KEY ? { ...p, open: false } : p))
+    service.set(P, hidePanel(closedHere, TERMINAL_PANEL_KEY), { keepGeometry: true })
+    expect(stored.get(P)!.remembered[TERMINAL_PANEL_KEY]).toMatchObject({ open: true, hidden: true })
+    // So the desktop's own Unhide brings it back open.
+    service.set(P, unhidePanel(service.view(P)!.layout, TERMINAL_PANEL_KEY, 'bottom'))
+    expect(terminalOf(stored.get(P)!)).toMatchObject({ open: true })
   })
 
   it("refuses a plugin's setters and the upload panel source on the core panel's key (§13.9)", () => {
