@@ -5568,11 +5568,15 @@ ul.settings-alert {
   padding: 0 6px;
   border-bottom: 1px solid var(--cc-border);
 }
+/* The strip scrolls once the tabs are at their minimum (QA Q1: a ~320 px side zone): each tab gives way
+   down to its icon and a few characters of name, never below, so a name is always readable. */
 .terminal-panel-tabs {
+  flex: 0 1 auto;
   display: flex;
   gap: 2px;
   min-width: 0;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
 }
 .terminal-panel-tab {
@@ -5580,18 +5584,21 @@ ul.settings-alert {
   flex: 0 1 auto;
   display: flex;
   align-items: center;
-  min-width: 64px;
-  max-width: 220px;
+  /* auto: its content's minimum (the icon, six characters of name, the close button), never less. */
+  min-width: auto;
+  max-width: 200px;
   border-radius: var(--cc-radius-md);
 }
 .terminal-panel-tab:hover {
   background: color-mix(in srgb, var(--cc-fg) 6%, transparent);
 }
 .terminal-panel-tab-label {
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
+  /* Not 0: a label shrunk below its name's minimum left "S.." (QA Q1). */
+  min-width: auto;
   height: 26px;
   padding: 0 4px 0 8px;
   font: inherit;
@@ -5601,11 +5608,40 @@ ul.settings-alert {
   border: 0;
   cursor: pointer;
 }
+/* At least six characters of the name before an ellipsis, at most what fits the tab's cap. */
 .terminal-panel-tab-name {
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: 6ch;
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The kind icon carries the state as a shape in its corner: a filled square (stopped) for an exited
+   process, a hollow ring for one not started; no colour of its own, so it reads as shape alone. */
+.terminal-panel-tab-icon {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+}
+.terminal-panel-tab-icon[data-state]::after {
+  content: '';
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  width: 6px;
+  height: 6px;
+  box-sizing: border-box;
+  border: 1.5px solid currentColor;
+  box-shadow: 0 0 0 1.5px var(--cc-bg);
+  background: var(--cc-bg);
+}
+.terminal-panel-tab-icon[data-state='exited']::after {
+  border-radius: 1px;
+  background: currentColor;
+}
+.terminal-panel-tab-icon[data-state='notStarted']::after {
+  border-radius: 50%;
 }
 /* The selected tab reads by weight and a bar under it, not by colour alone (near shades are hard to
    tell apart for the person this is built for). */
@@ -5626,10 +5662,6 @@ ul.settings-alert {
 /* An exited process: its name struck through, plus the "(exited)" text. */
 .terminal-panel-tab.exited .terminal-panel-tab-name {
   text-decoration: line-through;
-}
-.terminal-panel-tab-state {
-  flex: none;
-  font-weight: 400;
 }
 .terminal-panel-tab.dragged {
   opacity: 0.55;
