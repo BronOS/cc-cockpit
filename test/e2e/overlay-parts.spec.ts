@@ -247,3 +247,40 @@ test("Discuss over an attached part sends the opener's text and the part's own s
     await close()
   }
 })
+
+test('closing the first of two parts never reloads the second (review S-5)', async () => {
+  test.setTimeout(180_000)
+  const { cockpit: c, close } = await launchCockpit()
+  try {
+    await linkFixtures(c)
+    await c.hook('linkPlugin', join(FIXTURES, 'overlay-part-b'))
+    await c.hook('enablePlugin', c.projectDir, 'test.overlaypartb')
+    await pluginActive(c, 'test.overlaypartb')
+    await deskWidth(c, WIDE)
+    await openDoc(c)
+    await openerUp(c.page)
+    const sections = dialog(c.page).locator('section.overlay-part')
+    await expect(sections).toHaveCount(2, { timeout: 20_000 })
+    for (const title of [PART_TITLE, 'Overlay part B']) {
+      await expect(frameOf(c.page, title).locator('#part p')).toHaveText(PART_TEXT, { timeout: 20_000 })
+    }
+    // The first part in the window closes; the second (after it in the array) is marked first.
+    const first = await sections.nth(0).getAttribute('data-part-plugin')
+    const second = first === PART ? 'test.overlaypartb' : PART
+    const frameOfPlugin = (id: string): import('@playwright/test').Frame => {
+      const frame = c.page.frames().find((f) => f.url().startsWith(`cc-plugin://${id}/`))
+      if (!frame) throw new Error(`no frame of ${id}`)
+      return frame
+    }
+    await frameOfPlugin(second).evaluate(() => ((window as unknown as { __kept?: number }).__kept = 1))
+    await mark(c)
+    await sections.nth(0).locator('.overlay-part-close').click()
+    await expect(sections).toHaveCount(1)
+    await expect(sections.nth(0)).toHaveAttribute('data-part-plugin', second)
+    // Same page, never reloaded: its mark is still there (a remounted iframe loads a fresh page).
+    expect(await frameOfPlugin(second).evaluate(() => (window as unknown as { __kept?: number }).__kept)).toBe(1)
+    expect(await marked(c)).toBe(1)
+  } finally {
+    await close()
+  }
+})
