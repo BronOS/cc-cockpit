@@ -57,21 +57,34 @@ export function registerNotesHandlers(router: IpcRouter, deps: NotesHandlerDeps)
     if (!isOwner(view) && view.access?.role !== 'write') throw new Error(`${channel}: refused (read only)`)
     const author = deps.authorOf(view)
     if (!author) throw new Error(`${channel}: refused (read only)`)
+    // The same checks again once the store's queue reached this write (review S-2d): a write waits behind the others
+    // and the load, and meanwhile the owner may set this guest to read, revoke it, or the copy may be released. Run by
+    // the service after its last await, so nothing is decided on the access this call was bound with.
+    const overlayId = (payload as Record<string, unknown>).overlayId as string
+    const copy = (payload as Record<string, unknown>).copy as string
+    const recheck = (): void => {
+      if (deps.overlays.copyOwner(ctx.windowId, overlayId, copy) !== view.viewId) throw new Error(`${channel}: refused (not your copy)`)
+      const of = deps.overlays.notesOf(ctx.windowId, overlayId)
+      if (!of || of.pluginId !== pluginId || of.key !== key) throw new Error(`${channel}: refused (this overlay has no notes)`)
+      // Throws for a guest whose access is gone or no longer write; undefined for the owner.
+      const live = router.guestAccessNow(channel, ctx, view)
+      if (!deps.authorOf(live === undefined ? view : { ...view, access: live })) throw new Error(`${channel}: refused (read only)`)
+    }
     const p = payload as Record<string, unknown>
     switch (p.op) {
       case 'add': {
         // Only these fields: an `id` or `author` the page put in is never read.
         const input: NoteInput = { quote: p.quote as string, anchor: p.anchor, text: p.text as string }
-        return notes.add(ctx.projectId, pluginId, key, input, author)
+        return notes.add(ctx.projectId, pluginId, key, input, author, recheck)
       }
       case 'change':
         if (typeof p.id !== 'string') throw new Error(`${channel}: refused (no note id)`)
-        return notes.change(ctx.projectId, pluginId, key, p.id, p.text as string)
+        return notes.change(ctx.projectId, pluginId, key, p.id, p.text as string, recheck)
       case 'remove':
         if (typeof p.id !== 'string') throw new Error(`${channel}: refused (no note id)`)
-        return notes.remove(ctx.projectId, pluginId, key, p.id)
+        return notes.remove(ctx.projectId, pluginId, key, p.id, recheck)
       case 'setGlobal':
-        return notes.setGlobal(ctx.projectId, pluginId, key, p.text as string)
+        return notes.setGlobal(ctx.projectId, pluginId, key, p.text as string, recheck)
       default:
         throw new Error(`${channel}: refused (unknown op)`)
     }
