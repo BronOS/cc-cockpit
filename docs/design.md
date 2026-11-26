@@ -854,7 +854,8 @@ own copy for the restore, never Claude's session file; 1,000 keys, oldest evicte
 dropped), dropped on uninstall and project forget; a window reopened after Esc or a restart gets a `history` push and
 the next question runs `--resume <id>`. Continue in a tab (the owner's) ends the Ask process, waits for it to be gone
 (one writer per session), opens a Claude tab resuming the session in the project folder (`TabManager.create` `resumeId`:
-a UUID, never with a prompt, model or effort) and marks the chat `continuedIn`. A write guest's chat is in main's memory
+a UUID, never with a prompt, model or effort), closes the window (a part's parent) and selects the tab in the clicking
+view (announced first, as a plugin's `focus: true` tab), and marks the chat `continuedIn`. A write guest's chat is in main's memory
 only, never continued in a tab, and ends at once on any change of that guest's access (a widening included: its mode and
 document were decided under the old one) and at its end. Caps: 1 chat per copy (a new start replaces it), 3 per plugin
 per window, 6 in the app, 10 starts a minute per window; a question and a quote at most 10,000 characters, an answer cut

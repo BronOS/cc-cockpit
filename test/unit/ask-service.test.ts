@@ -46,7 +46,7 @@ let ends: ((ev: { windowId: number; overlayId: string; copy: string; view: strin
 let help: () => Promise<string>
 let linger: boolean
 let parts: { overlayId: string; pluginId: string }[]
-let opened: { projectId: string; sessionId: string; afterKill: boolean }[]
+let opened: { projectId: string; sessionId: string; afterKill: boolean; at?: { view: string; windowId: number; overlayId: string } }[]
 let clock: number
 
 const ck = (overlayId: string, copy: string): string => overlayId + '/' + copy
@@ -122,8 +122,8 @@ function service(over: Partial<AskServiceDeps> = {}): AskService {
     projectOfWindow: (w) => (w === W ? P : undefined),
     loginEnv: () => Promise.resolve({ PATH: '/usr/bin', HOME: '/home/u', APP_TAB_TOKEN: 'stale' }),
     askerOf: (view) => persons.get(view),
-    openResumeTab: (projectId, sessionId) => {
-      opened.push({ projectId, sessionId, afterKill: procs.every((p) => p.killed) })
+    openResumeTab: (projectId, sessionId, at) => {
+      opened.push({ projectId, sessionId, afterKill: procs.every((p) => p.killed), at })
       return 'tab-9'
     },
     readHelp: () => help(),
@@ -598,7 +598,9 @@ describe('kept sessions (D14)', () => {
     await s.start(owner(), q(OWNER_VIEW))
     answer(procs[0]!)
     expect(await s.continueInTab(owner(), q(OWNER_VIEW))).toEqual({ tabId: 'tab-9' })
-    expect(opened).toEqual([{ projectId: P, sessionId: SESSION, afterKill: true }])
+    // The person is taken there: main closes this overlay and selects the tab in the clicking view (0.28.0's
+    // background tab read as "nothing happens").
+    expect(opened).toEqual([{ projectId: P, sessionId: SESSION, afterKill: true, at: { view: OWNER_VIEW, windowId: W, overlayId: 'o1' } }])
     expect(pushesTo('c1').at(-1)).toMatchObject({ type: 'end', error: false })
     // The session is the tab's now: the next question starts a fresh one, and the history says where it went.
     await expect(s.continueInTab(owner(), q(OWNER_VIEW))).rejects.toThrow(/no session/)
