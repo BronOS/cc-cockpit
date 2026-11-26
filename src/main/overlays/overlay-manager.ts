@@ -106,6 +106,7 @@ import { ViewSizes } from '../views/view-sizes'
 import { warnLog } from '../warn-log'
 import type { NotesApi, SentNotes } from '../notes/notes-api'
 import type { NotesSnapshot } from '../../shared/overlay-envelope'
+import { partRefusal } from './overlay-parts'
 
 /** `type`, `buttons`, `ready` and `discuss` of every kind (shared/overlay-buttons.ts). */
 type OverlayBase = { title?: string; size?: OverlaySize } & CleanOverlayExtras
@@ -511,7 +512,14 @@ export interface CopyEvent {
   pluginId?: string
 }
 
-/** A part drawn in a window (design-parts.md §2); 00 freezes the shape, task 14 fills it. */
+/** attachPart's word from host-api on the part plugin (overlay-parts.ts PartRequest). */
+export interface PartOptions {
+  perView?: boolean
+  /** The plugin is one this window's host runs; absent counts as no. */
+  inHost?: boolean
+}
+
+/** A part drawn in a window (design-parts.md §2). */
 export interface OverlayPartRef {
   overlayId: string
   pluginId: string
@@ -638,6 +646,15 @@ interface Overlay {
    * there is one.
    */
   notesKey?: string
+  /**
+   * A part (design-parts.md §2): its parent's id. A part is in `byId` and never in `stacks`, so `pop`, `closeTop` and
+   * `focus` act on the parent; it ends with the parent (finish ends a parent's parts first).
+   */
+  parentId?: string
+  /** A parent's parts' ids, in attach order (at most MAX_PARTS). */
+  parts?: string[]
+  /** The opener announced what it shows (handle.announce): its consent to parts. Never undone. */
+  announced?: boolean
 }
 
 /** One view's copy of a `perView` overlay's page (CopyState, plus its queue). */
@@ -801,6 +818,22 @@ export class OverlayManager {
     origin?: OverlayOrigin,
     options?: OverlayStartOptions
   ): Promise<OverlayResult> {
+    return this.create(windowId, spec, opener, peerGone, channel, pluginId, view, origin, options)
+  }
+
+  /** `start`, and with `parent` a part of it (attachPart checked it may attach): never on the stack. */
+  private create(
+    windowId: number,
+    spec: unknown,
+    opener: string,
+    peerGone?: AbortSignal,
+    channel?: OverlayChannel,
+    pluginId?: string,
+    view?: ViewId,
+    origin?: OverlayOrigin,
+    options?: OverlayStartOptions,
+    parent?: Overlay
+  ): Promise<OverlayResult> {
     // The opener's perView is main's word (host-api's manifest read): a spec with `notes` from a plugin that is not
     // perView, or from the CLI or core, is refused here, before anything exists.
     const parsed = parseOverlaySpec(spec, { perView: options?.perView === true })
@@ -839,6 +872,13 @@ export class OverlayManager {
     }
     if (parsed.discuss !== undefined) overlay.discussSpec = parsed.discuss
     if (pluginId !== undefined) overlay.pluginId = pluginId
+    // A part draws no toolbar of its own (design-parts.md §2): no Discuss (its onDiscuss text still goes into its
+    // parent's, askParts), no buttons, no type buttons; the parent's toolbar is the window's.
+    if (parent) {
+      overlay.parentId = parent.id
+      overlay.discussSpec = false
+      overlay.openerButtons = []
+    }
     // The opener's name for the note a guest sees where the page is not shown (docs/design-overlay-views.md §7:
     // "<Plugin> does not show its windows to guests"); main's own record, kept for a guest only while the
     // plugin is visible to it (guest-filter.ts guestOverlays).
@@ -849,8 +889,9 @@ export class OverlayManager {
     const from = { ...(origin?.tabId === undefined ? {} : { tabId: origin.tabId }), ...((origin?.pluginId ?? pluginId) === undefined ? {} : { pluginId: origin?.pluginId ?? pluginId }) }
     if (from.tabId !== undefined || from.pluginId !== undefined) overlay.origin = from
     // Before the first `changed` below: the overlay's first listing already honours whom it is opened for.
-    for (const id of options?.via ?? []) if (typeof id === 'string' && id !== '' && id !== overlay.origin?.pluginId) overlay.via.add(id)
-    if (parsed.type) {
+    // A part carries no via (it never widens who may see anything) and never grows its parent's.
+    if (!parent) for (const id of options?.via ?? []) if (typeof id === 'string' && id !== '' && id !== overlay.origin?.pluginId) overlay.via.add(id)
+    if (parsed.type && !parent) {
       overlay.type = parsed.type
       overlay.buttonsKey = randomUUID()
     }
@@ -869,6 +910,9 @@ export class OverlayManager {
         info.notes = true
       }
       overlay.info = info
+    } else if (parsed.kind === 'html' && parent) {
+      // attachPart checked the part plugin is perView; a part is never held.
+      throw new Error('overlay.part: a part needs "overlays": { "perView": true } in plugin.json')
     } else if (parsed.kind === 'html') {
       const origin =
         view !== undefined && isRemoteViewId(view) && (this.options.isViewLive?.(view, windowId) ?? true) && this.ownerView(view) ? view : undefined
@@ -903,10 +947,22 @@ export class OverlayManager {
         () => this.loaded(overlay)
       )
     }
+    if (parent) {
+      const info: OverlayInfo = { ...overlay.info, partOf: parent.id }
+      delete info.buttons
+      delete info.typeButtons
+      delete info.discuss
+      delete info.notes
+      overlay.info = info
+    }
     this.byId.set(id, overlay)
-    const stack = this.stacks.get(windowId) ?? []
-    stack.push(overlay)
-    this.stacks.set(windowId, stack)
+    if (parent) {
+      parent.parts = [...(parent.parts ?? []), id]
+    } else {
+      const stack = this.stacks.get(windowId) ?? []
+      stack.push(overlay)
+      this.stacks.set(windowId, stack)
+    }
     this.changed(windowId)
     // The window's host is asked once now, and again after each click and on setButtons.
     this.askTypeButtons(overlay)
@@ -1094,7 +1150,16 @@ export class OverlayManager {
 
   /** The window's overlays, bottom first; a plain read (no flow-control reset). */
   infos(windowId: number): OverlayInfo[] {
-    return (this.stacks.get(windowId) ?? []).map((o) => o.info)
+    // Each parent, then its parts in attach order (`partOf` set): the shell draws them in the parent's body.
+    const out: OverlayInfo[] = []
+    for (const o of this.stacks.get(windowId) ?? []) {
+      out.push(o.info)
+      for (const id of o.parts ?? []) {
+        const part = this.byId.get(id)
+        if (part) out.push(part.info)
+      }
+    }
+    return out
   }
 
   /**
@@ -1144,6 +1209,8 @@ export class OverlayManager {
   focus(windowId: number, overlayId: string): boolean {
     const overlay = this.find(windowId, overlayId)
     if (!overlay) return false
+    // A part is never on the stack: its window (the parent) comes to the top.
+    if (overlay.parentId !== undefined) return this.focus(windowId, overlay.parentId)
     const stack = this.stacks.get(windowId)
     if (!stack || stack.at(-1) === overlay) return true
     stack.splice(stack.indexOf(overlay), 1)
@@ -1224,6 +1291,9 @@ export class OverlayManager {
     const overlay = this.find(windowId, overlayId)
     const origin = overlay?.origin
     if (!overlay || !origin) return false
+    // A part (design-parts.md §3): visible only with its parent (an unknown parent is not visible) and its own
+    // plugin (the origin rule below).
+    if (overlay.parentId !== undefined && !this.visibleTo(windowId, overlay.parentId, tabVisible, pluginVisible)) return false
     const opened = origin.tabId !== undefined ? tabVisible(origin.tabId) : origin.pluginId !== undefined && pluginVisible(origin.pluginId)
     if (!opened) return false
     for (const pluginId of overlay.via) if (!pluginVisible(pluginId)) return false
@@ -1816,17 +1886,32 @@ export class OverlayManager {
   }
 
   /**
-   * Parts (design-parts.md §1-§2), stubs until task 14: the opener announced what this overlay shows (`handle.announce`,
-   * its consent to parts). Not recorded yet: false.
+   * Parts (design-parts.md §1): the opener announced what this overlay shows (`handle.announce`), its consent to parts.
+   * Recorded for good (a new announce replaces the old one's refs, never the consent). False for an overlay that is
+   * not open in this window and for a part (a part announces nothing).
    */
   markAnnounced(windowId: number, overlayId: string): boolean {
-    void [windowId, overlayId]
-    return false
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay || overlay.parentId !== undefined) return false
+    overlay.announced = true
+    return true
   }
 
   /**
-   * Parts: open `pluginId`'s part (an ordinary perView html overlay with a parent) in overlay `parentId`. Stub until
-   * task 14: always refused.
+   * What the window's onAnnounce listeners hear of an announced overlay (design-parts.md §1): main's own record, its
+   * title and type, never the opener's words. Undefined unless it is open in this window and announced.
+   */
+  announceRecord(windowId: number, overlayId: string): { title: string; type?: { name: string; data: unknown } } | undefined {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay || overlay.announced !== true) return undefined
+    return { title: overlay.info.title, ...(overlay.type ? { type: { name: overlay.type.name, data: overlay.type.data } } : {}) }
+  }
+
+  /**
+   * Parts (design-parts.md §2): open `pluginId`'s part, an ordinary perView html overlay with a parent, in overlay
+   * `parentId`. overlay-parts.ts decides (announced, not a part, html, this window's plugin, perView, no notes, one
+   * per plugin, at most two); a refusal rejects before anything exists. The part's origin is its own plugin, its `via`
+   * empty, and the parent's `via` never changes. `peerGone` is the part plugin's host copy: a dispose dismisses it.
    */
   attachPart(
     windowId: number,
@@ -1834,16 +1919,37 @@ export class OverlayManager {
     pluginId: string,
     spec: unknown,
     channel: OverlayChannel,
-    options: OverlayStartOptions
+    options: PartOptions,
+    peerGone?: AbortSignal
   ): Promise<OverlayResult> {
-    void [windowId, parentId, pluginId, spec, channel, options]
-    return Promise.reject(new Error('overlay: parts are not available in this build'))
+    try {
+      const parent = this.find(windowId, parentId)
+      const refusal = partRefusal(
+        parent && {
+          isPart: parent.parentId !== undefined,
+          announced: parent.announced === true,
+          kind: parent.info.kind,
+          parts: this.partsOf(windowId, parent.id)
+        },
+        { pluginId, perView: options.perView === true, inHost: options.inHost === true, spec }
+      )
+      if (refusal !== undefined || !parent) throw new Error(refusal ?? 'overlay.part: that overlay is not open in this window')
+      return this.create(windowId, spec, `plugin ${pluginId}`, peerGone, channel, pluginId, undefined, { pluginId }, { perView: true }, parent)
+    } catch (err) {
+      return Promise.reject(toError(err))
+    }
   }
 
-  /** Parts: the parts drawn in overlay `overlayId`, in attach order. Stub until task 14: none. */
+  /** Parts: the parts drawn in overlay `overlayId`, in attach order (none for a part or an unknown overlay). */
   partsOf(windowId: number, overlayId: string): OverlayPartRef[] {
-    void [windowId, overlayId]
-    return []
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay) return []
+    const refs: OverlayPartRef[] = []
+    for (const id of overlay.parts ?? []) {
+      const part = this.byId.get(id)
+      if (part?.pluginId !== undefined) refs.push({ overlayId: id, pluginId: part.pluginId })
+    }
+    return refs
   }
 
   /**
@@ -2038,7 +2144,8 @@ export class OverlayManager {
    */
   setButtons(windowId: number, overlayId: string, buttons: unknown): boolean {
     const overlay = this.find(windowId, overlayId)
-    if (!overlay) return false
+    // A part draws no toolbar (design-parts.md §2): its buttons go nowhere.
+    if (!overlay || overlay.parentId !== undefined) return false
     overlay.openerButtons = parseOverlayButtons(buttons)
     this.publishButtons(overlay)
     this.askTypeButtons(overlay)
@@ -2438,6 +2545,16 @@ export class OverlayManager {
    */
   private finish(overlay: Overlay, result: OverlayResult, notify = true): void {
     if (this.byId.get(overlay.id) !== overlay) return
+    // A parent's parts end first (their openers hear `dismissed` before the parent's does), with no list of their own.
+    for (const id of [...(overlay.parts ?? [])]) {
+      const part = this.byId.get(id)
+      if (part) this.finish(part, { kind: 'dismissed' }, false)
+    }
+    overlay.parts = []
+    if (overlay.parentId !== undefined) {
+      const parent = this.byId.get(overlay.parentId)
+      if (parent?.parts) parent.parts = parent.parts.filter((id) => id !== overlay.id)
+    }
     this.byId.delete(overlay.id)
     overlay.unlinkPeer?.()
     overlay.unlinkPeer = undefined

@@ -1234,8 +1234,10 @@ export interface PluginContext {
     /**
      * Draw your own part beside an announced overlay's page (`overlayId` from `onAnnounce`): an ordinary perView
      * html overlay of yours, with its own frame, port and copies, shown in that window (at most 2 parts, one per
-     * plugin). Your manifest needs `"overlays": { "perView": true }`. Throws when the overlay is gone, was not
-     * announced, is a part, or has a part of yours already. `handle.close()` detaches it; it ends with its window.
+     * plugin). Your manifest needs `"overlays": { "perView": true }`. Throws at the call only for a bad argument (an
+     * empty `overlayId` or `file`, `notes`, a bad `ready`) or a manifest without perView; the app's refusals come later,
+     * as `handle.result` rejecting: the overlay is gone, was not announced, is a part, has a part of yours already or
+     * has 2. `handle.close()` detaches it; it ends with its window.
      * A guest sees it only when it may see both plugins. An older app has none: check
      * `typeof ctx.overlay.part === 'function'`.
      */

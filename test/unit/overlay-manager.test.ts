@@ -3284,7 +3284,7 @@ describe('00 contract: notes, envelopes and copy hooks (shared/tasks/00-contract
     expect(m.isOverlayPage(W1, 'cc-plugin://a.one/doc.html')).toBe(false)
   })
 
-  it('overlaysWithNotes matches the opener and the key; parts are stubs', async () => {
+  it('overlaysWithNotes matches the opener and the key; an overlay that never announced takes no parts', async () => {
     const m = nm()
     const id = open(m)
     void m.open(W1, page, 'plugin b.two', undefined, channel, 'b.two', undefined, undefined, { perView: true })
@@ -3292,7 +3292,68 @@ describe('00 contract: notes, envelopes and copy hooks (shared/tasks/00-contract
     expect(m.overlaysWithNotes(W1, 'a.one', 'doc:2')).toEqual([])
     expect(m.overlaysWithNotes(W2, 'a.one', 'doc:1')).toEqual([])
     expect(m.partsOf(W1, id)).toEqual([])
-    expect(m.markAnnounced(W1, id)).toBe(false)
-    await expect(m.attachPart(W1, id, 'b.two', { kind: 'html', src: 'cc-plugin://b.two/p.html' }, channel, { perView: true })).rejects.toThrow(/parts/)
+    await expect(m.attachPart(W1, id, 'b.two', { kind: 'html', src: 'cc-plugin://b.two/p.html' }, channel, { perView: true, inHost: true })).rejects.toThrow(/did not announce/)
+  })
+})
+
+
+// Task 14 (shared/design-parts.md §2): a part is in byId, never on the stack, so the window's keys act on its parent.
+describe('parts and the stack', () => {
+  const channel: OverlayChannel = { onMessage: () => {} }
+  function parentOf(m: OverlayManager): { id: string; result: Promise<OverlayResult> } {
+    const result = m.open(W1, { kind: 'html', src: 'cc-plugin://g.mail/t.html' }, 'plugin g.mail', undefined, channel, 'g.mail', undefined, undefined, { perView: true })
+    const id = m.infos(W1).filter((i) => i.partOf === undefined).at(-1)!.id
+    m.markAnnounced(W1, id)
+    return { id, result }
+  }
+  function partOf(m: OverlayManager, parentId: string, plugin = 'j.jira'): { id: string; result: Promise<OverlayResult> } {
+    const result = m.attachPart(W1, parentId, plugin, { kind: 'html', src: `cc-plugin://${plugin}/part.html` }, channel, { perView: true, inHost: true })
+    return { id: m.partsOf(W1, parentId).find((p) => p.pluginId === plugin)!.overlayId, result }
+  }
+
+  it('Esc closes the parent with its parts, never a part alone', async () => {
+    const m = manager()
+    const under = parentOf(m)
+    const top = parentOf(m)
+    const part = partOf(m, top.id)
+    // Focusing the part brings its parent up; it never becomes the top itself.
+    expect(m.focus(W1, part.id)).toBe(true)
+    expect(m.topKind(W1)).toBe('html')
+    // Esc (from the part's page, through handleChord, or the shell's pop): the parent and its part go.
+    expect(m.handleChord(W1, 'escape')).toBe(true)
+    await expect(part.result).resolves.toEqual({ kind: 'dismissed' })
+    await expect(top.result).resolves.toEqual({ kind: 'dismissed' })
+    expect(m.infos(W1).map((i) => i.id)).toEqual([under.id])
+    // Cmd+Shift+W the same.
+    const again = partOf(m, under.id)
+    expect(m.closeTop(W1)).toBe(true)
+    await expect(again.result).resolves.toEqual({ kind: 'dismissed' })
+    expect(m.infos(W1)).toEqual([])
+  })
+
+  it('closing the parent ends its parts first', async () => {
+    const m = manager()
+    const parent = parentOf(m)
+    const order: string[] = []
+    const jira = partOf(m, parent.id)
+    const cal = partOf(m, parent.id, 'c.cal')
+    void parent.result.then(() => order.push('parent'))
+    void jira.result.then(() => order.push('jira'))
+    void cal.result.then(() => order.push('cal'))
+    // A part's own close (✕ on its strip, handle.close) ends that part alone.
+    expect(m.close(W1, cal.id)).toBe(true)
+    await flush()
+    expect(order).toEqual(['cal'])
+    expect(m.infos(W1).map((i) => i.id)).toEqual([parent.id, jira.id])
+    m.close(W1, parent.id)
+    await flush()
+    await flush()
+    expect(order).toEqual(['cal', 'jira', 'parent'])
+    expect(m.close(W1, jira.id)).toBe(false)
+    // The window closing ends parents and parts alike.
+    const next = parentOf(m)
+    const last = partOf(m, next.id)
+    m.closeWindow(W1)
+    await expect(last.result).resolves.toEqual({ kind: 'dismissed' })
   })
 })

@@ -296,7 +296,8 @@ with full Node access.
   hears the live ones. `refs` are the opener's data: check them before acting.
 - `ctx.overlay.part(overlayId, { file, title?, ready? })`: draw your own part beside an announced overlay's page: an
   ordinary `perView` html overlay of yours (its own frame, port, copies and handle), in that window, at most 2 parts
-  and one per plugin. Throws when the overlay is gone, was not announced, is a part, or has your part already.
+  and one per plugin. Throws at the call only for a bad argument or a manifest without `perView`; the app's refusals
+  (the overlay is gone, was not announced, is a part, has your part already or has 2) reject `handle.result`.
   `handle.close()` detaches it; it ends with its window. A guest sees it only when it may see both plugins. Check
   `typeof handle.announce`, `ctx.overlay.onAnnounce` and `ctx.overlay.part` first: an older app has none.
 - `ctx.overlay.buttons(typeName, provider)`: add buttons to every overlay of that `type` in the
