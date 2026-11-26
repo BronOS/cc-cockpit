@@ -16,13 +16,15 @@ page: it has no privilege, and no check of the app rests on it. A page that does
 | `VERSION` | the kit's version |
 | `SHA256SUMS` | `sha256sum -c` format over the three files above and `VERSION` |
 
+Keep the layout (`kit/dist/`, `kit/host/`, `kit/VERSION`, `kit/SHA256SUMS` in your plugin), so
+`cd kit && sha256sum -c SHA256SUMS` checks it. The demo, `test/fixtures/plugins/kit-demo`, uses every component.
 A plugin's `test/kit-pin.test.js` hashes its copy against its `SHA256SUMS`. The master copy is cc-cockpit's `kit/`;
 `npm run build:kit` rebuilds `dist/` and `SHA256SUMS`, and `test/unit/kit-build.test.ts` checks they match.
 
 ```html
-<link rel="stylesheet" href="kit/cc-kit.css" />
+<link rel="stylesheet" href="kit/dist/cc-kit.css" />
 <script src="/__sdk/panel.js"></script>
-<script src="kit/cc-kit.js"></script>
+<script src="kit/dist/cc-kit.js"></script>
 <script src="page.js" defer></script>
 ```
 
@@ -89,7 +91,7 @@ ccKit.renderDocument(target: HTMLElement, input: { html: string } | { text: stri
 }): RenderedDocument
 
 interface RenderedDocument {
-  root: HTMLElement                   // the element the document is in (class cc-kit-doc)
+  root: HTMLElement                   // the element the document is in (class cc-kit-doc; add "mail" for the mail layout)
   text(): string                      // the concatenated text of its text nodes (what anchors count in)
   selection(sel?: Selection): KitSelection | null   // the current selection, if it lies inside root
   rangeOf(start: number, end: number): Range | null
@@ -138,6 +140,8 @@ ccKit.mountNotes(container: HTMLElement, opts: {
   state(): NotesState | null
 }
   // "Notes N", each "1. «quote» text — by guest Ann" with Edit / ✕; listens to notes.onChange; a refused write shows its error.
+
+ccKit.authorLabel(author: NoteAuthor): string   // 'by the owner', 'by guest Ann', 'by a guest', 'added by the plugin'
 
 ccKit.mountGlobalNote(container: HTMLElement, opts: {
   canWrite: boolean
