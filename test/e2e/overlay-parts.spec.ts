@@ -51,12 +51,13 @@ async function linkFixtures(c: Cockpit): Promise<void> {
 }
 
 /**
- * The desktop window's width. A default-size overlay is 75% of the window (styles.css `.overlay-frame`), so parts sit
- * side by side (a body of 1280 px or more) only from a window about 1707 px wide; the harness's window is narrower.
+ * The desktop window's width. The parts' layout follows the window's width (part-split.ts): side by side from 1280 px,
+ * stacked below, a switch below 700. The harness's window is narrower than a laptop's.
  */
 const deskWidth = (c: Cockpit, width: number): Promise<unknown> =>
   c.app.evaluate(({ BrowserWindow }, w) => BrowserWindow.getAllWindows()[0]?.setSize(w, 1000), width)
-const WIDE = 1900
+/** A laptop's window: parts side by side there. */
+const WIDE = 1440
 
 /** The opener's frame in the desktop page (by its plugin's URL), to mark its window and see it was never reloaded. */
 const openerFrame = (c: Cockpit): import('@playwright/test').Frame => {
@@ -166,7 +167,7 @@ test("parts: the owner sees both frames; a guest not shown the part plugin sees 
     await expect(parts).toHaveAttribute('data-mode', 'stacked')
     await expect(partSection(c.page)).toBeVisible()
     await expect(dialog(c.page).locator('.overlay-part-opener')).toBeVisible()
-    await deskWidth(c, 800)
+    await deskWidth(c, 600)
     await expect(parts).toHaveAttribute('data-mode', 'switch')
     await expect(partSection(c.page)).toBeHidden()
     const tabs = dialog(c.page).getByRole('tablist', { name: 'Shown here' })

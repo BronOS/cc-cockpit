@@ -10,8 +10,8 @@ const keyOf = (part: OverlayInfo): string => part.pluginId ?? part.id
 
 /**
  * An html overlay's body with its parts (shared/design-parts.md §4): the opener's page, then up to 2 parts in attach
- * order, each under a core strip naming its plugin with a ✕. Side by side when the body is wide, stacked below that,
- * one frame behind a switch when narrow (part-split.ts).
+ * order, each under a core strip naming its plugin with a ✕. Side by side when the window is wide, stacked below that,
+ * one frame behind a switch when narrow (part-split.ts, by the window's width).
  *
  * The opener's frame is always this element's first child, with or without parts and in every mode: a part that
  * attaches or detaches, or a resize that changes the mode, never moves or remounts it (moving an iframe in the DOM
@@ -49,14 +49,13 @@ export function OverlayParts(props: {
   /** Behind the switch: the frame shown (the opener's id or a part's). */
   const [selected, setSelected] = useState(parent.id)
 
+  // The window's width, not the body's (design-parts.md §4: the thresholds are window widths). A default overlay is
+  // 75% of the window, so the body's own width would put a 1440 px laptop's parts behind the stacked layout.
   useLayoutEffect(() => {
-    const node = el.current
-    if (!node) return
-    const measure = (): void => setWidth(node.getBoundingClientRect().width)
+    const measure = (): void => setWidth(window.innerWidth)
     measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(node)
-    return () => observer.disconnect()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
   }, [])
 
   // A part that went while it was the one shown: back to the opener's page.
