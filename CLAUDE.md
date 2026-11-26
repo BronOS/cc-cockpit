@@ -86,7 +86,8 @@ is implemented for 0.28.0; design in `docs/design.md` §4 ("Overlay notes" to "M
 `docs/features.md` (the notes and Ask, page Discuss, parts and kit entries; "Web access" › "Guests"; Known limitations). The
 Reviewer's `annotate` is deprecated (goes in 0.29.0). Ask's guest mode was proved against the real CLI by
 `scripts/ask-guest-check.mjs`. TODO(07-e2e): where `overlay-notes-ask.spec.ts`, `overlay-page-discuss.spec.ts` and
-`overlay-parts.spec.ts` ran. TODO(07-ask-folder): whether the owner's Ask may run in a project folder Claude Code was never trusted in (`-p` shows no trust dialog) is still Oleg's to decide; this text describes Ask as decided in D2 (a regular session), as built.
+`overlay-parts.spec.ts` ran. D15: in a project folder Claude Code never trusted (`-p` shows no trust dialog), the owner's Ask runs
+with the guest isolation and the panel says to open a Claude tab there once (`main/ask/ask-trust.ts`).
 
 ## Commands
 
@@ -546,7 +547,12 @@ Reviewer's `annotate` is deprecated (goes in 0.29.0). Ask's guest mode was prove
   of that guest's access, a widening included (its mode and document were decided under the old one). Continue in a tab
   waits for the Ask process to be gone before the tab resumes the session (one writer per session). Handlers re-check the
   copy and the person after every await. The Ask process's token resolves to a window caller, never a tab, so its `ccc`
-  gets no shell-only command. TODO(07-ask-folder): whether the owner's Ask may run in a project folder Claude Code was never trusted in (`-p` shows no trust dialog) is still Oleg's to decide; this text describes Ask as decided in D2 (a regular session), as built.
+  gets no shell-only command. The owner's Ask in a folder Claude Code never trusted (D15) runs with the guest isolation
+  until it is: trust is `projects[<dir>].hasTrustDialogAccepted === true` in `$CLAUDE_CONFIG_DIR/.claude.json` or
+  `$HOME/.claude.json` of the login env (`main/ask/ask-trust.ts`) for the folder, its git root, or (outside a repo) a parent,
+  never the home folder's record, never wider than Claude Code's own check (read from its 2.1.332 binary), read-only and re-read at every chat start (a running
+  chat keeps its mode); unreadable, oversized, malformed or unknown is untrusted, and every `state` push of such a chat
+  carries `notice` (`UNTRUSTED_NOTICE`). Tests set `folderTrusted` or a temp HOME, never the real file.
 - The overlay envelope (`shared/overlay-envelope.ts`): a leaf with no imports (panel.js inlines it, as
   `overlay-message.ts`). A top-level `$cc` is the app's: every path a plugin posts through refuses it (`ccPanel.post`,
   `handle.post`, host-api, the shell for a plain page message) and main marks its own pushes `envelope: true`, so a plugin

@@ -192,7 +192,8 @@ export function mountAsk(container, opts = {}) {
       case 'state':
         running = true
         phase = ev.phase
-        setText(status, PHASES[ev.phase] || '')
+        // D15: a notice from main (the owner's chat in a folder Claude Code has not trusted) stays beside the phase.
+        setText(status, [PHASES[ev.phase] || '', typeof ev.notice === 'string' ? ev.notice : ''].filter(Boolean).join(' · '))
         return
       case 'delta':
         if (typeof ev.text !== 'string') return

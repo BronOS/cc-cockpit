@@ -193,7 +193,8 @@ export interface AskPickState {
 /**
  * An Ask push, to the asking copy only (the owner's chat to every owner copy showing it, design-parts.md §7):
  * - `history`: on a copy's connect, the key's stored turns (main's copy), the pick and where it was continued.
- * - `state`: the phase changed.
+ * - `state`: the phase changed. `notice`: a line the panel shows while the chat runs (D15: the owner's Ask in a
+ *   folder Claude Code has not trusted answers from the document only, and says how to trust it).
  * - `delta`: answer text as it is written (appended to the open turn).
  * - `tool`: Claude used a tool (name and a short detail; never the tool's output).
  * - `answer`: the turn ended; `text` is the whole answer (cut at ASK_MAX_ANSWER).
@@ -201,7 +202,7 @@ export interface AskPickState {
  */
 export type AskPush =
   | { type: 'history'; turns: AskTurn[]; pick: AskPickState; continuedIn?: string }
-  | { type: 'state'; phase: AskPhase; model?: string; effort?: string }
+  | { type: 'state'; phase: AskPhase; model?: string; effort?: string; notice?: string }
   | { type: 'delta'; text: string }
   | { type: 'tool'; name: string; detail?: string }
   | { type: 'answer'; text: string; error?: string }

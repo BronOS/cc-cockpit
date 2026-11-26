@@ -254,3 +254,21 @@ test('mountAsk hears the app with ccPanel.ask.on(type, fn), one listener per pus
   ask.destroy()
   assert.deepEqual(panel.askListening(), [], 'destroy unsubscribes every type')
 })
+
+
+test("mountAsk shows a state push's notice beside the phase, as text (D15)", async () => {
+  const doc = new FakeDocument()
+  const panel = fakePanel()
+  const root = doc.createElement('div')
+  doc.body.appendChild(root)
+  const ask = kit.mountAsk(root, { doc, panel, canContinue: true })
+  await flush()
+  panel.pushAsk({ type: 'state', phase: 'thinking', notice: `Open a Claude tab here once ${EVIL}` })
+  await flush()
+  assert.match(ask.el.textContent, /Thinking… · Open a Claude tab here once/)
+  assert.equal(byTag(ask.el, 'img').length + byTag(ask.el, 'script').length, 0, 'the notice is text, never markup')
+  panel.pushAsk({ type: 'state', phase: 'ready' })
+  await flush()
+  assert.doesNotMatch(ask.el.textContent, /Open a Claude tab/)
+  ask.destroy()
+})

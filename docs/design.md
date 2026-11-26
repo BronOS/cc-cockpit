@@ -862,7 +862,12 @@ at 100,000. Pushes (`history`, `state`, `delta` coalesced every 50 ms, `tool`, `
 chat's own person holds, re-checked at each push. The Ask process gets its own token: a `ccc` it runs is a window caller
 of the project, never a tab and never shell-only. Like any `claude -p` run, its transcripts land in
 `~/.claude/projects`. An Ask answer never fills a plugin's write by itself; pages render it as text or sanitized Markdown.
-TODO(07-ask-folder): whether the owner's Ask may run in a project folder Claude Code was never trusted in (`-p` shows no trust dialog) is still Oleg's to decide; this text describes Ask as decided in D2 (a regular session), as built.
+In a project folder Claude Code never trusted (D15), the owner's Ask runs with the guest isolation: `claude -p` shows no
+trust dialog and would run the folder's own `.claude` hooks and settings. Trust is Claude Code's own record
+(`projects[<dir>].hasTrustDialogAccepted` in `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`, for the folder, its git
+root, or outside a repo a parent; never the home folder's record), read-only
+and re-read at every chat start; unreadable or unknown is untrusted. Such a chat's `state` pushes carry a `notice` telling the
+person to open a Claude tab in the folder once to trust it.
 
 **Page-started Discuss** (`renderer/overlays/page-discuss-model.ts`, `DiscussPopover.tsx`). A copy's page may open core's
 Discuss popover with `ccPanel.overlay.discuss()` (envelope `discuss.open`); the person sends from it, which is the

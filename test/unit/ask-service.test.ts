@@ -2,10 +2,10 @@
 // service runs against a fake overlay manager, a fake spawn and a fake claude --help; nothing real is spawned.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AskService, fenced, type AskServiceDeps } from '../../src/main/ask/ask-service'
+import { AskService, UNTRUSTED_NOTICE, fenced, type AskServiceDeps } from '../../src/main/ask/ask-service'
 import type { AskCaller, AskPerson } from '../../src/main/ask/ask-api'
 import type { AskProcess, AskProcessHandlers } from '../../src/main/ask/ask-runner'
 import { ASK_GUEST_FLAGS } from '../../src/main/ask/ask-argv'
@@ -119,6 +119,8 @@ function service(over: Partial<AskServiceDeps> = {}): AskService {
       return 'tab-9'
     },
     readHelp: () => help(),
+    // D15: a trusted folder unless a test says otherwise (ask-trust.test.ts reads real files in a temp HOME).
+    folderTrusted: () => Promise.resolve(true),
     now: () => clock,
     newToken: () => (procs.length.toString(16) + 'f'.repeat(64)).slice(0, 64),
     spawn: (argv, opts, h) => {
@@ -573,5 +575,84 @@ describe('kept sessions (D14)', () => {
     copies.set(ck('o1', 'c4'), OWNER_VIEW)
     for (const fn of ready) fn({ windowId: W, overlayId: 'o1', copy: 'c4', view: OWNER_VIEW })
     expect(pushesTo('c4')[0]).toMatchObject({ type: 'history', continuedIn: 'tab-9' })
+  })
+})
+
+
+describe("D15: the owner's Ask in a folder Claude Code never trusted", () => {
+  const isolation = ['--restricted', '--safe-mode', '--strict-mcp-config', '--tools']
+  /** A service reading trust for real, from a temp HOME's .claude.json (never the real one). */
+  const withHome = (home: string): AskService =>
+    service({
+      folderTrusted: undefined,
+      loginEnv: () => Promise.resolve({ PATH: '/usr/bin', HOME: home })
+    })
+  const writeConfig = (home: string, projects: unknown): void => writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects }))
+  const notices = (): unknown[] => pushesTo('c1').filter((d) => d.type === 'state').map((d) => (d as { notice?: string }).notice)
+
+  it('trusted: the owner argv (no isolation flags) and no notice', async () => {
+    const home = mkdtempSync(join(dir, 'home-'))
+    mkdirSync(projectRoot, { recursive: true })
+    writeConfig(home, { [projectRoot]: { hasTrustDialogAccepted: true } })
+    await withHome(home).start(owner(), q(OWNER_VIEW))
+    for (const f of isolation) expect(procs[0]!.argv).not.toContain(f)
+    expect(notices().every((n) => n === undefined)).toBe(true)
+  })
+
+  it('untrusted, unreadable or a missing key: the isolated argv and the panel notice', async () => {
+    for (const setup of [
+      (home: string) => writeConfig(home, { [projectRoot]: { hasTrustDialogAccepted: false } }),
+      (home: string) => writeFileSync(join(home, '.claude.json'), '{ broken'),
+      (home: string) => writeConfig(home, { [projectRoot]: {} }),
+      () => {}
+    ]) {
+      procs = []
+      posts = []
+      const home = mkdtempSync(join(dir, 'home-'))
+      setup(home)
+      const s = withHome(home)
+      await s.start(owner(), q(OWNER_VIEW))
+      expect(procs[0]!.argv.join(' ')).toContain(ASK_GUEST_FLAGS.join(' '))
+      expect(notices().length).toBeGreaterThan(0)
+      expect(notices().every((n) => n === UNTRUSTED_NOTICE)).toBe(true)
+      // A tool or MCP server on the init line ends it as a guest chat's would.
+      procs[0]!.emit({ type: 'system', subtype: 'init', session_id: SESSION, tools: ['Bash'], mcp_servers: [] })
+      expect(procs[0]!.killed).toBe(true)
+      s.close(owner(), q(OWNER_VIEW))
+    }
+  })
+
+  it('trust is re-read at every chat start', async () => {
+    let trusted = false
+    let reads = 0
+    const s = service({
+      folderTrusted: () => {
+        reads++
+        return Promise.resolve(trusted)
+      }
+    })
+    await s.start(owner(), q(OWNER_VIEW))
+    expect(procs[0]!.argv).toContain('--safe-mode')
+    answer(procs[0]!)
+    // The running chat keeps its mode: a follow-up rides the same process, no read.
+    await s.say(owner(), q(OWNER_VIEW, 'more'))
+    expect(procs).toHaveLength(1)
+    expect(reads).toBe(1)
+    answer(procs[0]!)
+    // Trusted in a tab meanwhile: the next chat start reads it again and runs as the owner (resuming the session).
+    trusted = true
+    s.close(owner(), q(OWNER_VIEW))
+    await s.say(owner(), q(OWNER_VIEW, 'now with tools'))
+    expect(reads).toBe(2)
+    for (const f of isolation) expect(procs[1]!.argv).not.toContain(f)
+    expect(procs[1]!.argv.slice(-2)).toEqual(['--resume', SESSION])
+  })
+
+  it("a guest's chat never reads trust (always isolated)", async () => {
+    let reads = 0
+    const s = service({ folderTrusted: () => (reads++, Promise.resolve(true)) })
+    await s.start(guest(), q(GUEST_VIEW))
+    expect(reads).toBe(0)
+    expect(procs[0]!.argv).toContain('--safe-mode')
   })
 })

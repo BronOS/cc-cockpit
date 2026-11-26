@@ -63,6 +63,7 @@ describe("an Ask process's token", () => {
       loginEnv: () => Promise.resolve({ PATH: '/usr/bin' }),
       askerOf: () => 'owner',
       openResumeTab: () => 't',
+      folderTrusted: () => Promise.resolve(true),
       readHelp: () => Promise.resolve('-p --permission-prompts --input-format --output-format --verbose --include-partial-messages --model --effort --resume'),
       spawn: (_argv, opts) => {
         askEnv = opts.env

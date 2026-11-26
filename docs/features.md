@@ -195,7 +195,8 @@ behind it are in [design.md](design.md).
   session; **Continue in a tab** opens that session in a regular Claude tab. The model and effort pick is remembered.
   Limits: one chat per window copy, 3 per plugin per window, 6 in the app; a question at most 10,000 characters, an
   answer cut at 100,000, a turn 5 minutes, a chat ended after 15 idle minutes (its history stays).
-  <!-- TODO(07-ask-folder): whether the owner's Ask may run in a project folder Claude Code was never trusted in (`-p` shows no trust dialog) is still Oleg's to decide; this text describes Ask as decided in D2 (a regular session), as built. -->
+  In a project folder Claude Code has never trusted, your Ask answers from the document only (like a guest's) and says so:
+  open a Claude tab in the folder once and accept its question, then ask again.
 - Discuss from the page: a window's page can open the toolbar's Discuss with Claude popover from its own button
   (`ccPanel.overlay.discuss()`); you send from the popover. Send arms after about a second, Enter and Space in it do
   nothing, the page keeps the keyboard, and a page cannot open it more than 5 times a minute (none for 2 s after you
