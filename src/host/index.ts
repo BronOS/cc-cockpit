@@ -196,6 +196,8 @@ function start(): void {
       'overlay.buttons': (params) => contexts.overlayButtons(params),
       'overlay.buttonClick': (params) => contexts.overlayButtonClick(params),
       'overlay.discuss': (params) => contexts.overlayDiscuss(params),
+      // A copy's Ask: the opener's onAsk document (host/ctx/ui.ts OverlayLinks.ask), bounded by main to ASK_CONTEXT_MS.
+      'overlay.ask': (params) => contexts.overlayAsk(params),
       'pageTab.discuss': (params) => contexts.pageTabDiscuss(params),
       'plugin.reload': (params) => {
         const [spec] = parsePluginSpecs({ plugins: [(params as { plugin?: unknown } | null)?.plugin] })

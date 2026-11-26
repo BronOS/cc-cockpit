@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+// QA (run 003 Verify): the fake `claude` (test/fixtures/bin/claude) with a held print session. A `-p` run appends its
+// pid to $QA_SLOW_PIDS and waits until $QA_SLOW_RELEASE exists (60 s at most) before it answers as the fake does, so a
+// spec can see whether main kills a live Ask. Anything else (tabs, --help) is the fake at once.
+const fs = require('node:fs')
+const path = require('node:path')
+const fake = path.join(__dirname, '..', 'bin', 'claude')
+// $QA_STDIN_LOG: every stdin chunk of a print session is appended there too (what Ask sends Claude). $QA_FAIL_CWD=1:
+// a print session fails at once with its cwd on stderr (a failure text that names a host path).
+if (process.argv[2] === '-p' && process.env.QA_FAIL_CWD === '1') {
+  process.stderr.write(`Error: cannot read settings in ${process.cwd()}/.claude/settings.json\n`)
+  process.exit(1)
+}
+if (process.argv[2] === '-p' && process.env.QA_STDIN_LOG) {
+  process.stdin.on('data', (d) => fs.appendFileSync(process.env.QA_STDIN_LOG, d))
+}
+if (process.argv[2] === '-p' && process.env.QA_SLOW_PIDS) {
+  fs.appendFileSync(process.env.QA_SLOW_PIDS, process.pid + '\n')
+  const until = Date.now() + 60_000
+  const wait = () => {
+    if (Date.now() > until || (process.env.QA_SLOW_RELEASE && fs.existsSync(process.env.QA_SLOW_RELEASE))) require(fake)
+    else setTimeout(wait, 100)
+  }
+  wait()
+} else {
+  require(fake)
+}

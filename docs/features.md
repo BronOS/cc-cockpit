@@ -179,6 +179,37 @@ behind it are in [design.md](design.md).
   and "Still loading…" after 10 s; ✕ and Esc work throughout. Discuss with Claude is core's: it shows for a typed overlay
   (or one whose opener answers `onDiscuss`), lists this window's Claude tabs and New session, sends `About: <title>` and the context through the send gate (queued while the tab is busy) and selects the
   tab. A "Discuss prompt" (Settings › General, overridable per project under This Project; empty by default) is appended to every such message, after the context and never cut. A plugin whose overlay has no type and no `onDiscuss` shows only ✕ (an older plugin looks as before).
+- Notes and Ask in a plugin's window: a plugin that draws a document in its own window (`overlays.perView`, `notes: { key }`
+  in `ctx.overlay.start`, say `jira:PROJ-123`) gets notes kept by the app: notes on selected text and one "note for
+  Claude", shared live by every screen showing the window, kept over Esc and restarts, per project and plugin; each note
+  keeps its author (you, a guest's invite name, or the plugin). You and write guests write them, read-only guests see
+  them. Caps: 200 notes, 4,000 characters each and for the note for Claude; a note past a cap is refused, never cut.
+  Discuss with Claude sends the notes as their own part, marked as data and saying who wrote each ("note by guest
+  Ann"), never cut (the document gives way; notes alone too long refuse the send and say why); once the text reaches the
+  Claude tab, the notes it carried are removed (one edited meanwhile stays; a send still queued keeps them).
+  **Ask** is a chat with Claude about the window's document, from the page (`ccPanel.ask`): yours is a regular
+  `claude -p` session in the project folder with your settings, CLAUDE.md, plugins, hooks, MCP servers and permission
+  rules; anything that would ask permission is denied (nothing can answer a prompt there yet). A write guest's Ask has no
+  tools and none of your customizations (it answers from the document); a read-only guest has none. Claude starts on the
+  first question; reopening the window (after Esc or a restart) shows the chat and the next question continues the same
+  session; **Continue in a tab** opens that session in a regular Claude tab. The model and effort pick is remembered.
+  Limits: one chat per window copy, 3 per plugin per window, 6 in the app; a question at most 10,000 characters, an
+  answer cut at 100,000, a turn 5 minutes, a chat ended after 15 idle minutes (its history stays).
+  In a project folder Claude Code has never trusted, your Ask answers from the document only (like a guest's) and says so:
+  open a Claude tab in the folder once and accept its question, then ask again.
+- Discuss from the page: a window's page can open the toolbar's Discuss with Claude popover from its own button
+  (`ccPanel.overlay.discuss()`); you send from the popover. Send arms after about a second, Enter and Space in it do
+  nothing, the page keeps the keyboard, and a page cannot open it more than 5 times a minute (none for 2 s after you
+  cancelled one). Not for read-only guests.
+- Parts: a window can show another plugin's page beside its own: Gmail or Calendar says which issues a mail or event
+  names, and the Jira plugin, when the key is one of its projects', draws the issue next to it (side by side on a wide
+  window, stacked below 1280 px, one at a time behind a switch below 700 px; the divider is remembered per device). Each
+  part has a strip with its plugin's name and ✕. Discuss and Ask take the part's text too. A guest sees a part only when
+  both plugins are shown to it; otherwise it sees the window without the part.
+- The overlay kit (`kit/`): optional components for those windows (a sanitizing document renderer, a selection menu,
+  notes, the note for Claude, the Ask chat, side tabs, an Original frame, a Discuss button, an error state) and a host
+  helper that replays one window's state to every screen. Plugins copy a pinned version into their repo; the app never
+  serves it, so a plugin works the same on an older app (without notes and Ask).
 - Component stylesheet: the panel SDK adopts `components.css` (buttons, inputs, rows, chips, a spinner and the like, all
   in a low-priority `@layer cc`) before the plugin's own CSS, so plugin pages look like the app's and any rule of the
   plugin still wins; `ccc guide style` lists the classes, and the bundled plugins use them.
@@ -296,6 +327,8 @@ behind it are in [design.md](design.md).
   with the old value struck through in red and the new one on green) on a light "paper" page under the app-themed
   header, in a frame that runs no script and loads nothing from the web; an **Original | Reader** switch sits above
   the document, and the caller hears each switch (Gmail remembers it per sender).
+  The `annotate` path (another plugin's document in the Reviewer, with `companion` and `originals`) is deprecated and
+  goes in 0.29.0: Jira, Gmail, Calendar and Chat now draw their documents in their own windows (notes and Ask above).
   The Reviewer's window shows on every screen of yours and on shown guests' screens (see "Web access" › "Guests"). Its
   notes are shared across the screens: they appear live everywhere, each note keeps its author (a guest's invite name;
   yours has none), write guests add and edit notes, read-only guests see them and cannot edit. Discuss sends the shared
@@ -822,6 +855,10 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
   shows its windows on their screens too, each guest with its own live copy. A read-only guest sees the window and
   cannot act in it; its ✕ hides the window for that guest only (it stays hidden for them until the window is gone). A
   write guest can act in it, for instance add Reviewer notes, and its ✕ closes the window for everyone, you included.
+  In a window with notes, a write guest adds and edits notes (marked "note by guest <name>") and may Ask (with no tools:
+  it answers from the document; its chat is kept only while the app runs and ends at any change of its access); a
+  read-only guest sees the notes and cannot Ask. Continue in a tab is yours only. A part from another plugin shows only
+  when that plugin is shown to the guest too.
   A plugin that does not opt in shows guests "Open on <your name>'s screen. <Plugin> does not show its windows to
   guests."; Settings › Plugins says which case a shown plugin is. What another plugin opens in a shown plugin (a mail
   Gmail opens in the Reviewer) reaches guests only when that plugin is shown to them too. This follows what plugins ask
@@ -1588,6 +1625,12 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 - A slot type with several providers and no pick draws nothing (the Plugins page asks for a pick). A url overlay's
   "…" menu (more than 6 buttons) hides the page under it while open, because a native view paints over the window.
   Discuss with Claude sends only into a Claude tab of the same window, or starts a new one.
+- Esc while a window's page-opened Discuss popover is up closes the whole window, not just the popover: the page has the
+  keyboard, so Esc goes to it. Notes, the note for Claude and the Ask chat are kept; the popover's own note is lost.
+- Ask runs `claude -p`, so its conversations are written to `~/.claude/projects` (under the project folder's entry) like
+  any Claude Code session, a write guest's included (it runs as you). Anything that would ask permission in Ask is
+  denied: allow it in your permission rules, or Continue in a tab and answer there. Ask needs a Claude Code whose
+  `claude --help` lists every flag it uses (it says which one is missing).
 - A plugin that uses an app member added in 0.10 (slots, overlay buttons, `ctx.settingsPage`, a session `name`) checks
   `typeof` for it and says the app version in its README; the plugin API stays `api: 1`, so an older app runs it
   without the feature.

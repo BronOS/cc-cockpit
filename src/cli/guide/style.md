@@ -178,9 +178,10 @@ violet grey`.
 - Rows for items, cards for a block that is not an item.
 - An html settings page uses the settings classes (`.cc-settings-group`, `.cc-settings-card`,
   `.cc-settings-row`), not `.cc-card`: titles above the card, controls in rows.
-- One primary button per view.
-- An overlay has one action bar, the app's toolbar: a page draws no close button and no footer of
-  actions. Its actions are overlay `buttons` (`primary: true` for the main one), and ✕ / Esc close.
+- One primary button per pane.
+- An overlay's own actions sit in the app's toolbar: a page draws no close button and no footer of
+  actions; whole-window actions are overlay `buttons` (`primary: true` for the main one), and ✕ / Esc
+  close. A pane's own action stays in its pane (a Reply tab's Post), as that pane's one primary.
 - A page that wants the person's words before Discuss keeps its own field and returns them from
   `onDiscuss` (the reviewer's comment is the example); Discuss itself has no note field.
 - A destructive action asks first or offers undo.

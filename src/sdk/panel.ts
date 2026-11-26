@@ -30,6 +30,14 @@
 //                                        { pick({folder}), files(source, {folder}) } hand files from the
 //                                        person's device to core's upload flow (design-upload.md §5.2);
 //                                        pick inside a click, files inside `drop`; a panel page's only
+//   ccPanel.notes                        an overlay copy opened with `notes: { key }` (perView), else
+//                                        undefined: { list, add, change, remove, setGlobal, onChange }
+//                                        on the app's store of the overlay's notes (panel-overlay.ts)
+//   ccPanel.ask                          as notes, never a read guest's: { start, say, close, pick,
+//                                        continue, on(type, fn) }, a quick Claude chat the app runs
+//   ccPanel.overlay                      an overlay copy only: { discuss() } opens the app's Discuss
+//                                        popover from the page's own button (when Discuss is shown)
+//   ccPanel.post({ $cc })                throws: a top-level `$cc` is the app's (shared/overlay-envelope.ts)
 //
 // Built to out/sdk/panel.js by a build of its own, IIFE output (panelSdk in electron.vite.config.ts,
 // which fails the build if the file imports or requires anything), and served by the cc-plugin://

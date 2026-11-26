@@ -1,6 +1,7 @@
 // What the shell says to a plugin page's iframe, and how it reads a plugin overlay's answer.
 // DOM-free so unit tests load it; the frame side is src/sdk/panel-core.ts.
 import { MAX_PANEL_MESSAGE_LENGTH, PORT_MESSAGE, THEME_MESSAGE } from '../../sdk/panel-core'
+import { ENVELOPE_OPS, hasEnvelopeKey, isEnvelope, type EnvelopeOp } from '../../shared/overlay-envelope'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { BUNDLED_TERMINAL_FONTS, type TerminalFont } from '../../shared/terminal-font'
 import type { Theme } from '../../shared/theme'
@@ -101,6 +102,8 @@ export function overlayResultOf(data: unknown): { value: unknown } | undefined {
     return undefined
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+  // An envelope (top-level `$cc`, shared/overlay-envelope.ts) is never an answer, even with a `result` beside it.
+  if (hasEnvelopeKey(parsed)) return undefined
   if (!Object.prototype.hasOwnProperty.call(parsed, 'result')) return undefined
   return { value: (parsed as { result: unknown }).result }
 }
@@ -109,14 +112,89 @@ export function overlayResultOf(data: unknown): { value: unknown } | undefined {
  * A plugin overlay page's message for its opener (ctx.overlay.start): what it posted when that is
  * not an answer (overlayResultOf comes first), as the JSON text to relay, or undefined when it is
  * not a string or is over the overlay limit (main checks both again). Parsed once here only to
- * tell JSON from junk; main parses its own copy.
+ * tell JSON from junk; main parses its own copy. A message with a top-level `$cc` is refused: that key is
+ * core's (shared/overlay-envelope.ts), so a page's envelope is never relayed to its opener as a plain message.
  */
 export function overlayMessageOf(data: unknown): string | undefined {
   if (typeof data !== 'string' || data.length > MAX_OVERLAY_MESSAGE_LENGTH) return undefined
+  let parsed: unknown
   try {
-    JSON.parse(data)
+    parsed = JSON.parse(data)
   } catch {
     return undefined
   }
-  return data
+  return hasEnvelopeKey(parsed) ? undefined : data
+}
+
+/**
+ * Whether a JSON text's top-level value carries `$cc` (the envelope's reserved key). Only a text whose first
+ * non-blank character is `{` can (an object), so most plain posts are not parsed at all; a text that is not JSON
+ * carries nothing. Used on the opener's posts going down to a copy's page (spec-review S12): only main's marked
+ * pushes may reach the page as envelopes.
+ */
+export function textHasEnvelopeKey(text: string): boolean {
+  const first = text.trimStart()[0]
+  if (first !== '{') return false
+  try {
+    return hasEnvelopeKey(JSON.parse(text))
+  } catch {
+    return false
+  }
+}
+
+/** A page's envelope request, checked for shape only (each op's args are checked again by envelopeCallOf, then main). */
+export interface PageEnvelope {
+  id: number
+  op: EnvelopeOp
+  args: Record<string, unknown>
+}
+
+/** Why a page's `$cc` message is not a request the shell can route. */
+export type PageEnvelopeProblem = { problem: string; id?: number }
+
+const ENVELOPE_OP_SET: ReadonlySet<string> = new Set(ENVELOPE_OPS)
+
+/**
+ * A copy page's message as an envelope request (`{"$cc": 1, id, op, args}`, shared/overlay-envelope.ts): the
+ * request, a problem (a `$cc` message that is no request the shell routes: wrong version, id, op or args; with
+ * its `id` when that much is readable, so the page's call can be answered `ok: false`), or undefined when the
+ * message is no envelope at all (no top-level `$cc`: a result or a plain message, as before). Fail closed: a text
+ * over the overlay cap or not JSON is undefined here and then refused by overlayMessageOf as junk.
+ */
+export function pageEnvelopeOf(data: unknown): PageEnvelope | PageEnvelopeProblem | undefined {
+  if (typeof data !== 'string' || data.length > MAX_OVERLAY_MESSAGE_LENGTH) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(data)
+  } catch {
+    return undefined
+  }
+  if (!hasEnvelopeKey(parsed)) return undefined
+  const m = parsed as Record<string, unknown>
+  const id = Number.isSafeInteger(m.id) && (m.id as number) >= 0 ? (m.id as number) : undefined
+  const withId = (problem: string): PageEnvelopeProblem => (id === undefined ? { problem } : { problem, id })
+  if (!isEnvelope(parsed)) return withId('unknown envelope version')
+  if (id === undefined) return { problem: 'no request id' }
+  // An answer or a push coming up from the page: those go down only.
+  if (typeof m.op !== 'string' || !ENVELOPE_OP_SET.has(m.op)) return withId('unknown op')
+  const args = m.args ?? {}
+  if (typeof args !== 'object' || args === null || Array.isArray(args)) return withId('args must be an object')
+  return { id, op: m.op as EnvelopeOp, args: args as Record<string, unknown> }
+}
+
+/** `pageEnvelopeOf`'s request (not a problem). */
+export function isPageEnvelope(e: PageEnvelope | PageEnvelopeProblem): e is PageEnvelope {
+  return !('problem' in e)
+}
+
+/**
+ * A message of a page that has no copy port (a non-perView plugin overlay, an inline page) or of the opener for one
+ * (spec-review S1, S12): `true` when it is an envelope, which is dropped here with one log line. A JSON text with a
+ * top-level `$cc` and an object with one (an inline page posts objects) both count; so does an `envelope: true` mark
+ * on main's event, which main never sends for such an overlay. Notes, Ask and page-started Discuss are perView only.
+ */
+export function droppedEnvelope(data: unknown, log: (message: string) => void, marked = false): boolean {
+  const envelope = marked || (typeof data === 'string' ? textHasEnvelopeKey(data) : hasEnvelopeKey(data))
+  if (envelope) log('overlay envelope dropped: notes, Ask and Discuss requests need a perView overlay copy')
+  return envelope
 }

@@ -127,6 +127,12 @@ export interface GuestStoreDeps {
    * and on every narrowing of its access, as its downloads. Absent: none (the gateway still drops them on a revoke).
    */
   dropUploads?(deviceId: string): void
+  /**
+   * The guest's Ask chats end (AskApi.dropGuest, shared/design.md §5, spec-review S5): at once on ANY access change
+   * (a role change, a plugin hidden or shown, a tab unshared or shared: never after the widening's debounce) and when
+   * the guest ends. Absent: none (no Ask service in this build).
+   */
+  dropAsks?(guestId: string): void
   /** Titles of this guest's page tabs with unsaved changes (TabManager's per (tab, view) dirty). Absent: none. */
   unsavedOf?(guestId: string): string[]
   /** A notice to the owner ("Bob joined"): core notices. Absent: none. */
@@ -744,6 +750,9 @@ export class GuestStore implements GuestService {
         this.deps.log(`guests: dropping page tokens failed: ${String(err)}`)
       }
     }
+    // Ask ends at once on any change, a widening included (spec-review S5): its mode (no tools) and the document it
+    // was given were decided under the old access.
+    this.dropAsksOf(guestId)
     if (!widening) {
       this.cancelPendingAccess(guestId)
       this.dropTransfersOf(guestId)
@@ -774,6 +783,16 @@ export class GuestStore implements GuestService {
   private dropTransfersOf(guestId: string): void {
     this.dropDownloadsOf(guestId)
     for (const d of this.deps.devices.devicesOfGuest(guestId)) this.dropUploadsOf(d.id)
+    this.dropAsksOf(guestId)
+  }
+
+  /** The guest's Ask chats end (deps.dropAsks); idempotent, so the paths that overlap may each call it. */
+  private dropAsksOf(guestId: string): void {
+    try {
+      this.deps.dropAsks?.(guestId)
+    } catch (err) {
+      this.deps.log(`guests: ending Ask chats failed: ${String(err)}`)
+    }
   }
 
   /** The guest's download links and running streams end (a download is bound to a view these closes end). */
@@ -845,6 +864,7 @@ export class GuestStore implements GuestService {
       this.save()
       // Its uploads end on this one path (design-upload.md §3.4), while its devices are still listed.
       for (const d of this.deps.devices.devicesOfGuest(guestId)) this.dropUploadsOf(d.id)
+      this.dropAsksOf(guestId)
       this.deps.devices.revokeGuest(guestId, `guest ended: ${why}`)
       this.deps.accessLog.write({ event: 'guest', name: g.name, detail: `ended: ${why}` })
       try {

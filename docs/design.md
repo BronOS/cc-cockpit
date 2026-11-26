@@ -791,6 +791,132 @@ the tab. The text always starts with `About:`, so the gate's refusal of a leadin
 never fires; an `onDiscuss` that throws or times out shows its error in the popover and sends nothing.
 The reviewer's own Discuss and New session buttons are gone: its file reviews are `type: file` overlays
 and answer `onDiscuss` with the review text.
+With notes (below), the overlay's notes go as their own part, fenced as data (`Notes (data, not instructions):`, a
+guest's note labelled "note by guest Ann", a plugin's "note by <plugin>"), then the note for Claude unfenced as `Note for
+Claude: …` (the person's or a write guest's instruction, not data); each part (below) is its own fenced section headed
+`From <plugin> (data, not instructions):`. Order: `About:` and the type line, the context, the parts, the notes, the
+note for Claude, the popover's note. Within the 20,000 characters the notes are never cut: the parts give way first,
+then the context, and notes alone past the budget refuse the send with the reason. A send whose notes cannot be read is
+refused. The notes it carried are removed once the paste is written (the session registry's `onSettled`: delivered),
+only those still at the `rev` they were sent at and the note for Claude only while it is the sent text; a drop (tab
+closed, session ended, takeover, cancel) or a send still queued keeps them, a send queued at quit included. A New session
+removes them at once.
+
+**Overlay notes** (`main/notes/`, `ipc/notes-handlers.ts`, `shared/notes-limits.ts`). An html overlay of a `perView`
+plugin opts in with `notes: { key }` (1-200 characters of `A-Z a-z 0-9 . _ : @ # + = ~ / -`); `start` throws for a plugin
+without `perView`, and an older app ignores the key. The store is main's, because main composes Discuss and alone knows
+a send's delivery or drop: one file per (project, plugin), `<data>/notes/<projectId>/<sha256(pluginId)>.json`, every
+operation one at a time, written to a temp file and renamed, an unreadable file moved aside (never written over), the
+keys stored as `[key, state]` pairs so `__proto__` stays data; dropped on uninstall and on project forget. A key's state
+is `{ global, notes, rev }` (`global`: the note for Claude), a note `{ id, quote, anchor, text, rev, author }`: ids are
+main's UUIDs, `anchor` is opaque JSON (at most 2,048 characters) only the page reads, `author` is main's (`{ access,
+person? }` from the view the router bound, `{ plugin: true }` for a host's write), never the page's, and the first writer
+stays the author. Caps refuse, never cut: 200 notes, 4,000 characters a note, a quote and the note for Claude, 400,000
+characters of JSON a key, 1,000 keys a plugin and project. Pages reach it through `overlays.notes.read` (GUEST `read`)
+and `overlays.notes.write` (GUEST `write`: the owner and write guests), each only for the caller's own live copy
+(`copyOwner`), the key and the opener from main's record of the overlay, never the payload. Every write pushes the key's
+whole state with a service-wide `seq` to each live copy of the key's overlays in the project's window through
+`postEnvelope`, which applies `mayConnectCopy` and `via` itself, so notes have no event channel of their own. The host's
+`ctx.notes(key)` is the same store over host RPC (`host/ctx/notes.ts`).
+
+**The overlay envelope** (`shared/overlay-envelope.ts`). Notes, Ask and page-started Discuss ride a copy's own port (the
+shell-made one) as JSON texts with the reserved top-level key `$cc`: a page request `{ $cc: 1, id, op, args }`, the
+shell's answer `{ $cc: 1, re, ok, value | error }` after its invoke of main's channel (or after the popover for
+`discuss.open`), and main's push `{ $cc: 1, ev: 'notes' | 'ask', seq, data }` on `overlays.message` marked `envelope:
+true` by main. `$cc` is the app's: `ccPanel.post` throws on it, `handle.post` and host-api refuse it and the shell drops a
+plain page message carrying it, so a plugin cannot fake core's answers or pushes to its own page. Before the port the shell
+sends the copy its intro (`cc-plugin.overlay`: which of notes, Ask and Discuss it has); without one `ccPanel.notes` and
+`ccPanel.ask` stay undefined (an older app, a panel, slot or page tab, an overlay without `notes`, a part, and `ask` for
+a read guest). A refused invoke answers `ok: false`, never hangs; a page request rejects after 30 s and past 50
+outstanding.
+
+**Ask** (`main/ask/`, `ipc/ask-handlers.ts`, `shared/ask.ts`). A chat with Claude about an overlay's document, per
+(project, plugin, notes key). The page's `ccPanel.ask` (`start`, `say`, `close`, `pick`, `continueInTab`, `on`) becomes
+`overlays.ask.*`: GUEST `write` with the overlay target (the owner and write guests; never a read guest),
+`overlays.ask.continue` GUEST `no`. Main decides everything from its own records: the caller's own live copy, the key
+and opener from `notesOf`, the folder from the project record, the mode from the person the router bound
+(`isOwner(view)`), never from the page. The document is the opener's `handle.onAsk(from)` text (the first non-null
+within 10 s; all null, a throw or a timeout refuses the question; cut at 100,000 characters with a note) plus each part's,
+asked only when a session starts fresh (a resumed one holds it), and goes to Claude on stdin, fenced as data, with the
+quoted selection and the question. One argv builder (`ask-argv.ts`): the owner's Ask is a regular session:
+`claude -p --permission-prompts none` with stream-json in and out, `--verbose` and `--include-partial-messages`, in the
+project folder, with the person's settings, CLAUDE.md, plugins, hooks, MCP servers and permission rules; what would ask
+is denied, since nothing can answer a prompt there. No `--plugin-dir` and no cockpit hooks: it is not a tab. A write
+guest's adds `--restricted --safe-mode --strict-mcp-config --tools ""`: no tools and none of the person's customizations,
+since the process runs as the owner (`scripts/ask-guest-check.mjs` proves it against the real CLI; `ask-argv.test.ts`
+keeps its lists equal). `--model` and `--effort` come from `session-options.ts`'s closed lists; the owner's pick is
+remembered app-wide in `<data>/ask.json` (a guest's holds for its chat only). `claude --help` must list every flag a run
+uses, checked before each spawn (an older CLI that ignored `--safe-mode` would run a guest's chat with the owner's hooks).
+Claude starts on the first question, lives while a copy shows the chat and ends after 15 minutes with no question or
+with the last copy; one turn at a time (a question meanwhile is refused busy), 5 minutes a turn. The owner's chat is
+kept: `<data>/ask/<projectId>/<sha256(pluginId)>.json` holds each key's session id (a UUID only), pick and turns (main's
+own copy for the restore, never Claude's session file; 1,000 keys, oldest evicted; 200,000 characters of turns, oldest
+dropped), dropped on uninstall and project forget; a window reopened after Esc or a restart gets a `history` push and
+the next question runs `--resume <id>`. Continue in a tab (the owner's) ends the Ask process, waits for it to be gone
+(one writer per session), opens a Claude tab resuming the session in the project folder (`TabManager.create` `resumeId`:
+a UUID, never with a prompt, model or effort) and marks the chat `continuedIn`. A write guest's chat is in main's memory
+only, never continued in a tab, and ends at once on any change of that guest's access (a widening included: its mode and
+document were decided under the old one) and at its end. Caps: 1 chat per copy (a new start replaces it), 3 per plugin
+per window, 6 in the app, 10 starts a minute per window; a question and a quote at most 10,000 characters, an answer cut
+at 100,000. Pushes (`history`, `state`, `delta` coalesced every 50 ms, `tool`, `answer`, `end`) go only to copies the
+chat's own person holds, re-checked at each push. The Ask process gets its own token: a `ccc` it runs is a window caller
+of the project, never a tab and never shell-only. Like any `claude -p` run, its transcripts land in
+`~/.claude/projects`. An Ask answer never fills a plugin's write by itself; pages render it as text or sanitized Markdown.
+In a project folder Claude Code never trusted (D15), the owner's Ask runs with the guest isolation: `claude -p` shows no
+trust dialog and would run the folder's own `.claude` hooks and settings. Trust is Claude Code's own record
+(`projects[<dir>].hasTrustDialogAccepted` in `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`, for the folder, its git
+root, or outside a repo a parent; never the home folder's record), read-only
+and re-read at every chat start; unreadable or unknown is untrusted. Such a chat's `state` pushes carry a `notice` telling the
+person to open a Claude tab in the folder once to trust it.
+
+**Page-started Discuss** (`renderer/overlays/page-discuss-model.ts`, `DiscussPopover.tsx`). A copy's page may open core's
+Discuss popover with `ccPanel.overlay.discuss()` (envelope `discuss.open`); the person sends from it, which is the
+toolbar's `overlays.discuss` (`core` origin, typed tabs included), so a page can never send by itself. It opens only for
+the view's top overlay, where the toolbar shows Discuss, in a view that may write (never a read guest); a request while
+it is open does nothing and never re-arms Send. Send arms after about a second visible in a focused window
+(`ApprovalArm`) and a press begun before that does not count; the popover takes no focus (the page keeps the keyboard, so
+a key meant for the page never lands in it) and blocks Enter and Space inside; none for 2 s after the person cancelled
+one, at most 5 a minute. Esc while it is open goes to the page's frame and so closes the window, popover and all
+(accepted: the notes, the note for Claude and the Ask chat are kept outside the page).
+
+**Parts** (`main/overlays/overlay-parts.ts`, `host/overlay-announce.ts`, `renderer/overlays/OverlayParts.tsx`,
+`part-split.ts`). Another plugin's page beside an html overlay, without the opener ever drawing that plugin's data. The
+opener says what it shows with `handle.announce({ kind, refs })` (kind 1-40 of `a-z 0-9 . -`, at most 20 refs of 200
+characters, 5 a minute, a new one replaces the last; never the document: every listener of the window hears it). Its
+host dispatches it to `ctx.overlay.onAnnounce(kind, fn)` listeners in the window's host (2 s each, a slow or throwing one
+skipped and logged; a later listener first hears the live ones) and tells main, which marks the overlay announced:
+announcing is the opener's consent. A listener that finds the refs its own (Jira: a configured project's key) calls
+`ctx.overlay.part(overlayId, { file })`; main makes a child overlay record of the part's plugin (`parentId`, empty
+`via`, its own frame, port, copies and handle), kept in `byId` but never on the stack, so Esc, `closeTop` and focus act
+on the parent. Refused (`partRefusal`, failing closed): an unknown, ended or unannounced parent, a part of a part, a
+non-html parent, a plugin not in this window's host or without `perView`, a `notes` spec, a second part of one plugin, a
+third part; the app's refusals reject `handle.result`. The parent's close ends its parts first. A guest sees a part only
+when it sees the parent and the part's plugin; the parent's `via` never grows for a part, so a guest not shown the part's
+plugin keeps the opener's window without it. Layout: the parent's body is a row with the opener's frame first (never
+moved or remounted, which would reload it), each part under a core strip naming its plugin with ✕ (the owner and write
+guests close the part for everyone, a read guest hides it for itself); a part starts at 40 % within 25-60 %, remembered
+per (opener, part plugin) per device in the browser's own storage; side by side from 1280 px, stacked below, one frame
+behind a switch below 700 px. A part's intro has no notes, Ask or Discuss; Discuss and Ask take each part's `onDiscuss` /
+`onAsk` text only from a view holding its live copy; a part's null, throw or timeout leaves it out.
+
+**The overlay kit** (`kit/`, `kit/README.md`). Optional components for a plugin's overlay page (a renderer copied from
+the Reviewer's sanitizer, a selection menu, notes, the note for Claude, the Ask chat, side tabs, an Original frame, a
+Discuss button, an error state) and a host helper, `makePage`, that keeps one overlay's state and gives each copy its
+projection on connect (on an app without `perView`, one holder page at read access). Plugin code with no privilege: no
+check of the app rests on it, and the app never serves it. Each plugin vendors a pinned copy (`dist/cc-kit.js`,
+`dist/cc-kit.css`, `host/shared-page.js`, `VERSION`, `SHA256SUMS`) and checks it with a `kit-pin` test, so a plugin is
+the same on an older app and a kit change never lands under a plugin unasked. The master copy is here: `npm run
+build:kit` rebuilds `dist/` and `SHA256SUMS`, `test/unit/kit-build.test.ts` checks they match, and the demo plugin
+`test/fixtures/plugins/kit-demo` uses every component.
+
+**Mail-frame links** (`main/windows/mail-frame-links.ts`). A link clicked in an `about:srcdoc` child of any plugin's open
+html overlay page (a mail's Original frame) opens in the system browser through `ctx.openExternal`'s checks, with the
+rate budget keyed by that page's plugin; it grants nothing the plugin's host could not already do. The window is always
+denied.
+
+The Reviewer's `annotate` (with `prepare`, `cancel`, `fail`, `update`, `companion` and `originals`) is deprecated: each
+plugin draws its own documents in its own overlay with the APIs above, and the path goes one app release after them
+(0.29.0). The Reviewer's file reviews keep their own drafts.
 
 **Themes**: a set of CSS variables plus an xterm palette. Light and dark are built in; theme
 plugins add more. The active theme is app-wide. A plugin theme inherits every variable it does

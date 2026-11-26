@@ -7,6 +7,12 @@
 // closes the overlay as `discussed` and selects the tab; an error comes back as text and is shown
 // here, nothing sent. No "remember last choice": the main part always means a new session.
 //
+// A page-opened popover (`mode: 'page'`, spec-review S6, page-discuss-model.ts): the overlay's own page asked for it
+// (`ccPanel.overlay.discuss()`), so it lists New session first and then the Claude tabs, takes no focus (the page
+// keeps the keyboard), blocks Enter and Space inside, and arms Send only after about a second of being seen
+// (PagePopoverArm); a press begun before that does not count. Closing it without a send is a cancel
+// (`onPageCancel`: the cooldown).
+//
 // Keys: Alt+ArrowDown on the main part opens the menu; Up/Down move the target, Enter in the list
 // sends, Esc closes the popover only and gives the ▾ the focus
 // (the latest `overlay.pop` handler wins, as for the "…" menu). A url overlay hides its native view
@@ -17,6 +23,10 @@ import { registerHandlers } from '../commands/keybindings'
 import { StatusDot } from '../status/StatusDot'
 import { statusText } from '../status/strip-order'
 import { discussReadiness, discussRowMeta, existingMenuTitle, orderDiscussTabs, type DiscussTab } from './discuss-tabs'
+import { pagePopoverKey, PagePopoverArm, popoverTakesFocus, type DiscussPopoverMode } from './page-discuss-model'
+
+/** The page popover's row for a new session (a tab id is a UUID, never this). */
+const NEW_SESSION = 'new'
 
 type Answer = { ok: true } | { ok: false; error: string }
 
@@ -39,8 +49,17 @@ export function DiscussButton(props: {
   /** The opener asked for the accent style (handle.setDiscussPrimary). */
   primary?: boolean
   onOpenChange?: (open: boolean) => void
+  /**
+   * The page asked for the popover (OverlayStack's gate let it through): a new number opens it in page mode. Never
+   * while it is open (the gate answers `already-open`), so a repeated request never re-arms Send.
+   */
+  pageRequest?: number
+  /** A page-opened popover closed without a send (Cancel, a click outside, Esc in the shell, the ▾). */
+  onPageCancel?: () => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
+  const [mode, setMode] = useState<DiscussPopoverMode>('menu')
+  const onPageCancel = useRef(props.onPageCancel)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const root = useRef<HTMLDivElement>(null)
@@ -49,28 +68,47 @@ export function DiscussButton(props: {
   const onOpenChange = useRef(props.onOpenChange)
   useEffect(() => {
     onOpenChange.current = props.onOpenChange
+    onPageCancel.current = props.onPageCancel
   })
   const none = props.tabs.length === 0
-  // The last session closed while the menu is open: nothing left to pick.
-  const shown = open && !none
+  // The last session closed while the menu is open: nothing left to pick. A page-opened one still has New session.
+  const shown = open && (mode === 'page' || !none)
+
+  // The page's request: opened in page mode. Read from the number only (a re-render with the same one does nothing).
+  const lastRequest = useRef(props.pageRequest)
+  useEffect(() => {
+    if (props.pageRequest === undefined || props.pageRequest === lastRequest.current) return
+    lastRequest.current = props.pageRequest
+    setError(null)
+    setMode('page')
+    setOpen(true)
+  }, [props.pageRequest])
+
+  /** Closes the popover; a page-opened one closing unsent is a cancel (the cooldown). */
+  const close = (): void => {
+    setOpen(false)
+    if (mode === 'page' && open) onPageCancel.current?.()
+  }
 
   useEffect(() => {
     if (!shown && error === null) return
     // Capture phase: a click elsewhere closes it, as for the "…" menu. Clicks inside are its own.
     const dismiss = (e: MouseEvent): void => {
       if (e.target instanceof Node && root.current?.contains(e.target)) return
-      setOpen(false)
+      close()
       setError(null)
     }
     window.addEventListener('click', dismiss, true)
     return () => window.removeEventListener('click', dismiss, true)
-  }, [shown, error])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `close` reads this render's mode; re-bound with shown
+  }, [shown, error, mode])
 
   // Esc closes the popover only; the owner hears open and close (a url view hides meanwhile), the
   // cleanup included, so a popover that goes while open never leaves the view hidden.
   useLayoutEffect(() => {
     if (!shown) {
-      if (wasOpen.current && (document.activeElement === null || document.activeElement === document.body)) {
+      // A page-opened popover never took the focus, so it gives none back either (the page keeps it).
+      if (wasOpen.current && mode === 'menu' && (document.activeElement === null || document.activeElement === document.body)) {
         toggle.current?.focus()
       }
       wasOpen.current = false
@@ -78,12 +116,13 @@ export function DiscussButton(props: {
     }
     wasOpen.current = true
     onOpenChange.current?.(true)
-    const off = registerHandlers({ 'overlay.pop': () => setOpen(false) })
+    const off = registerHandlers({ 'overlay.pop': () => close() })
     return () => {
       off()
       onOpenChange.current?.(false)
     }
-  }, [shown])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `close` reads this render's mode; re-bound with shown
+  }, [shown, mode])
 
   const startNew = (): void => {
     if (starting) return
@@ -113,6 +152,8 @@ export function DiscussButton(props: {
             if (e.key === 'ArrowDown' && e.altKey && !none) {
               e.preventDefault()
               setError(null)
+              // The person's own open: the ▾'s menu, never the page mode a page request left set.
+              setMode('menu')
               setOpen(true)
             }
           }}
@@ -127,11 +168,15 @@ export function DiscussButton(props: {
           aria-label="Discuss in an existing session"
           aria-haspopup="menu"
           aria-expanded={shown}
-          disabled={none}
+          disabled={none && !shown}
           ref={toggle}
           onClick={() => {
             setError(null)
-            setOpen((v) => !v)
+            if (open) close()
+            else {
+              setMode('menu')
+              setOpen(true)
+            }
           }}
         >
           <span aria-hidden="true">▾</span>
@@ -145,10 +190,12 @@ export function DiscussButton(props: {
       {shown && (
         <DiscussPopover
           overlayId={props.overlayId}
+          mode={mode}
           tabs={orderDiscussTabs(props.tabs, preselected.kind === 'tab' ? preselected.tabId : undefined)}
+          {...(preselected.kind === 'tab' ? { preselected: preselected.tabId } : {})}
           onClose={() => {
-            setOpen(false)
-            toggle.current?.focus()
+            close()
+            if (mode === 'menu') toggle.current?.focus()
           }}
         />
       )}
@@ -158,30 +205,69 @@ export function DiscussButton(props: {
 
 function DiscussPopover(props: {
   overlayId: string
-  /** At least one, in menu order (orderDiscussTabs): the first is the initial target. */
+  /** `menu`: the ▾'s own; `page`: the page asked for it (New session first, armed Send, no focus). */
+  mode: DiscussPopoverMode
+  /** In menu order (orderDiscussTabs): the first is the initial target. At least one in `menu` mode. */
   tabs: readonly DiscussTab[]
+  /** `page` mode: the tab to start on (the opener's or the active Claude tab); else New session. */
+  preselected?: string
   onClose: () => void
 }): React.JSX.Element {
-  const { tabs } = props
-  const [selected, setSelected] = useState(tabs[0]!.tabId)
+  const { tabs, mode } = props
+  const page = mode === 'page'
+  const [selected, setSelected] = useState(page ? (props.preselected ?? NEW_SESSION) : tabs[0]!.tabId)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const list = useRef<HTMLDivElement>(null)
-  // The selection stays on a tab that is listed: one that closed while the popover is open falls
+  // The page mode's rows: New session first, then the tabs.
+  const keys = page ? [NEW_SESSION, ...tabs.map((t) => t.tabId)] : tabs.map((t) => t.tabId)
+  // The selection stays on a row that is listed: a tab that closed while the popover is open falls
   // back to the first listed (main would refuse it anyway).
-  const keys = tabs.map((t) => t.tabId)
   const current = keys.includes(selected) ? selected : keys[0]!
-  const notReady = discussReadiness(tabs.find((t) => t.tabId === current)!) === 'not-ready'
+  const currentTab = tabs.find((t) => t.tabId === current)
+  const notReady = currentTab !== undefined && discussReadiness(currentTab) === 'not-ready'
+
+  // Page mode: Send armed after about a second of the popover seen in a focused window (PagePopoverArm).
+  const [armed, setArmed] = useState(!page)
+  const arm = useRef<PagePopoverArm | null>(null)
+  useEffect(() => {
+    if (!page) return
+    const current = new PagePopoverArm(setArmed)
+    arm.current = current
+    const onVisibility = (): void => current.visible(document.visibilityState === 'visible' && document.hasFocus())
+    // Read once the focus has settled: a blur that only moves it into a frame (the page) keeps `hasFocus()` true.
+    let blurCheck: ReturnType<typeof setTimeout> | undefined
+    const onBlur = (): void => {
+      clearTimeout(blurCheck)
+      blurCheck = setTimeout(onVisibility, 0)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onVisibility)
+    window.addEventListener('blur', onBlur)
+    onVisibility()
+    return () => {
+      clearTimeout(blurCheck)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onVisibility)
+      window.removeEventListener('blur', onBlur)
+      current.dispose()
+      if (arm.current === current) arm.current = null
+    }
+  }, [page])
 
   useLayoutEffect(() => {
-    list.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus()
+    // A page-opened popover leaves the keyboard where it is (the page's frame).
+    if (popoverTakesFocus(props.mode)) list.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the mode is fixed for one mount
   }, [])
 
   const send = (): void => {
     if (sending || notReady) return
+    if (page && arm.current?.armed !== true) return
     setSending(true)
     setError(null)
-    void askDiscuss(props.overlayId, { kind: 'tab', tabId: current }).then((err) => {
+    const target: DiscussTarget = current === NEW_SESSION ? { kind: 'new' } : { kind: 'tab', tabId: current }
+    void askDiscuss(props.overlayId, target).then((err) => {
       setError(err)
       setSending(false)
     })
@@ -196,14 +282,46 @@ function DiscussPopover(props: {
       list.current?.querySelector<HTMLElement>(`[data-target="${CSS.escape(next)}"]`)?.focus()
     } else if (e.key === 'Enter') {
       e.preventDefault()
-      send()
+      // A page-opened popover takes no key as a send (pagePopoverKey blocks it on the popover too).
+      if (!page) send()
     }
   }
 
   return (
-    <div className="discuss-popover" role="dialog" aria-label="Discuss in an existing session">
+    <div
+      className="discuss-popover"
+      role="dialog"
+      aria-label={page ? 'Discuss with Claude' : 'Discuss in an existing session'}
+      data-mode={mode}
+      // Recorded on the popover, not on Send: a disabled button may get no pointer events, and a press begun while
+      // disarmed must never read as "no press seen".
+      onPointerDownCapture={page ? () => arm.current?.pressBegan() : undefined}
+      onKeyDownCapture={
+        page
+          ? (e) => {
+              if (pagePopoverKey(e.key) !== 'block') return
+              e.preventDefault()
+              e.stopPropagation()
+            }
+          : undefined
+      }
+    >
       <div className="discuss-caption">Send to</div>
       <div className="cc-list cc-compact discuss-targets" role="listbox" aria-label="Send to" ref={list} onKeyDown={onListKey}>
+        {page && (
+          <div
+            className="cc-row discuss-target"
+            role="option"
+            tabIndex={current === NEW_SESSION ? 0 : -1}
+            aria-selected={current === NEW_SESSION}
+            data-target={NEW_SESSION}
+            onClick={() => setSelected(NEW_SESSION)}
+          >
+            <span className="cc-row-main">
+              <span className="cc-row-title">New Claude session</span>
+            </span>
+          </div>
+        )}
         {tabs.map((tab) => (
           <div
             key={tab.tabId}
@@ -233,10 +351,14 @@ function DiscussPopover(props: {
         <button type="button" className="cc-btn" onClick={props.onClose}>
           Cancel
         </button>
-        <button type="button" className="cc-btn cc-primary discuss-send" disabled={sending || notReady}
+        <button type="button" className="cc-btn cc-primary discuss-send" disabled={sending || notReady || !armed}
           title={notReady ? 'This session is idle and would not take the text until you run a prompt in it' : undefined}
           aria-busy={sending || undefined}
-          onClick={send}
+          onClick={() => {
+            // Page mode: only an armed press counts (PagePopoverArm.click); the ▾'s own popover sends on any click.
+            if (page && arm.current?.click() !== true) return
+            send()
+          }}
         >
           {sending && <span className="cc-spinner overlay-button-spinner" aria-hidden="true" />}
           Send

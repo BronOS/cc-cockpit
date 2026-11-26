@@ -78,6 +78,17 @@ open state per view in `LayoutGeometry.terminalOpen`; never a guest's) is implem
 (§13 overrides the sections before it), user docs in `docs/features.md` ("Terminal panel"). e2e (`terminal-panel.spec.ts`) run on
 Linux only, never macOS.
 
+The overlay foundation (core gives the window and its APIs, the plugin draws its own document: overlay notes kept by main,
+`notes: { key }`, `ccPanel.notes`, `ctx.notes`; Ask, a `claude -p` chat about the document run by main, `ccPanel.ask`,
+`handle.onAsk`, kept sessions and Continue in a tab; page-started Discuss, `ccPanel.overlay.discuss()`; the `$cc` envelope
+on a copy's port; parts, `handle.announce`, `ctx.overlay.onAnnounce`, `ctx.overlay.part`; the vendored overlay kit, `kit/`)
+is implemented for 0.28.0; design in `docs/design.md` §4 ("Overlay notes" to "Mail-frame links"), user docs in
+`docs/features.md` (the notes and Ask, page Discuss, parts and kit entries; "Web access" › "Guests"; Known limitations). The
+Reviewer's `annotate` is deprecated (goes in 0.29.0). Ask's guest mode was proved against the real CLI by
+`scripts/ask-guest-check.mjs`. TODO(07-e2e): where `overlay-notes-ask.spec.ts`, `overlay-page-discuss.spec.ts` and
+`overlay-parts.spec.ts` ran. D15: in a project folder Claude Code never trusted (`-p` shows no trust dialog), the owner's Ask runs
+with the guest isolation and the panel says to open a Claude tab there once (`main/ask/ask-trust.ts`).
+
 ## Commands
 
 - `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright). The OAuth spec and the
@@ -95,6 +106,13 @@ Linux only, never macOS.
   `marketplace/tools/dist` is committed because the index repo's CI runs it with plain node and no install, and a unit
   test compares the bytes), `npm run package` (unsigned mac build),
   `npm run package:dir` (unpacked app in `release/`, for a smoke launch).
+- `npm run build:kit`: rebuilds the overlay kit's `kit/dist/` and `kit/SHA256SUMS` from `kit/src` (committed; plugins vendor
+  these bytes); `test/unit/kit-build.test.ts` rebuilds and compares them and checks that the kit-demo fixture's copy
+  (`test/fixtures/plugins/kit-demo/kit`) is the same bytes, so copy `kit/` there after a change.
+- `node scripts/ask-guest-check.mjs [claude]`: real `claude` proves what Ask's argv relies on and no unit test can (the
+  fake `claude` runs there): a guest chat has no tools and runs no hooks, the owner's runs the project's hooks, and a kept
+  session resumes; spends a few haiku turns on the runner's login. Run it after changing `main/ask/ask-argv.ts` (its flag
+  lists are written out in the script too, and `ask-argv.test.ts` keeps them equal) or on a new Claude Code.
 - `node scripts/server-mode-smoke.mjs [executable]`: server mode's start end to end (no display, no switches, pid kept,
   `ccc web`, SIGTERM, nothing left; the fallback and a taken port too); with no argument it runs `out/` (build first), with
   a packaged executable it ignores the test env and needs no network. Run it after changing `main/server-mode.ts`,
@@ -510,6 +528,55 @@ Linux only, never macOS.
   Guest rows: `overlays.ready`, `.loaded`, `.message`, `.release` are `read` with the overlay target and refuse a
   non-`perView` overlay, `.close`, `.result` stay `write`, `.take` `no`; the events `overlays.message`, `.hide`,
   `.reload` reach a guest for its own copies only (`ownCopyEvent`, `guest-events.ts`).
+- Overlay notes (`main/notes/`, design.md §4 "Overlay notes"): the store is main's, because main composes Discuss and
+  alone knows a send's delivery or drop (in the host it would need a persisted delivered/dropped event). The key and the
+  opener come from main's record of the overlay and the copy must be the caller's own live copy (`copyOwner`); the author
+  is main's (the view the router bound, `{ plugin: true }` for a host write), never a page's `id` or `author`. Caps refuse,
+  never cut (a silently shortened note is worse than an error). Pushes go per copy through `postEnvelope` (its
+  `mayConnectCopy` and `via`), never a new event channel. Discuss removes only the notes still at their sent `rev`, and
+  only on the session registry's `onSettled` delivered (a failed write is not a settle), so a note edited while the send
+  waited stays and a queued send keeps them.
+- Ask (`main/ask/`, design.md §4 "Ask"): one argv builder (`ask-argv.ts`) decides a mode's flags from main's
+  `isOwner(view)`, never from the page: the owner's is a regular session (the person's settings, hooks, MCP servers and
+  rules; `--permission-prompts none`, since nothing can answer a prompt there), a write guest's adds `--restricted
+  --safe-mode --strict-mcp-config --tools ""` because the process runs as the owner (`--restricted` alone still ran hooks).
+  Keep `ASK_OWNER_FLAGS` / `ASK_GUEST_FLAGS` equal to `scripts/ask-guest-check.mjs`'s lists and run it after a change;
+  every flag a run uses is checked in `claude --help` before each spawn (an older CLI that ignored `--safe-mode` would run a
+  guest's chat with the owner's hooks). Model and effort only from `session-options.ts`'s lists and a session id only as a
+  UUID: each becomes an argument. A guest's chat is never stored, never continued in a tab, and ends at once on any change
+  of that guest's access, a widening included (its mode and document were decided under the old one). Continue in a tab
+  waits for the Ask process to be gone before the tab resumes the session (one writer per session). Handlers re-check the
+  copy and the person after every await. The Ask process's token resolves to a window caller, never a tab, so its `ccc`
+  gets no shell-only command. The owner's Ask in a folder Claude Code never trusted (D15) runs with the guest isolation
+  until it is: trust is `projects[<dir>].hasTrustDialogAccepted === true` in `$CLAUDE_CONFIG_DIR/.claude.json` or
+  `$HOME/.claude.json` of the login env (`main/ask/ask-trust.ts`) for the folder, its git root, or (outside a repo) a parent,
+  never the home folder's record, never wider than Claude Code's own check (read from its 2.1.332 binary), read-only and re-read at every chat start (a running
+  chat keeps its mode); unreadable, oversized, malformed or unknown is untrusted, and every `state` push of such a chat
+  carries `notice` (`UNTRUSTED_NOTICE`). Tests set `folderTrusted` or a temp HOME, never the real file.
+- The overlay envelope (`shared/overlay-envelope.ts`): a leaf with no imports (panel.js inlines it, as
+  `overlay-message.ts`). A top-level `$cc` is the app's: every path a plugin posts through refuses it (`ccPanel.post`,
+  `handle.post`, host-api, the shell for a plain page message) and main marks its own pushes `envelope: true`, so a plugin
+  can never fake core's answers or pushes to its own page. Every request is answered (`ok: false` on a refusal), never left
+  hanging. A new op becomes a main invoke channel with its `REMOTE_CLASS` and `GUEST_CLASS` rows like any other; a part's
+  intro is all false (no notes, Ask or Discuss in a part).
+- Page-started Discuss (`renderer/overlays/page-discuss-model.ts`): the page asks, the person sends. The send is `core`
+  origin (it reaches typed tabs), so a page must never reach it except through core's popover: only on the view's top
+  overlay where Discuss shows and the view may write, Send armed after about a second (`ApprovalArm`,
+  `allowClickCounts`), Enter and Space blocked inside, no focus taken from the page, a repeated request never re-arming
+  Send, a cooldown after a cancel and 5 opens a minute. Esc with it open closes the window (accepted: notes and Ask are
+  kept outside the page).
+- Parts (`main/overlays/overlay-parts.ts`, `host/overlay-announce.ts`, design.md §4 "Parts"): a part is its own overlay
+  record (`parentId`, empty `via`), so every per-overlay rule (copies, `onConnect`/`hide`, the guest filter, `visibleTo`)
+  works on its id; never grow the parent's `via` for another plugin's data (a guest not shown that plugin would lose the
+  whole window). Announcing is the opener's consent: `partRefusal` fails closed (an unknown parent or one that never
+  announced is refused; an unknown parent is hidden from a guest). An announcement carries refs only, never the document
+  (every listener of the window hears it), and a listener checks the refs (they are the opener's data). Parts sit in
+  `byId`, never on the stack, so Esc, `closeTop` and focus act on the parent; the parent's close ends its parts first; the
+  opener's frame is never moved in the DOM (that reloads its page).
+- The overlay kit (`kit/`, design.md §4 "The overlay kit"): plugin code, vendored by each plugin and pinned by its
+  `kit-pin` test, never served by the app (a served kit is a 404 on an older app and would change under every plugin at
+  each release), so no check of the app may rest on it. Edit `kit/src` and `kit/host`, run `npm run build:kit`, copy `kit/`
+  into the kit-demo fixture, and bump `kit/VERSION` for a change a plugin should take; each plugin re-vendors it.
 - Guest e2e (`test/e2e/guest-fixtures.ts`): a spec makes a guest with `__ccTest.guestInvite` (the invite dialog's own
   service, `GuestStore.invite`; only a hand-test spec drives the dialog), redeems it as the page does and holds a raw socket
   that records frames, the close code and its time ("no further frame" and "within 1 s" need a client that does not

@@ -2,12 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { MAX_QUEUED_MESSAGES } from '../../src/sdk/panel-core'
 import type { OverlayInfo, OverlayReadyAnswer } from '../../src/shared/ipc'
 import type { ViewAccess } from '../../src/shared/views'
+import type { PageEnvelope } from '../../src/renderer/plugins/frame-messages'
+import { ENVELOPE_REQUEST_TIMEOUT_MS } from '../../src/shared/overlay-envelope'
 import {
+  HELD_ENVELOPE_MAX_MS,
   closeActionOf,
   copyRetryDelay,
   COPY_RETRY_MAX_MS,
   CopyLine,
+  envelopeCallOf,
   guestNoteText,
+  overlayIntroOf,
   htmlBodyOf,
   resultActionOf,
   type CopyLineState,
@@ -99,9 +104,14 @@ function harness(access: ViewAccess = 'owner') {
   const states: CopyLineState[] = []
   const answers: Array<{ resolve: (a: OverlayReadyAnswer | undefined) => void; reject: (e: unknown) => void }> = []
   const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = []
+  /** Envelope requests the line made, each settled by hand. */
+  const requests: Array<{ copy: string; envelope: PageEnvelope; resolve: (v: unknown) => void; reject: (e: unknown) => void }> = []
   let resultOk = true
+  /** The line's clock (`now`), moved by hand. */
+  const clock = { t: 0 }
   const line = new CopyLine({
     access,
+    now: () => clock.t,
     ready: () =>
       new Promise((resolve, reject) => {
         calls.push(['ready'])
@@ -117,6 +127,11 @@ function harness(access: ViewAccess = 'owner') {
       return resultOk
     },
     reload: () => calls.push(['reload']),
+    request: (copy, envelope) =>
+      new Promise((resolve, reject) => {
+        calls.push(['request', copy, envelope.op, envelope.id])
+        requests.push({ copy, envelope, resolve, reject })
+      }),
     hidden: () => calls.push(['hidden']),
     state: (s) => states.push(s),
     setTimer: (fn, ms) => {
@@ -129,7 +144,14 @@ function harness(access: ViewAccess = 'owner') {
     },
     log: () => {}
   })
-  const port = { post: (text: string) => posted.push(text) }
+  /** Every post down the port, with main's or the shell's envelope mark when it had one. */
+  const marked: Array<{ text: string; envelope?: true }> = []
+  const port = {
+    post: (text: string, envelope?: true) => {
+      posted.push(text)
+      marked.push(envelope ? { text, envelope } : { text })
+    }
+  }
   /** Answer the latest `ready` and let its promise settle. */
   const answer = async (a: OverlayReadyAnswer | undefined): Promise<void> => {
     answers.at(-1)!.resolve(a)
@@ -145,12 +167,15 @@ function harness(access: ViewAccess = 'owner') {
     line,
     calls,
     posted,
+    marked,
+    requests,
     states,
     timers,
     port,
     answer,
     fail,
     answers,
+    clock,
     refuseResult: () => {
       resultOk = false
     }
@@ -185,6 +210,25 @@ describe('CopyLine: one view’s copy across the loads of its frame', () => {
     // A message for a copy that is not this view's live one reaches nobody.
     h.line.fromMain('old', '"late"')
     expect(h.posted).toEqual(['"start"', '"next"'])
+  })
+
+  // 00 contract (spec-review S12): main's envelope pushes keep their mark down to the port, live or buffered across
+  // an answer in flight, and an unmarked text never gains it (task 04: one with a top-level `$cc` is dropped here).
+  it("main's envelope mark reaches the port, live and buffered, in order with the opener's posts", async () => {
+    const h = harness()
+    const got: Array<[string, true | undefined]> = []
+    h.line.attach({ post: (text: string, envelope?: true) => got.push([text, envelope]) })
+    h.line.fromMain('c1', '{"$cc":1,"ev":"notes"}', true)
+    h.line.fromMain('c1', '"plain"')
+    h.line.fromMain('old', '{"$cc":1}', true)
+    await h.answer({ copy: 'c1' })
+    h.line.fromMain('c1', '{"$cc":1,"ev":"ask"}', true)
+    h.line.fromMain('c1', '{"$cc":1,"forged":true}')
+    expect(got).toEqual([
+      ['{"$cc":1,"ev":"notes"}', true],
+      ['"plain"', undefined],
+      ['{"$cc":1,"ev":"ask"}', true]
+    ])
   })
 
   it("the page's posts and ready() before the answer are held, then sent with the copy", async () => {
@@ -415,5 +459,201 @@ describe('CopyLine: one view’s copy across the loads of its frame', () => {
     await h.answer({ copy: 'c1' })
     expect(h.posted).toHaveLength(MAX_QUEUED_MESSAGES)
     expect(h.calls.filter((c) => c[0] === 'message')).toHaveLength(MAX_QUEUED_MESSAGES)
+  })
+})
+
+// Task 04 (spec-review S1, S12): a copy page's envelope requests and the intro.
+
+const env = (id: number, op: PageEnvelope['op'], args: Record<string, unknown> = {}): PageEnvelope => ({ id, op, args })
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 4; i++) await Promise.resolve()
+}
+
+describe('CopyLine: envelope requests (S1)', () => {
+  it('a `$cc` message is never forwarded as overlays.message', async () => {
+    const h = harness()
+    h.line.attach(h.port)
+    await h.answer({ copy: 'c1', loaded: true })
+    h.line.fromPageEnvelope(env(1, 'notes.list'))
+    h.line.fromPage('{"plain":1}')
+    // The request went to its channel with the live copy's id; only the plain message became overlays.message.
+    expect(h.calls.filter((c) => c[0] === 'message')).toEqual([['message', 'c1', '{"plain":1}']])
+    expect(h.calls).toContainEqual(['request', 'c1', 'notes.list', 1])
+    h.requests[0]!.resolve({ global: '', notes: [], rev: 0, seq: 3 })
+    await flush()
+    // Answered on the port, marked as an envelope (the shell's own answer).
+    expect(h.marked.at(-1)).toEqual({ text: JSON.stringify({ $cc: 1, re: 1, ok: true, value: { global: '', notes: [], rev: 0, seq: 3 } }), envelope: true })
+  })
+
+  it('a refused request answers ok: false with the reason, never hangs', async () => {
+    const h = harness()
+    h.line.attach(h.port)
+    await h.answer({ copy: 'c1', loaded: true })
+    h.line.fromPageEnvelope(env(7, 'ask.start', { question: 'why?' }))
+    h.requests[0]!.reject(new Error('refused: read guest'))
+    await flush()
+    expect(JSON.parse(h.posted.at(-1)!)).toEqual({ $cc: 1, re: 7, ok: false, error: 'refused: read guest' })
+    // A void answer is null, never a missing value.
+    h.line.fromPageEnvelope(env(8, 'ask.close'))
+    h.requests[1]!.resolve(undefined)
+    await flush()
+    expect(JSON.parse(h.posted.at(-1)!)).toEqual({ $cc: 1, re: 8, ok: true, value: null })
+  })
+
+  it('envelopes queued while asking go in order; a final refusal answers each', async () => {
+    const h = harness()
+    h.line.attach(h.port)
+    h.line.fromPage('{"a":1}')
+    h.line.fromPageEnvelope(env(1, 'notes.list'))
+    h.line.fromPage('{"b":2}')
+    h.line.fromPageEnvelope(env(2, 'notes.setGlobal', { text: 'x' }))
+    // Nothing reaches main before the copy is known.
+    expect(h.calls).toEqual([['ready']])
+    await h.answer({ copy: 'c1', loaded: true })
+    expect(h.calls.slice(1)).toEqual([
+      ['message', 'c1', '{"a":1}'],
+      ['request', 'c1', 'notes.list', 1],
+      ['message', 'c1', '{"b":2}'],
+      ['request', 'c1', 'notes.setGlobal', 2]
+    ])
+
+    // Another load refused for good: each held request is answered ok: false, nothing sent to main.
+    const r = harness()
+    r.line.attach(r.port)
+    r.line.fromPageEnvelope(env(3, 'notes.list'))
+    r.line.fromPageEnvelope(env(4, 'ask.pick'))
+    await r.answer({ refused: 'not-allowed' })
+    expect(r.calls).toEqual([['ready']])
+    expect(r.posted.map((t) => JSON.parse(t) as { re: number; ok: boolean })).toEqual([
+      expect.objectContaining({ re: 3, ok: false }),
+      expect.objectContaining({ re: 4, ok: false })
+    ])
+    expect(r.marked.every((m) => m.envelope === true)).toBe(true)
+    // With no copy to come, a later request is answered at once.
+    r.line.fromPageEnvelope(env(5, 'notes.list'))
+    expect(JSON.parse(r.posted.at(-1)!)).toEqual(expect.objectContaining({ re: 5, ok: false }))
+  })
+
+  it("an answer for a load that ended reaches nobody (its page is gone)", async () => {
+    const h = harness()
+    h.line.attach(h.port)
+    await h.answer({ copy: 'c1', loaded: true })
+    h.line.fromPageEnvelope(env(1, 'notes.list'))
+    const next = { post: (text: string) => h.posted.push(`next:${text}`) }
+    h.line.attach(next)
+    h.requests[0]!.resolve({ global: '', notes: [], rev: 0, seq: 1 })
+    await flush()
+    expect(h.posted.some((t) => t.startsWith('next:{"$cc"'))).toBe(false)
+    expect(h.posted.some((t) => t.startsWith('{"$cc"'))).toBe(false)
+  })
+})
+
+describe('CopyLine: no request waits on a page that answered or a copy that came late (N7)', () => {
+  it('after the page posted its result, a request is answered ok: false at once; a refused result lets requests go again', async () => {
+    const h = harness('owner')
+    h.line.attach(h.port)
+    await h.answer({ copy: 'c1', loaded: true })
+    h.refuseResult()
+    let again = 0
+    h.line.pageResult({ done: 1 }, () => again++)
+    // While main decides the result: refused at once, nothing sent to main.
+    h.line.fromPageEnvelope(env(1, 'notes.add', { quote: 'q', text: 't' }))
+    expect(h.calls.filter((c) => c[0] === 'request')).toEqual([])
+    expect(JSON.parse(h.posted.at(-1)!)).toEqual({ $cc: 1, re: 1, ok: false, error: 'the page has answered: the overlay is closing' })
+    await flush()
+    expect(again).toBe(1)
+    // main refused the value: the page lives on, its requests go again.
+    h.line.fromPageEnvelope(env(2, 'notes.list'))
+    expect(h.calls).toContainEqual(['request', 'c1', 'notes.list', 2])
+
+    // A read guest's result is its hide: a request after it is answered too.
+    const r = harness('read')
+    r.line.attach(r.port)
+    await r.answer({ copy: 'c2', loaded: true })
+    r.line.pageResult({ done: 1 }, () => {})
+    r.line.fromPageEnvelope(env(3, 'notes.list'))
+    expect(JSON.parse(r.posted.at(-1)!)).toEqual(expect.objectContaining({ re: 3, ok: false }))
+    expect(r.calls.filter((c) => c[0] === 'request')).toEqual([])
+  })
+
+  it('a request held past HELD_ENVELOPE_MAX_MS for its copy is answered ok: false, never sent late', async () => {
+    const h = harness()
+    h.line.attach(h.port)
+    h.line.fromPageEnvelope(env(1, 'notes.add', { quote: 'q', text: 'old' }))
+    h.clock.t = HELD_ENVELOPE_MAX_MS - 1
+    h.line.fromPageEnvelope(env(2, 'notes.add', { quote: 'q', text: 'fresh' }))
+    // A cap refusal and its backoff: the copy comes later than the first request's limit.
+    await h.answer({ refused: 'cap' })
+    h.clock.t = HELD_ENVELOPE_MAX_MS + 1
+    h.timers.at(-1)!.fn()
+    await h.answer({ copy: 'c1', loaded: true })
+    // The page may have timed out and retried the old one: not sent. The fresh one goes.
+    expect(h.calls.filter((c) => c[0] === 'request')).toEqual([['request', 'c1', 'notes.add', 2]])
+    expect(JSON.parse(h.posted[0]!)).toEqual({ $cc: 1, re: 1, ok: false, error: 'the request waited too long for its copy; not sent' })
+    expect(HELD_ENVELOPE_MAX_MS).toBeLessThan(ENVELOPE_REQUEST_TIMEOUT_MS)
+  })
+})
+
+describe('CopyLine: main\'s pushes keep their mark (S12)', () => {
+  it('a host post with a top-level $cc is never delivered as a push', async () => {
+    const h = harness()
+    h.line.attach(h.port)
+    // Buffered before the answer: the mark is kept, the fake dropped.
+    h.line.fromMain('c1', '{"$cc":1,"ev":"notes","seq":1,"data":{}}', true)
+    h.line.fromMain('c1', '{"$cc":1,"ev":"notes","seq":2,"data":{}}')
+    h.line.fromMain('c1', ' {"$cc": 1, "ev": "ask", "seq": 1, "data": {}}')
+    await h.answer({ copy: 'c1', loaded: true })
+    h.line.fromMain('c1', '{"$cc":1,"ev":"ask","seq":3,"data":{"type":"delta","text":"x"}}')
+    h.line.fromMain('c1', '{"$cc":1,"ev":"ask","seq":4,"data":{}}', true)
+    h.line.fromMain('c1', '{"plain":"$cc"}')
+    expect(h.marked).toEqual([
+      { text: '{"$cc":1,"ev":"notes","seq":1,"data":{}}', envelope: true },
+      { text: '{"$cc":1,"ev":"ask","seq":4,"data":{}}', envelope: true },
+      { text: '{"plain":"$cc"}' }
+    ])
+  })
+})
+
+describe('the copy intro (S1, design-parts §2)', () => {
+  it('the intro says ask false for a read guest, discuss for any writer (S-11), all false for a part', () => {
+    const both = { notes: true as const, discuss: {} }
+    expect(overlayIntroOf(both, 'owner')).toEqual({ type: 'cc-plugin.overlay', overlay: { notes: true, ask: true, discuss: true } })
+    expect(overlayIntroOf(both, 'write').overlay).toEqual({ notes: true, ask: true, discuss: true })
+    // A read guest sees the notes, never asks or discusses (D1, D-22).
+    expect(overlayIntroOf(both, 'read').overlay).toEqual({ notes: true, ask: false, discuss: false })
+    // No Discuss on the toolbar yet: the intro still offers it (a plugin may add onDiscuss after the page loaded,
+    // review S-11); PageDiscussGate refuses the request while there is none (`no-discuss`).
+    expect(overlayIntroOf({ notes: true }, 'owner').overlay).toEqual({ notes: true, ask: true, discuss: true })
+    expect(overlayIntroOf({ notes: true }, 'read').overlay).toEqual({ notes: true, ask: false, discuss: false })
+    // No notes key: no notes and no Ask.
+    expect(overlayIntroOf({}, 'owner').overlay).toEqual({ notes: false, ask: false, discuss: true })
+    // The spec said discuss: false (main's discussOff): never offered, whatever comes later (review r2 n1).
+    expect(overlayIntroOf({ notes: true, discussOff: true }, 'owner').overlay).toEqual({ notes: true, ask: true, discuss: false })
+    expect(overlayIntroOf({ discussOff: true }, 'write').overlay).toEqual({ notes: false, ask: false, discuss: false })
+    expect(overlayIntroOf({ ...both, partOf: 'o1' }, 'owner').overlay).toEqual({ notes: false, ask: false, discuss: false })
+  })
+})
+
+describe('envelopeCallOf: the invoke a page request becomes', () => {
+  it('names the shell\'s overlay and copy, never the page\'s, and only the fields of the op', () => {
+    const call = envelopeCallOf('o1', 'c1', { op: 'notes.add', args: { quote: 'q', anchor: { a: 1 }, text: 't', overlayId: 'evil', copy: 'x', author: 'me' } })
+    expect(call).toEqual({ channel: 'overlays.notes.write', req: { overlayId: 'o1', copy: 'c1', op: 'add', quote: 'q', anchor: { a: 1 }, text: 't' } })
+    expect(envelopeCallOf('o1', 'c1', { op: 'notes.list', args: { overlayId: 'evil' } })).toEqual({ channel: 'overlays.notes.read', req: { overlayId: 'o1', copy: 'c1' } })
+    expect(envelopeCallOf('o1', 'c1', { op: 'ask.say', args: { question: 'q', quote: 'x' } })).toEqual({ channel: 'overlays.ask.say', req: { overlayId: 'o1', copy: 'c1', question: 'q', quote: 'x' } })
+    expect(envelopeCallOf('o1', 'c1', { op: 'ask.pick', args: {} })).toEqual({ channel: 'overlays.ask.pick', req: { overlayId: 'o1', copy: 'c1' } })
+    expect(envelopeCallOf('o1', 'c1', { op: 'ask.continue', args: {} })).toEqual({ channel: 'overlays.ask.continue', req: { overlayId: 'o1', copy: 'c1' } })
+    expect(envelopeCallOf('o1', 'c1', { op: 'discuss.open', args: {} })).toEqual({ discuss: true })
+  })
+
+  it('refuses a field of the wrong type (fail closed: no invoke)', () => {
+    expect(envelopeCallOf('o1', 'c1', { op: 'notes.change', args: { id: 3, text: 't' } })).toHaveProperty('error')
+    expect(envelopeCallOf('o1', 'c1', { op: 'notes.setGlobal', args: {} })).toHaveProperty('error')
+    expect(envelopeCallOf('o1', 'c1', { op: 'ask.start', args: { question: 'q', quote: 5 } })).toHaveProperty('error')
+    expect(envelopeCallOf('o1', 'c1', { op: 'ask.pick', args: { model: 1 } })).toHaveProperty('error')
+    // S-8: null passes as null (back to the default); main checks names.
+    expect(envelopeCallOf('o1', 'c1', { op: 'ask.pick', args: { model: null, effort: 'high' } })).toEqual({
+      channel: 'overlays.ask.pick',
+      req: { overlayId: 'o1', copy: 'c1', model: null, effort: 'high' }
+    })
   })
 })

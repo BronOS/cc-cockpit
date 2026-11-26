@@ -22,7 +22,9 @@ const isMac = navigator.platform.toLowerCase().includes('mac')
  * this window, its parent.
  *
  * A slot frame (SlotFrame) also passes `intro`, posted on every load just before the port (the
- * SDK's `cc-plugin.slot`: the page is a slot of that type), and `onPageMessage` for what the page
+ * SDK's `cc-plugin.slot`: the page is a slot of that type); so does a perView overlay copy (HtmlOverlay's
+ * `cc-plugin.overlay`: which of notes, Ask and page-started Discuss it has, shared/overlay-envelope.ts; without
+ * it the SDK leaves `ccPanel.notes` and `ccPanel.ask` undefined). And `onPageMessage` for what the page
  * posts to its parent (`ccPanel.slot.setHeight`, `setWidth`). Only messages whose source is this
  * frame's own window reach it, so another frame cannot speak for this one.
  *

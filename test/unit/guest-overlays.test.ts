@@ -558,7 +558,7 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
         notReady: () => false,
         send: (tabId, text, _origin, guestId) => {
           sent.push([tabId, text, guestId])
-          return { delivered: true }
+          return { id: `item-${sent.length}`, delivered: true }
         },
         openSession: async (_w, prompt) => {
           opened.push(prompt)

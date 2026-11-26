@@ -7,6 +7,7 @@
 //
 // Unknown keys are dropped from the clean copy, so a later release can add some and an older app
 // ignores them. Kept free of Node and DOM imports: the host bundle, main and the tests import it.
+import { isNotesKey, MAX_NOTES_KEY } from './notes-limits'
 import { panelHeaderIconProblem, plain } from './panel-header'
 
 export const MAX_OVERLAY_BUTTONS = 4
@@ -61,6 +62,18 @@ export interface CleanOverlayExtras {
   buttons?: CleanOverlayButton[]
   ready?: 'load' | 'manual'
   discuss?: false | { tabId?: string }
+  /** The overlay's notes key (shared/design.md §3), as the opener gave it: main namespaces it with the opener's plugin. */
+  notes?: { key: string }
+}
+
+/** What the caller knows about the opener beyond the spec (main's own word, never the spec's). */
+export interface OverlayExtrasContext {
+  /**
+   * The opener's manifest says `overlays.perView`. Notes (and Ask, which rides on them) are perView only, so `false`
+   * refuses a spec with `notes`. Main always says (OverlayManager.start, from host-api's manifest read); the host's
+   * early check may leave it out, and main refuses then anyway.
+   */
+  perView?: boolean
 }
 
 function fail(message: string): never {
@@ -129,7 +142,7 @@ function parseType(value: unknown): CleanOverlayType {
  * The extras of an overlay spec `s` of the given kind, cleaned. `ready` is html only: the other
  * kinds have no page to call `ready()`. Throws a TypeError ("overlay: ...") for anything else.
  */
-export function parseOverlayExtras(s: Record<string, unknown>, kind: string): CleanOverlayExtras {
+export function parseOverlayExtras(s: Record<string, unknown>, kind: string, context: OverlayExtrasContext = {}): CleanOverlayExtras {
   const out: CleanOverlayExtras = {}
   if (s.type !== undefined) out.type = parseType(s.type)
   if (s.buttons !== undefined) out.buttons = parseOverlayButtons(s.buttons)
@@ -151,6 +164,17 @@ export function parseOverlayExtras(s: Record<string, unknown>, kind: string): Cl
       }
       out.discuss = tabId === undefined ? {} : { tabId }
     }
+  }
+  // Fail closed (00 contract): any doubt refuses the whole open, never an overlay opened without its notes, whose
+  // page would then lose what the person writes.
+  if (s.notes !== undefined) {
+    if (typeof s.notes !== 'object' || s.notes === null || Array.isArray(s.notes)) fail('notes must be an object { key }')
+    const { key } = s.notes as Record<string, unknown>
+    if (!isNotesKey(key)) fail(`notes.key must be 1 to ${MAX_NOTES_KEY} letters, digits or . _ : @ # + = ~ / -`)
+    // A plugin page only (`file` at the host, its cc-plugin:// `src` in main): an inline page has no copies of its own.
+    if (kind !== 'html' || s.html !== undefined) fail('notes applies to an html overlay of a plugin page (file) only')
+    if (context.perView === false) fail('notes needs a plugin with "overlays": { "perView": true } in its manifest')
+    out.notes = { key }
   }
   return out
 }

@@ -1346,3 +1346,201 @@ describe('ctx.panels', () => {
     await expect(ctx.sessions.list()).rejects.toThrow('deactivated')
   })
 })
+
+
+describe('task 05: onAsk, $cc, ctx.notes, announce and part (host side)', () => {
+  function hostSetup(answer: (c: Call) => unknown = (c) => (c.method === 'overlay.open' || c.method === 'overlay.part' ? new Promise(() => {}) : true)): {
+    contexts: HostContexts
+    ctx: PluginContext
+    other: PluginContext
+    calls: Call[]
+    logs: { pluginId: string; level: LogLevel; text: string }[]
+  } {
+    const calls: Call[] = []
+    const logs: { pluginId: string; level: LogLevel; text: string }[] = []
+    const contexts = new HostContexts({
+      log: (pluginId, level, text) => logs.push({ pluginId, level, text }),
+      call: async (method, params, options) => {
+        const c: Call = { method, params, ...(options ? { options } : {}) }
+        calls.push(c)
+        return answer(c)
+      }
+    })
+    const ctx = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js', overlaysPerView: true }))
+    const other = contexts.create(hostSpec({ id: 'a.two', dir: '/p/two', main: 'h.js', overlaysPerView: true }))
+    return { contexts, ctx, other, calls, logs }
+  }
+  const lastHandle = (calls: Call[], method = 'overlay.open'): string => (calls.filter((c) => c.method === method).at(-1)?.params as { handle: string }).handle
+  const ANN = { view: 'web:3', access: 'write', person: 'Ann' } as const
+
+  it('the first onAsk with text wins; null or a throw refuses', async () => {
+    const { contexts, ctx, calls, logs } = hostSetup()
+    const overlay = ctx.overlay.start({ kind: 'html', file: 'doc.html', notes: { key: 'jira:P-1' } })
+    const handle = lastHandle(calls)
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c1', view: 'web:3', from: ANN })
+    const ask = (extra: Record<string, unknown> = {}): Promise<unknown> =>
+      contexts.overlayAsk({ pluginId: 'a.one', handle, view: 'web:3', copy: 'c1', from: ANN, ...extra })
+    // No handler: null, which main reads as a refusal (nothing spawned).
+    await expect(ask()).resolves.toBeNull()
+    const order: unknown[] = []
+    overlay.onAsk((from) => {
+      order.push(['a', from])
+      return null
+    })
+    const offB = overlay.onAsk(async () => {
+      order.push('b')
+      return { text: 'x'.repeat(100_001) }
+    })
+    overlay.onAsk(() => {
+      order.push('c')
+      return { text: 'never asked' }
+    })
+    // Cut at the document cap here, and said so, so main adds its note.
+    await expect(ask()).resolves.toEqual({ text: 'x'.repeat(100_000), cut: true })
+    expect(order).toEqual([['a', { ...ANN, copy: 'c1' }], 'b'])
+    offB()
+    await expect(ask()).resolves.toEqual({ text: 'never asked' })
+    // A throw refuses (and is logged), even with a later handler that has text; so does an answer of the wrong shape.
+    const fresh = ctx.overlay.start({ kind: 'html', file: 'doc.html' })
+    const h2 = lastHandle(calls)
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle: h2, copy: 'c9', from: OWNER })
+    fresh.onAsk(() => {
+      throw new Error('no document')
+    })
+    fresh.onAsk(() => ({ text: 'too late' }))
+    await expect(contexts.overlayAsk({ pluginId: 'a.one', handle: h2, copy: 'c9', from: OWNER })).rejects.toThrow('no document')
+    expect(logs.some((l) => l.text.includes('onAsk handler threw'))).toBe(true)
+    const odd = ctx.overlay.start({ kind: 'html', file: 'doc.html' })
+    const h3 = lastHandle(calls)
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle: h3, copy: 'c8', from: OWNER })
+    odd.onAsk(() => ({ txt: 'wrong' }) as never)
+    await expect(contexts.overlayAsk({ pluginId: 'a.one', handle: h3, copy: 'c8', from: OWNER })).rejects.toThrow(/\{ text \} or null/)
+    // Fail closed: a copy that is not live in that view, no copy, a bad from.
+    await expect(ask({ copy: 'zz' })).rejects.toThrow(/not live/)
+    await expect(ask({ view: 'web:9', from: { ...ANN, view: 'web:9' } })).rejects.toThrow(/not live/)
+    await expect(ask({ copy: undefined })).rejects.toThrow(/bad copy/)
+    await expect(ask({ from: { access: 'boss' } })).rejects.toThrow(/bad from/)
+  })
+
+  it('onAsk on a non-perView overlay: main asks nothing, and an ask that came anyway is refused', async () => {
+    const calls: Call[] = []
+    const contexts = new HostContexts({
+      log: () => {},
+      call: async (method, params) => {
+        calls.push({ method, params })
+        return method === 'overlay.open' ? new Promise(() => {}) : true
+      }
+    })
+    const plain = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js' }))
+    const overlay = plain.overlay.start({ kind: 'html', file: 'doc.html' })
+    overlay.onAsk(() => ({ text: 'x' }))
+    await expect(contexts.overlayAsk({ pluginId: 'a.one', handle: lastHandle(calls), copy: 'c1', from: OWNER })).rejects.toThrow(/perView/)
+    // A url overlay has no page: onAsk throws at the call.
+    expect(() => plain.overlay.start({ kind: 'url', url: 'https://example.com/' }).onAsk(() => null)).toThrow(/html/)
+  })
+
+  it('ccPanel.post throws on $cc; handle.post and host-api\'s overlay post refuse it', () => {
+    // The host side here (the page's in panel-core.test.ts, host-api's in host-api.test.ts).
+    const { ctx, calls } = hostSetup()
+    const overlay = ctx.overlay.start({ kind: 'html', file: 'doc.html' })
+    expect(() => overlay.post({ $cc: 1, ev: 'notes', seq: 9, data: {} } as never)).toThrow(TypeError)
+    expect(() => overlay.post({ $cc: 'x' } as never, { copy: 'c1' })).toThrow(/\$cc/)
+    expect(calls.map((c) => c.method)).toEqual(['overlay.open'])
+    // Nested is the plugin's own business.
+    overlay.post({ data: { $cc: 1 } } as never)
+    expect(calls.map((c) => c.method)).toEqual(['overlay.open', 'overlay.post'])
+  })
+
+  it('ctx.notes reaches only its own plugin\'s namespace', async () => {
+    const { contexts, ctx, other, calls } = hostSetup((c) => {
+      if (c.method === 'notes.list') return { global: '', notes: [], rev: 2, seq: 7 }
+      if (c.method === 'notes.add' || c.method === 'notes.change') return { note: { id: 'n1', quote: 'q', anchor: null, text: 't', rev: 1, author: { plugin: true } }, seq: 8 }
+      return { seq: 9 }
+    })
+    const notes = ctx.notes('jira:P-1')
+    await expect(notes.list()).resolves.toEqual({ global: '', notes: [], rev: 2 })
+    await expect(notes.add({ quote: 'q', text: 't' })).resolves.toMatchObject({ id: 'n1' })
+    await notes.change('n1', { text: 'u' })
+    await notes.remove('n1')
+    await notes.setGlobal('for Claude')
+    expect(calls.map((c) => [c.method, c.params])).toEqual([
+      ['notes.list', { pluginId: 'a.one', key: 'jira:P-1' }],
+      ['notes.add', { pluginId: 'a.one', key: 'jira:P-1', quote: 'q', anchor: null, text: 't' }],
+      ['notes.change', { pluginId: 'a.one', key: 'jira:P-1', id: 'n1', text: 'u' }],
+      ['notes.remove', { pluginId: 'a.one', key: 'jira:P-1', id: 'n1' }],
+      ['notes.setGlobal', { pluginId: 'a.one', key: 'jira:P-1', text: 'for Claude' }]
+    ])
+    // The page's author never comes from here: the add carries none (main marks it the plugin's).
+    expect(Object.keys(calls[1]!.params as object)).not.toContain('author')
+    // onChange: main's event for this plugin and key only.
+    let mine = 0
+    let theirs = 0
+    notes.onChange(() => mine++)
+    other.notes('jira:P-1').onChange(() => theirs++)
+    contexts.handleEvent('notes.changed', { pluginId: 'a.one', key: 'jira:P-1' })
+    contexts.handleEvent('notes.changed', { pluginId: 'a.one', key: 'jira:P-2' })
+    contexts.handleEvent('notes.changed', { pluginId: 'a.three', key: 'jira:P-1' })
+    contexts.handleEvent('notes.changed', { pluginId: 'a.one', key: 'bad key' })
+    expect([mine, theirs]).toEqual([1, 0])
+    // Checked at the call: a malformed key throws; a value past its cap rejects, nothing sent.
+    expect(() => ctx.notes('has space')).toThrow(TypeError)
+    expect(() => ctx.notes('')).toThrow(TypeError)
+    const sent = calls.length
+    await expect(notes.add({ quote: 'q', text: 'x'.repeat(4001) })).rejects.toThrow(RangeError)
+    await expect(notes.setGlobal('x'.repeat(4001))).rejects.toThrow(RangeError)
+    await expect(notes.add({ quote: 'q', text: 't', anchor: 'a'.repeat(2048) })).rejects.toThrow(RangeError)
+    await expect(notes.change('', { text: 't' })).rejects.toThrow(TypeError)
+    expect(calls.length).toBe(sent)
+    // A disposed plugin's listeners are gone.
+    contexts.dispose('a.one')
+    contexts.handleEvent('notes.changed', { pluginId: 'a.one', key: 'jira:P-1' })
+    expect(mine).toBe(1)
+  })
+
+  it('announce: checked, refused past 5 a minute, sent as overlay.announce; onAnnounce hears main\'s overlay.announced', async () => {
+    const { contexts, ctx, other, calls } = hostSetup()
+    const overlay = ctx.overlay.start({ kind: 'html', file: 'thread.html' })
+    const handle = lastHandle(calls)
+    expect(() => overlay.announce({ kind: 'Mail', refs: [] })).toThrow(TypeError)
+    expect(() => overlay.announce({ kind: 'mail', refs: Array.from({ length: 21 }, () => 'P-1') })).toThrow(RangeError)
+    expect(() => overlay.announce({ kind: 'mail', refs: ['x'.repeat(201)] })).toThrow(RangeError)
+    for (let i = 0; i < 5; i++) overlay.announce({ kind: 'mail.issues', refs: [`P-${i}`] })
+    expect(() => overlay.announce({ kind: 'mail.issues', refs: ['P-9'] })).toThrow(/5 a minute/)
+    expect(calls.filter((c) => c.method === 'overlay.announce')[0]?.params).toEqual({ pluginId: 'a.one', handle, kind: 'mail.issues', refs: ['P-0'] })
+    expect(calls.filter((c) => c.method === 'overlay.announce')).toHaveLength(5)
+    // Another plugin of the window listens; main's event (its own record) reaches it.
+    const heard: unknown[] = []
+    other.overlay.onAnnounce('mail.issues', (a) => void heard.push(a))
+    contexts.handleEvent('overlay.announced', { overlay: { id: 'ov1', opener: 'a.one', title: 'Re: P-1' }, kind: 'mail.issues', refs: ['P-1'] })
+    contexts.handleEvent('overlay.announced', { overlay: { id: 'ov2', opener: 'a.one', title: 'x' }, kind: 'other', refs: [] })
+    expect(heard).toEqual([{ overlay: { id: 'ov1', opener: 'a.one', title: 'Re: P-1' }, kind: 'mail.issues', refs: ['P-1'] }])
+    expect(() => other.overlay.onAnnounce('Bad Kind', () => {})).toThrow(TypeError)
+  })
+
+  it('part: a perView html handle asked of main as overlay.part, naming the parent and no via', async () => {
+    const { ctx, calls } = hostSetup()
+    const part = ctx.overlay.part('ov1', { file: 'part.html', title: 'Issue' })
+    const handle = lastHandle(calls, 'overlay.part')
+    expect(calls.at(-1)).toEqual({
+      method: 'overlay.part',
+      params: { pluginId: 'a.one', overlayId: 'ov1', spec: { kind: 'html', file: 'part.html', title: 'Issue' }, handle },
+      options: { timeoutMs: Infinity }
+    })
+    // An ordinary handle: posts go out under the part's own handle.
+    part.post({ hello: 1 })
+    expect(calls.at(-1)).toEqual({ method: 'overlay.post', params: { pluginId: 'a.one', handle, message: { hello: 1 } } })
+    expect(() => ctx.overlay.part('', { file: 'p.html' })).toThrow(TypeError)
+    expect(() => ctx.overlay.part('ov1', { file: '' })).toThrow(TypeError)
+    expect(() => ctx.overlay.part('ov1', { file: 'p.html', notes: { key: 'k' } } as never)).toThrow(/notes/)
+    expect(() => ctx.overlay.part('ov1', { file: 'p.html', ready: 'later' as never })).toThrow(/ready/)
+    // Main's refusal rejects result.
+    const refusing = hostSetup((c) => (c.method === 'overlay.part' ? Promise.reject(new Error('overlay.part: not announced')) : true))
+    await expect(refusing.ctx.overlay.part('ov1', { file: 'p.html' }).result).rejects.toThrow('not announced')
+  })
+
+  it('part needs a perView manifest', () => {
+    const contexts = new HostContexts({ log: () => {}, call: async () => true })
+    const plain = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js' }))
+    expect(() => plain.overlay.part('ov1', { file: 'p.html' })).toThrow(/perView/)
+  })
+})

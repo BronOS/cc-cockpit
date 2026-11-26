@@ -2,12 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { MAX_QUEUED_MESSAGES, READY_MESSAGE } from '../../sdk/panel-core'
 import { isPlainObject } from '../../shared/guards'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
-import { isPluginPage, overlayMessageOf, overlayResultOf } from '../plugins/frame-messages'
+import type { OverlayIntro } from '../../shared/overlay-envelope'
+import { ipcErrorMessage } from '../ipc-error'
+import { droppedEnvelope, isPageEnvelope, isPluginPage, overlayMessageOf, overlayResultOf, pageEnvelopeOf } from '../plugins/frame-messages'
 import { frameTarget, PluginFrame } from '../plugins/PluginFrame'
 import { isWebShell, viewAccessHint } from '../shell-kind'
 import { shellPageUrl } from '../web/page-paths'
 import { FrameLoads } from '../web/port-relay'
-import { CopyLine, type CopyLineState } from './overlay-copies'
+import { CopyLine, envelopeAnswerText, envelopeCallOf, type CopyLineState } from './overlay-copies'
 
 /** Hands an inline page its MessagePort (transferred alongside); it has no SDK. */
 const INLINE_PORT_MESSAGE = Object.freeze({ type: 'cc-overlay.port' })
@@ -87,10 +89,19 @@ export function HtmlOverlay(props: {
   onCopyState?: (state: CopyLineState) => void
   /** perView: main hid this view's copy; the overlay leaves this view's stack. */
   onHidden?: () => void
+  /** perView: the intro this view's copies get before their port (overlayIntroOf: notes, Ask, page-started Discuss). */
+  intro?: OverlayIntro
+  /**
+   * perView: the page asked for core's Discuss popover (`discuss.open`). Null when it opened (or was open already),
+   * else the refusal the page is answered with. OverlayStack decides (the top overlay only, its gate).
+   */
+  onDiscussRequest?: () => string | null
 }): React.JSX.Element {
-  const { perView, onCopyState, onHidden, ...page } = props
+  const { perView, onCopyState, onHidden, intro, onDiscussRequest, ...page } = props
   if (isPluginPage(props.src)) {
-    if (perView === true) return <CopyOverlay {...page} onCopyState={onCopyState} onHidden={onHidden} />
+    if (perView === true) {
+      return <CopyOverlay {...page} onCopyState={onCopyState} onHidden={onHidden} intro={intro} onDiscussRequest={onDiscussRequest} />
+    }
     return <PluginOverlay {...page} />
   }
   return <InlineOverlay {...page} />
@@ -101,6 +112,11 @@ export function HtmlOverlay(props: {
  * overlay-copies.ts): every load of the frame connects a new copy, every page call names it, main's events for
  * this overlay are routed by copy, and `overlays.reload` loads the page again (a new frame element, so a new
  * load and a new copy). The page's `{ result }` follows this view's access (resultActionOf).
+ *
+ * Envelopes (shared/overlay-envelope.ts, spec-review S1, S12): the frame gets the intro before its port; a `$cc`
+ * request on the port goes to CopyLine (notes and Ask become main's channels with this copy's id, `discuss.open` asks
+ * OverlayStack for core's popover) and is answered on the port, never relayed as `overlays.message`; main's pushes
+ * come marked (`envelope: true`) and an unmarked `$cc` is dropped (CopyLine.fromMain).
  */
 function CopyOverlay(props: {
   overlayId: string
@@ -108,6 +124,8 @@ function CopyOverlay(props: {
   src: string
   onCopyState?: ((state: CopyLineState) => void) | undefined
   onHidden?: (() => void) | undefined
+  intro?: OverlayIntro | undefined
+  onDiscussRequest?: (() => string | null) | undefined
 }): React.JSX.Element {
   const { overlayId } = props
   /** The frame element's generation: a reload asked by main is a new element (a new load, a new copy). */
@@ -116,9 +134,11 @@ function CopyOverlay(props: {
   const answered = useRef(false)
   const onCopyState = useRef(props.onCopyState)
   const onHidden = useRef(props.onHidden)
+  const onDiscussRequest = useRef(props.onDiscussRequest)
   useEffect(() => {
     onCopyState.current = props.onCopyState
     onHidden.current = props.onHidden
+    onDiscussRequest.current = props.onDiscussRequest
   })
   /**
    * This view's copy line (CopyLine), made in a layout effect so it exists before the frame's first load can fire
@@ -147,6 +167,23 @@ function CopyOverlay(props: {
         window.cockpit.invoke('overlays.close', { overlayId }).catch(() => {})
       },
       result: async (copy, value) => window.cockpit.invoke('overlays.result', { overlayId, value, copy }),
+      // A page's envelope request (notes, Ask, Discuss): main's channel with this copy's id, built from checked fields
+      // (envelopeCallOf), or core's Discuss popover (OverlayStack decides). A refusal rejects: the page gets ok: false.
+      request: async (copy, envelope) => {
+        const call = envelopeCallOf(overlayId, copy, envelope)
+        if ('error' in call) throw new Error(call.error)
+        if ('discuss' in call) {
+          const refused = onDiscussRequest.current ? onDiscussRequest.current() : 'Discuss is not available here'
+          if (refused !== null) throw new Error(refused)
+          return null
+        }
+        try {
+          // The call's channel and request are paired by EnvelopeCall; invoke's overloads cannot follow a union.
+          return await (window.cockpit.invoke as (c: string, req: unknown) => Promise<unknown>)(call.channel, call.req)
+        } catch (err) {
+          throw new Error(ipcErrorMessage(err), { cause: err })
+        }
+      },
       reload: () => setGeneration((g) => g + 1),
       hidden: () => onHidden.current?.(),
       state: (state) => onCopyState.current?.(state),
@@ -154,9 +191,11 @@ function CopyOverlay(props: {
     })
     line.current = current
     // main's events for this overlay, routed by copy (a replaced copy's late ones reach nobody).
-    const offMessage = window.cockpit.on('overlays.message', ({ overlayId: id, message, copy }) => {
+    const offMessage = window.cockpit.on('overlays.message', ({ overlayId: id, message, copy, envelope }) => {
       if (id !== overlayId || typeof message !== 'string' || typeof copy !== 'string') return
-      current.fromMain(copy, message)
+      // `envelope`: main's own push (notes, Ask), kept apart from the opener's posts down to the port (00 contract).
+      if (envelope === true) current.fromMain(copy, message, true)
+      else current.fromMain(copy, message)
     })
     const offHide = window.cockpit.on('overlays.hide', ({ overlayId: id, copy }) => {
       if (id === overlayId && typeof copy === 'string') current.mainHide(copy)
@@ -180,6 +219,8 @@ function CopyOverlay(props: {
       className="overlay-html"
       allowPopups
       localPort
+      // Before the port on every load: which of notes, Ask and page-started Discuss this copy has (no intro: none).
+      {...(props.intro ? { intro: props.intro } : {})}
       onPageMessage={(data) => {
         // `early`: said before the page had its port; CopyLine waits for the SDK's repeat at the port (that load's).
         if (typeOf(data) === READY_MESSAGE) line.current?.pageDrawn((data as { early?: unknown }).early === true)
@@ -187,6 +228,20 @@ function CopyOverlay(props: {
       connect={(deliver) => {
         const ch = new MessageChannel()
         ch.port1.onmessage = (event: MessageEvent<unknown>) => {
+          // An envelope (`$cc`) first: routed to its channel with the copy id, never relayed as overlays.message. Also
+          // after the page answered: CopyLine refuses it at once then, where dropping it here left the page waiting
+          // its 30 s for each request (review N7).
+          const envelope = pageEnvelopeOf(event.data)
+          if (envelope !== undefined) {
+            if (isPageEnvelope(envelope)) line.current?.fromPageEnvelope(envelope)
+            else {
+              console.warn(`overlay envelope dropped: ${envelope.problem}`)
+              // Readable enough to answer: the page's call fails now instead of at its timeout.
+              if (envelope.id !== undefined) ch.port1.postMessage(envelopeAnswerText(envelope.id, { ok: false, error: envelope.problem }))
+            }
+            return
+          }
+          // Nothing more once the page answered: the overlay is closing with that answer.
           if (answered.current) return
           const answer = overlayResultOf(event.data)
           if (answer) {
@@ -206,6 +261,9 @@ function CopyOverlay(props: {
         }
         deliver(ch.port2)
         // Asks main for this load's copy; the returned end lets it go (a plain release) when the load ends.
+        // Envelopes (main's marked pushes, the shell's answers) and the opener's posts go down the same port: the page
+        // SDK tells them apart by the top-level `$cc`, which only these carry (CopyLine.fromMain drops an unmarked one,
+        // spec-review S12; handle.post and host-api refuse one).
         const end = line.current?.attach({ post: (text) => ch.port1.postMessage(text) })
         return () => {
           end?.()
@@ -230,8 +288,10 @@ function PluginOverlay(props: { overlayId: string; title: string; src: string })
 
   useEffect(
     () =>
-      window.cockpit.on('overlays.message', ({ overlayId: id, message }) => {
+      window.cockpit.on('overlays.message', ({ overlayId: id, message, envelope }) => {
         if (id !== overlayId || typeof message !== 'string') return
+        // No copy here, so no envelopes: notes and Ask are perView only (main never marks one for this overlay).
+        if (droppedEnvelope(message, (m) => console.warn(m), envelope === true)) return
         if (port.current) port.current.postMessage(message)
         else if (pending.current.length < MAX_QUEUED_MESSAGES) pending.current.push(message)
         else console.warn('overlay message dropped: the page is not connected and the queue is full')
@@ -257,6 +317,8 @@ function PluginOverlay(props: { overlayId: string; title: string; src: string })
         ch.port1.onmessage = (event: MessageEvent<unknown>) => {
           // Nothing more once the page answered: the overlay is closing with that answer.
           if (answered.current) return
+          // A `$cc` request from a page with no copy: notes, Ask and Discuss are perView only (spec-review S1).
+          if (droppedEnvelope(event.data, (m) => console.warn(m))) return
           const answer = overlayResultOf(event.data)
           if (answer) {
             answered.current = true
@@ -317,6 +379,8 @@ function InlineOverlay(props: { overlayId: string; title: string; src: string })
         // to say `ready` and to answer). The clean-up closes this one when that page goes.
         const ch = new MessageChannel()
         ch.port1.onmessage = (event: MessageEvent<unknown>) => {
+          // An inline page has no SDK and no copy: an envelope from it is dropped (spec-review S1).
+          if (droppedEnvelope(event.data, (m) => console.warn(m))) return
           // An inline page has no SDK: it says it has drawn with `{ type: 'ready' }` on its port.
           if (typeOf(event.data) === 'ready') {
             pageDrawn(id.current)

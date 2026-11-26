@@ -1,6 +1,6 @@
 // The `ctx` each plugin's `activate(ctx)` gets (design §5; type: src/sdk/types.ts).
 //
-// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, processes, commands, cli, files, services, themes, log, notify and openExternal; sessions, rooms, badge, overlay,
+// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, processes, commands, cli, files, services, themes, log, notify, openExternal and notes; sessions, rooms, badge, overlay,
 // panel messaging and webview panels (ctx/sessions.ts, ctx/ui.ts, ctx/webview.ts; the panel ports
 // themselves arrive from main next to the RPC, see host/index.ts).
 //
@@ -50,6 +50,9 @@ import { createTabsApi, PageTabHub, type PageTabOpenTag } from './tabs'
 import { createStorage, type StorageHandle } from './storage'
 import { createThemesApi } from './themes'
 import { createUiApi, DESKTOP_VIEW, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
+import { createNotesApi, NOTES_CHANGED, NotesListeners } from './notes'
+import { OverlayAnnouncements } from '../overlay-announce'
+import { HOST_OVERLAY_ANNOUNCED, HOST_OVERLAY_UNANNOUNCED } from '../../shared/overlay-envelope'
 import { viewIdOf, type ViewId } from '../../shared/views'
 import { dispatchInView } from './origin-view'
 import { HostViews, type ViewChange } from './views'
@@ -152,6 +155,10 @@ export class HostContexts {
   private readonly sessions: SessionsHub
   private readonly ports: PanelPorts
   private readonly overlays: OverlayLinks
+  /** The window's live announcements and every plugin's onAnnounce listeners (host/overlay-announce.ts). */
+  private readonly announcements: OverlayAnnouncements
+  /** ctx.notes onChange listeners, run by main's `notes.changed` (ctx/notes.ts). */
+  private readonly notesListeners: NotesListeners
   private readonly typeButtons: OverlayButtonRegistry
   private readonly actions: PanelActions
   private readonly webviews: WebviewHub
@@ -167,6 +174,8 @@ export class HostContexts {
     this.ports = new PanelPorts((pluginId, m) => deps.log(pluginId, 'warn', m), this.views)
     this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m), this.views)
     this.typeButtons = new OverlayButtonRegistry((pluginId, m) => deps.log(pluginId, 'warn', m))
+    this.announcements = new OverlayAnnouncements((pluginId, m) => deps.log(pluginId, 'error', m))
+    this.notesListeners = new NotesListeners((pluginId, m) => deps.log(pluginId, 'error', m))
     this.actions = new PanelActions((pluginId, m) => deps.log(pluginId, 'error', m), this.views)
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
     this.slots = new SlotHub((pluginId, m) => deps.log(pluginId, 'warn', m), this.views)
@@ -437,6 +446,7 @@ export class HostContexts {
       // An overlay call's `via` (docs/design-overlay-views.md §4): the chain ctx.services.callers() answers.
       callers,
       isHostPlugin,
+      announcements: this.announcements,
       logError: (m) => logAs('error', m)
     })
 
@@ -567,7 +577,10 @@ export class HostContexts {
       themes: createThemesApi({ pluginId: spec.id, call, guardAsync }),
       log: Object.freeze(logger),
       notify,
-      openExternal
+      openExternal,
+      // An RPC like appStorage: main owns the store (one writer for every window and view; Discuss removes sent notes
+      // there), and refuses a plugin its host does not run (ctx/notes.ts).
+      notes: createNotesApi({ pluginId: spec.id, call, guardAsync, alive, listeners: this.notesListeners })
     })
   }
 
@@ -625,6 +638,8 @@ export class HostContexts {
     this.sessions.removePlugin(pluginId)
     this.ports.removePlugin(pluginId)
     this.overlays.removePlugin(pluginId)
+    this.announcements.removePlugin(pluginId)
+    this.notesListeners.removePlugin(pluginId)
     this.typeButtons.removePlugin(pluginId)
     this.actions.removePlugin(pluginId)
     this.webviews.removePlugin(pluginId)
@@ -794,6 +809,21 @@ export class HostContexts {
       this.overlays.handleCopyEvent(event, params)
       return
     }
+    if (event === HOST_OVERLAY_ANNOUNCED) {
+      // An overlay of this window said what it shows (main's record of it): every plugin's listeners of the kind.
+      this.announcements.announced(params)
+      return
+    }
+    if (event === HOST_OVERLAY_UNANNOUNCED) {
+      this.announcements.unannounced(params)
+      return
+    }
+    if (event === NOTES_CHANGED) {
+      // A key of a plugin that runs here changed: its onChange listeners list again. A disposed copy's are gone.
+      const pluginId = (params as { pluginId?: unknown } | null)?.pluginId
+      if (typeof pluginId === 'string' && this.runtimes.has(pluginId)) this.notesListeners.handleEvent(params)
+      return
+    }
     if (event === 'panel.action') {
       // A header click main checked against what this plugin's current copy set. Only a plugin
       // that runs here: a click for a disposed copy finds no listeners anyway.
@@ -933,6 +963,11 @@ export class HostContexts {
   /** main's `overlay.discuss { pluginId, handle }`: that handle's onDiscuss answer (host/ctx/ui.ts). */
   overlayDiscuss(params: unknown): Promise<unknown> {
     return this.overlays.discuss(params)
+  }
+
+  /** main's `overlay.ask { pluginId, handle, copy }`: that handle's onAsk answer for that copy (host/ctx/ui.ts). */
+  overlayAsk(params: unknown): Promise<unknown> {
+    return this.overlays.ask(params)
   }
 
   /**

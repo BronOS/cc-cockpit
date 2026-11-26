@@ -188,6 +188,9 @@ export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Obje
   'overlays.loaded': { cls: 'read', target: byOverlay },
   'overlays.message': { cls: 'read', target: byOverlay },
   'overlays.release': { cls: 'read', target: byOverlay },
+  // a read guest sees the notes of an overlay visible to it (shared/design.md §3); the handler takes only the caller's
+  // own live copy (copyOwner)
+  'overlays.notes.read': { cls: 'read', target: byOverlay },
   'webviews.current': { cls: 'read', target: byPanel },
   // a read guest is a viewer, never the size owner (spec-review 14)
   'webviews.place': { cls: 'read', target: byPanel },
@@ -233,6 +236,14 @@ export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Obje
   'overlays.button': { cls: 'write', target: byOverlayButton },
   // into a visible tab only
   'overlays.discuss': { cls: 'write', target: byOverlayDiscuss },
+  // notes: owner and write guests write (shared/design.md §3); main reads the author, never the page
+  'overlays.notes.write': { cls: 'write', target: byOverlay },
+  // Ask: owner and write guests (D1); a write guest's chat has no tools (D12), decided by main from the caller
+  'overlays.ask.start': { cls: 'write', target: byOverlay },
+  'overlays.ask.say': { cls: 'write', target: byOverlay },
+  'overlays.ask.close': { cls: 'write', target: byOverlay },
+  // a guest's pick is its own chat's only, never saved (spec-review S5)
+  'overlays.ask.pick': { cls: 'write', target: byOverlay },
   'webviews.step': { cls: 'write', target: byPanel },
   'webviews.fit': { cls: 'write', target: byPanel },
   'webviews.input': { cls: 'write', target: byPanel },
@@ -358,6 +369,8 @@ export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Obje
   'claude.install': NO,
   'overlays.bounds': NO,
   'overlays.take': NO,
+  // Continue in a tab opens a Claude tab on the owner's session (D14): the owner's alone.
+  'overlays.ask.continue': NO,
   'webviews.placement': NO,
   'tabs.commands': NO,
   'tabs.reorder': NO,

@@ -1,0 +1,862 @@
+// Task 02: Ask in main (shared/design.md §5; D1, D2, D3, D11, D12, D14; spec-review S5; design-parts.md §5, §7). The
+// service runs against a fake overlay manager, a fake spawn and a fake claude --help; nothing real is spawned.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { AskService, GUEST_CONTEXT_FAILED, UNTRUSTED_NOTICE, fenced, type AskServiceDeps } from '../../src/main/ask/ask-service'
+import type { AskCaller, AskPerson } from '../../src/main/ask/ask-api'
+import type { AskProcess, AskProcessHandlers } from '../../src/main/ask/ask-runner'
+import { ASK_GUEST_FLAGS } from '../../src/main/ask/ask-argv'
+import { ASK_IDLE_MS, ASK_MAX_ANSWER, ASK_MAX_DOCUMENT, ASK_STORE_MAX_TURNS_CHARS } from '../../src/shared/ask'
+import type { AskPush } from '../../src/shared/overlay-envelope'
+
+const P = 'aaaaaaaaaaaaaaaa'
+const W = 1
+const OWNER_VIEW = 'desktop:1'
+const OWNER_B = 'remote:ob'
+const GUEST_VIEW = 'remote:g1'
+const READ_VIEW = 'remote:r1'
+const SESSION = '11111111-2222-3333-4444-555555555555'
+const HELP_ALL = '-p, --print --restricted --safe-mode --strict-mcp-config --tools <t> --permission-prompts <x> --input-format <f> --output-format <f> --verbose --include-partial-messages --model <m> --effort <e> --resume <id>'
+
+interface FakeProc extends AskProcess {
+  argv: readonly string[]
+  cwd: string
+  env: Record<string, string>
+  written: string[]
+  killed: boolean
+  h: AskProcessHandlers
+  emit(ev: unknown): void
+  gone(): void
+  exit(code?: number): void
+}
+
+let dir: string
+let projectRoot: string
+let procs: FakeProc[]
+let posts: { overlayId: string; copy: string; msg: { seq: number; data: AskPush } }[]
+let copies: Map<string, string>
+let notes: Map<string, { pluginId: string; key: string }>
+let persons: Map<string, AskPerson | undefined>
+let onAsk: (overlayId: string, view: string, copy: string) => Promise<unknown>
+let ready: ((ev: { windowId: number; overlayId: string; copy: string; view: string }) => void)[]
+let ends: ((ev: { windowId: number; overlayId: string; copy: string; view: string }) => void)[]
+let help: () => Promise<string>
+let linger: boolean
+let parts: { overlayId: string; pluginId: string }[]
+let opened: { projectId: string; sessionId: string; afterKill: boolean }[]
+let clock: number
+
+const ck = (overlayId: string, copy: string): string => overlayId + '/' + copy
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'ccc-ask-'))
+  projectRoot = join(dir, 'project')
+  procs = []
+  posts = []
+  copies = new Map([
+    [ck('o1', 'c1'), OWNER_VIEW],
+    [ck('o1', 'c2'), OWNER_B],
+    [ck('o1', 'cg'), GUEST_VIEW],
+    [ck('o1', 'cr'), READ_VIEW],
+    [ck('o2', 'c1'), OWNER_VIEW]
+  ])
+  notes = new Map([
+    ['o1', { pluginId: 'a.jira', key: 'jira:PROJ-1' }],
+    ['o2', { pluginId: 'a.jira', key: 'jira:PROJ-2' }]
+  ])
+  persons = new Map<string, AskPerson | undefined>([
+    [OWNER_VIEW, 'owner'],
+    [OWNER_B, 'owner'],
+    [GUEST_VIEW, { guest: 'g1' }],
+    [READ_VIEW, undefined]
+  ])
+  onAsk = () => Promise.resolve({ text: 'The issue text' })
+  ready = []
+  ends = []
+  help = () => Promise.resolve(HELP_ALL)
+  linger = false
+  parts = []
+  opened = []
+  clock = 1_000_000
+})
+afterEach(() => {
+  vi.useRealTimers()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+function service(over: Partial<AskServiceDeps> = {}): AskService {
+  return new AskService({
+    dataDir: dir,
+    log: () => {},
+    overlays: {
+      copyOwner: (_w, overlayId, copy) => copies.get(ck(String(overlayId), String(copy))) as never,
+      copiesOf: (_w, overlayId) =>
+        [...copies].filter(([k]) => k.startsWith(String(overlayId) + '/')).map(([k, view]) => ({ copy: k.split('/')[1]!, view: view as never })),
+      notesOf: (_w, overlayId) => notes.get(String(overlayId)),
+      postEnvelope: (_w, overlayId, copy, text) => {
+        if (!copies.has(ck(overlayId, copy))) return false
+        posts.push({ overlayId, copy, msg: JSON.parse(text) })
+        return true
+      },
+      onCopyReady: (fn) => {
+        ready.push(fn as never)
+        return () => {}
+      },
+      onCopyEnd: (fn) => {
+        ends.push(fn as never)
+        return () => {}
+      },
+      partsOf: () => parts,
+      openerPluginOf: (_w, overlayId) => (String(overlayId) === 'o3' ? 'b.cal' : /^p[0-9]$/.test(String(overlayId)) ? 'a.jira' : notes.get(String(overlayId))?.pluginId),
+      // Every overlay a copy or a notes key names; a part (parts) has partOf, as main's infos lists it.
+      infos: () =>
+        [...new Set([...[...copies.keys()].map((k) => k.split('/')[0]!), ...notes.keys()])].map(
+          (id) => ({ id, ...(parts.some((p) => p.overlayId === id) ? { partOf: 'o1' } : {}) }) as never
+        ),
+      askContext: (_w, overlayId, view, copy) => onAsk(overlayId, view, copy)
+    },
+    projectRoot: (id) => (id === P ? projectRoot : undefined),
+    projectOfWindow: (w) => (w === W ? P : undefined),
+    loginEnv: () => Promise.resolve({ PATH: '/usr/bin', HOME: '/home/u', APP_TAB_TOKEN: 'stale' }),
+    askerOf: (view) => persons.get(view),
+    openResumeTab: (projectId, sessionId) => {
+      opened.push({ projectId, sessionId, afterKill: procs.every((p) => p.killed) })
+      return 'tab-9'
+    },
+    readHelp: () => help(),
+    // D15: a trusted folder unless a test says otherwise (ask-trust.test.ts reads real files in a temp HOME).
+    folderTrusted: () => Promise.resolve(true),
+    now: () => clock,
+    newToken: () => (procs.length.toString(16) + 'f'.repeat(64)).slice(0, 64),
+    spawn: (argv, opts, h) => {
+      let resolve!: () => void
+      const exited = new Promise<void>((r) => (resolve = r))
+      const p: FakeProc = {
+        argv,
+        cwd: opts.cwd,
+        env: opts.env,
+        written: [],
+        killed: false,
+        h,
+        exited,
+        write: (line) => p.written.push(line),
+        kill: () => {
+          if (p.killed) return
+          p.killed = true
+          // A process that outlives its kill (review S-1): its exit comes with gone().
+          if (!linger) resolve()
+        },
+        gone: () => resolve(),
+        emit: (ev) => h.line(JSON.stringify(ev)),
+        exit: (code = 1) => {
+          resolve()
+          h.exit({ code, signal: null, stderr: '' })
+        }
+      }
+      procs.push(p)
+      return p
+    },
+    ...over
+  })
+}
+
+const owner = (view = OWNER_VIEW): AskCaller => ({ windowId: W, projectId: P, view: view as never, person: persons.get(view) })
+const guest = (): AskCaller => ({ windowId: W, projectId: P, view: GUEST_VIEW as never, person: { guest: 'g1' } })
+const copyOf = (view: string): string => [...copies].find(([k, v]) => v === view && k.startsWith('o1/'))![0].split('/')[1]!
+const q = (view: string, question = 'What is this about?', extra: Record<string, unknown> = {}) => ({ overlayId: 'o1', copy: copyOf(view), question, ...extra })
+const pushesTo = (copy: string) => posts.filter((p) => p.overlayId === 'o1' && p.copy === copy).map((p) => p.msg.data)
+
+/** A whole turn of a fake claude: init, two deltas, the result. */
+function answer(p: FakeProc, text = 'It is about X.', session = SESSION): void {
+  p.emit({ type: 'system', subtype: 'init', session_id: session, tools: [], mcp_servers: [] })
+  p.emit({ type: 'stream_event', event: { type: 'message_start' } })
+  p.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: text.slice(0, 3) } } })
+  p.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: text.slice(3) } } })
+  p.emit({ type: 'result', subtype: 'success', result: text })
+}
+
+/** The user text a process was given on stdin, parsed. */
+const sent = (p: FakeProc, i = 0): string => (JSON.parse(p.written[i]!) as { message: { content: string } }).message.content
+
+describe('who and how', () => {
+  it('opening spawns nothing; the first question spawns', async () => {
+    const s = service()
+    for (const fn of ready) fn({ windowId: W, overlayId: 'o1', copy: 'c1', view: OWNER_VIEW })
+    expect(procs).toHaveLength(0)
+    expect(pushesTo('c1').map((d) => d.type)).toEqual(['history'])
+    await s.start(owner(), q(OWNER_VIEW))
+    expect(procs).toHaveLength(1)
+  })
+
+  it('anything not the owner gets the guest argv; the owner a regular session', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    await s.start(guest(), q(GUEST_VIEW))
+    const [o, g] = procs
+    for (const f of ['--restricted', '--safe-mode', '--strict-mcp-config', '--tools']) expect(o!.argv).not.toContain(f)
+    expect(g!.argv.join(' ')).toContain(ASK_GUEST_FLAGS.join(' '))
+    expect(g!.argv[g!.argv.indexOf('--tools') + 1]).toBe('')
+  })
+
+  it('a caller with no person is refused, nothing spawned', async () => {
+    const s = service()
+    await expect(s.start({ ...owner(READ_VIEW), person: undefined }, q(READ_VIEW))).rejects.toThrow(/refused/)
+    expect(procs).toHaveLength(0)
+  })
+
+  it('start, say, close from a view that is not copyOwner: refused', async () => {
+    const s = service()
+    const other = { overlayId: 'o1', copy: 'c2', question: 'x' }
+    await expect(s.start(owner(), other)).rejects.toThrow(/not your copy/)
+    await expect(s.say(owner(), other)).rejects.toThrow(/not your copy/)
+    expect(() => s.close(owner(), other)).toThrow(/not your copy/)
+    // copyOwner undefined (a released copy) refuses too.
+    await expect(s.start(owner(), { overlayId: 'o1', copy: 'gone', question: 'x' })).rejects.toThrow(/not your copy/)
+    expect(procs).toHaveLength(0)
+  })
+
+  it('an overlay with no notes key: one chat per copy, never stored, gone with its copy', async () => {
+    copies.set(ck('o3', 'c1'), OWNER_VIEW)
+    copies.set(ck('o3', 'c2'), OWNER_B)
+    const s = service()
+    await s.start(owner(), { overlayId: 'o3', copy: 'c1', question: 'q' })
+    answer(procs[0]!)
+    // Another owner view's copy has its own chat: no busy, no shared history.
+    await s.start(owner(OWNER_B), { overlayId: 'o3', copy: 'c2', question: 'q2' })
+    expect(procs).toHaveLength(2)
+    expect(procs[1]!.argv).not.toContain('--resume')
+    expect(() => readFileSync(join(dir, 'ask', P, createHash('sha256').update('b.cal').digest('hex') + '.json'), 'utf8')).toThrow()
+    for (const fn of ends) fn({ windowId: W, overlayId: 'o3', copy: 'c1', view: OWNER_VIEW })
+    expect(procs[0]!.killed).toBe(true)
+    await expect(s.say(owner(), { overlayId: 'o3', copy: 'c1', question: 'again' })).rejects.toThrow(/no chat yet/)
+    // An overlay with neither a key nor an opener plugin (the CLI's): no Ask.
+    copies.set(ck('cli', 'c1'), OWNER_VIEW)
+    await expect(s.start(owner(), { overlayId: 'cli', copy: 'c1', question: 'q' })).rejects.toThrow(/no Ask/)
+  })
+
+  it("cwd never from the payload: the project folder from main's record, whatever the request says", async () => {
+    const s = service()
+    await s.start(owner(), { ...q(OWNER_VIEW), cwd: '/etc', projectId: 'bbbbbbbbbbbbbbbb' })
+    expect(procs[0]!.cwd).toBe(projectRoot)
+  })
+
+  it('the process gets an Ask token of its own, resolved while it runs, as the window owner of its project', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    const token = procs[0]!.env.APP_TAB_TOKEN!
+    expect(token).toMatch(/^[0-9a-f]{64}$/)
+    expect(procs[0]!.env.APP_TAB_ID).toBeUndefined()
+    expect(s.resolveToken(token)).toEqual({ projectId: P })
+    s.close(owner(), q(OWNER_VIEW))
+    expect(s.resolveToken(token)).toBeUndefined()
+  })
+})
+
+describe('the help check', () => {
+  it('claude --help missing a mode flag: refused, nothing spawned', async () => {
+    help = () => Promise.resolve(HELP_ALL.replace('--safe-mode', ''))
+    const s = service()
+    await expect(s.start(guest(), q(GUEST_VIEW))).rejects.toThrow(/lacks --safe-mode/)
+    expect(procs).toHaveLength(0)
+    // The owner mode does not need it (D2).
+    await s.start(owner(), q(OWNER_VIEW))
+    expect(procs).toHaveLength(1)
+  })
+
+  it('a --help that fails is not kept: the next question asks again', async () => {
+    let calls = 0
+    help = () => (++calls === 1 ? Promise.reject(new Error('ENOENT')) : Promise.resolve(HELP_ALL))
+    const s = service()
+    await expect(s.start(owner(), q(OWNER_VIEW))).rejects.toThrow(/did not answer --help/)
+    await s.start(owner(), q(OWNER_VIEW))
+    expect(calls).toBe(2)
+    expect(procs).toHaveLength(1)
+  })
+})
+
+describe('the context', () => {
+  it('onAsk null, throws or past 10 s: refused, nothing spawned', async () => {
+    const s = service()
+    onAsk = () => Promise.resolve(null)
+    await expect(s.start(owner(), q(OWNER_VIEW))).rejects.toThrow(/no document/)
+    onAsk = () => Promise.reject(new Error('boom'))
+    await expect(s.start(owner(), q(OWNER_VIEW))).rejects.toThrow(/refused \(boom\)/)
+    vi.useFakeTimers()
+    onAsk = () => new Promise(() => {})
+    const late = s.start(owner(), q(OWNER_VIEW))
+    const caught = expect(late).rejects.toThrow(/within 10 s/)
+    await vi.advanceTimersByTimeAsync(10_001)
+    await caught
+    expect(procs).toHaveLength(0)
+  })
+
+  it("a part's null onAsk is left out; a part's text is its own fenced section", async () => {
+    parts = [
+      { overlayId: 'p1', pluginId: 'a.jira' },
+      { overlayId: 'p2', pluginId: 'b.cal' }
+    ]
+    copies.set(ck('p1', 'x1'), OWNER_VIEW)
+    copies.set(ck('p2', 'x2'), OWNER_VIEW)
+    onAsk = (overlayId) => Promise.resolve(overlayId === 'p1' ? { text: 'Issue PROJ-1 body' } : overlayId === 'p2' ? null : { text: 'Mail body' })
+    await service().start(owner(), q(OWNER_VIEW))
+    const text = sent(procs[0]!)
+    expect(text).toContain('Mail body')
+    expect(text).toContain('(from a.jira)')
+    expect(text).toContain('Issue PROJ-1 body')
+    expect(text).not.toContain('b.cal')
+  })
+
+  it('the stdin fence is longer than any backtick run', async () => {
+    const tick = String.fromCharCode(96)
+    onAsk = () => Promise.resolve({ text: 'code ' + tick.repeat(7) + ' end' })
+    await service().start(owner(), q(OWNER_VIEW, 'why?', { quote: tick.repeat(4) }))
+    const text = sent(procs[0]!)
+    expect(text).toContain(tick.repeat(8) + '\ncode ')
+    expect(fenced(tick.repeat(4)).startsWith(tick.repeat(5) + '\n')).toBe(true)
+    expect(fenced('plain').startsWith(tick.repeat(3) + '\n')).toBe(true)
+  })
+
+  it('question or quote over 10,000 refused; document and answer cut at 100,000', async () => {
+    const s = service()
+    await expect(s.start(owner(), q(OWNER_VIEW, 'x'.repeat(10_001)))).rejects.toThrow(/question is over/)
+    await expect(s.start(owner(), q(OWNER_VIEW, 'why?', { quote: 'y'.repeat(10_001) }))).rejects.toThrow(/quote is over/)
+    expect(procs).toHaveLength(0)
+    onAsk = () => Promise.resolve({ text: 'd'.repeat(ASK_MAX_DOCUMENT + 50) })
+    await s.start(owner(), q(OWNER_VIEW))
+    const text = sent(procs[0]!)
+    expect(text).toContain('d'.repeat(ASK_MAX_DOCUMENT) + '\n\n(the document was cut here)')
+    expect(text).not.toContain('d'.repeat(ASK_MAX_DOCUMENT + 1))
+    vi.useFakeTimers()
+    const p = procs[0]!
+    p.emit({ type: 'system', subtype: 'init', session_id: SESSION, tools: [], mcp_servers: [] })
+    p.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'a'.repeat(ASK_MAX_ANSWER + 10) } } })
+    p.emit({ type: 'result', subtype: 'success', result: '' })
+    const done = pushesTo('c1').find((d) => d.type === 'answer') as { text: string }
+    expect(done.text).toBe('a'.repeat(ASK_MAX_ANSWER) + '\n\n(the answer was cut here)')
+    // The host cut it already (onAsk's cut: true, task 05): main still adds the note, once.
+    s.close(owner(), q(OWNER_VIEW))
+    onAsk = () => Promise.resolve({ text: 'short head', cut: true })
+    vi.useRealTimers()
+    await s.start(owner(), { overlayId: 'o2', copy: 'c1', question: 'q' })
+    expect(sent(procs[1]!)).toContain('short head\n\n(the document was cut here)\n')
+    expect(sent(procs[1]!).split('(the document was cut here)')).toHaveLength(2)
+  })
+})
+
+describe('caps and turns', () => {
+  it("a second owner view's question during a turn is refused busy", async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    await expect(s.say(owner(OWNER_B), q(OWNER_B))).rejects.toThrow(/busy/)
+    answer(procs[0]!)
+    await s.say(owner(OWNER_B), q(OWNER_B, 'and then?'))
+    expect(procs).toHaveLength(1)
+    expect(sent(procs[0]!, 1)).toBe('and then?')
+  })
+
+  it('past 3 per plugin per window, 6 per app or 10 a minute per window: refused', async () => {
+    const s = service()
+    for (let i = 1; i <= 8; i++) {
+      notes.set('k' + i, { pluginId: i <= 4 ? 'a.jira' : 'p.' + i, key: 'key' + i })
+      copies.set(ck('k' + i, 'c'), OWNER_VIEW)
+    }
+    const ask = (i: number) => s.start(owner(), { overlayId: 'k' + i, copy: 'c', question: 'q' })
+    for (const i of [1, 2, 3]) await ask(i)
+    await expect(ask(4)).rejects.toThrow(/3 chats of this plugin/)
+    for (const i of [5, 6, 7]) await ask(i)
+    await expect(ask(8)).rejects.toThrow(/6 chats already run/)
+    expect(procs).toHaveLength(6)
+    // The rate: ten spawns a minute per window, whatever ended meanwhile.
+    for (const i of [1, 2, 3, 5, 6, 7]) s.close(owner(), { overlayId: 'k' + i, copy: 'c' })
+    for (const i of [1, 2, 3, 5]) await ask(i)
+    await expect(ask(6)).rejects.toThrow(/too many chats started this minute/)
+    clock += 60_001
+    await ask(6)
+  })
+
+  it("events reach only copies of the chat's own person", async () => {
+    const s = service()
+    for (const [copy, view] of [['c1', OWNER_VIEW], ['c2', OWNER_B], ['cg', GUEST_VIEW], ['cr', READ_VIEW]]) {
+      for (const fn of ready) fn({ windowId: W, overlayId: 'o1', copy: copy!, view: view! })
+    }
+    // A read guest gets nothing at all, not even the history.
+    expect(pushesTo('cr')).toEqual([])
+    posts = []
+    await s.start(owner(), q(OWNER_VIEW))
+    vi.useFakeTimers()
+    answer(procs[0]!)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(pushesTo('c2').some((d) => d.type === 'answer')).toBe(true)
+    expect(pushesTo('cg')).toEqual([])
+    expect(pushesTo('cr')).toEqual([])
+    // A view whose person changed (a narrowing) is detached at the next push.
+    persons.set(OWNER_B, { guest: 'g1' })
+    await s.say(owner(), q(OWNER_VIEW, 'more?'))
+    expect(pushesTo('c2').filter((d) => d.type === 'state' && (d as { phase: string }).phase === 'thinking')).toHaveLength(1)
+  })
+
+  it('deltas are coalesced, then the answer, then ready; the turn is kept', async () => {
+    vi.useFakeTimers()
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!, 'Hello there')
+    const kinds = pushesTo('c1').map((d) => d.type)
+    expect(kinds).toEqual(['state', 'state', 'delta', 'answer', 'state'])
+    expect(pushesTo('c1').find((d) => d.type === 'delta')).toEqual({ type: 'delta', text: 'Hello there' })
+    const seqs = posts.filter((p) => p.copy === 'c1').map((p) => p.msg.seq)
+    expect(seqs).toEqual([1, 2, 3, 4, 5])
+  })
+
+  it('a pick change ends the process and the next question resumes the session with it', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    expect(s.pick(owner(), { overlayId: 'o1', copy: 'c1', model: 'opus', effort: 'high' })).toMatchObject({ model: 'opus', effort: 'high' })
+    await s.say(owner(), q(OWNER_VIEW, 'again'))
+    expect(procs[0]!.killed).toBe(true)
+    const argv = procs[1]!.argv
+    expect(argv.slice(argv.indexOf('--model'))).toEqual(['--model', 'opus', '--effort', 'high', '--resume', SESSION])
+    expect(sent(procs[1]!)).toBe('again')
+  })
+
+  it('15 idle minutes end the process; the chat stays and resumes', async () => {
+    vi.useFakeTimers()
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    await vi.advanceTimersByTimeAsync(ASK_IDLE_MS + 1)
+    expect(procs[0]!.killed).toBe(true)
+    await s.say(owner(), q(OWNER_VIEW, 'still there?'))
+    expect(procs[1]!.argv).toContain('--resume')
+  })
+})
+
+describe('the pick', () => {
+  it('model or effort outside session-options lists refused', () => {
+    const s = service()
+    expect(() => s.pick(owner(), { overlayId: 'o1', copy: 'c1', model: '--dangerously' })).toThrow(/model must be one of/)
+    expect(() => s.pick(owner(), { overlayId: 'o1', copy: 'c1', effort: 'ultra' })).toThrow(/effort must be one of/)
+    expect(s.pick(owner(), { overlayId: 'o1', copy: 'c1' })).toMatchObject({ models: ['haiku', 'sonnet', 'opus', 'fable'] })
+  })
+
+  it("the owner's pick survives a restart; a guest's pick is not saved", async () => {
+    service().pick(owner(), { overlayId: 'o1', copy: 'c1', model: 'haiku', effort: 'low' })
+    const saved = JSON.parse(readFileSync(join(dir, 'ask.json'), 'utf8'))
+    expect(saved).toMatchObject({ model: 'haiku', effort: 'low' })
+    const s = service()
+    s.pick(guest(), { overlayId: 'o1', copy: 'cg', model: 'fable' })
+    expect(JSON.parse(readFileSync(join(dir, 'ask.json'), 'utf8'))).toMatchObject({ model: 'haiku', effort: 'low' })
+    // A new chat (another key) starts with the owner's remembered pick.
+    await s.start(owner(), { overlayId: 'o2', copy: 'c1', question: 'q' })
+    const argv = procs[0]!.argv
+    expect(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 4)).toEqual(['--model', 'haiku', '--effort', 'low'])
+    await s.start(guest(), q(GUEST_VIEW))
+    expect(procs[1]!.argv).toContain('fable')
+  })
+
+  it('S-8: null goes back to the default per field, undefined leaves the field, {} reads; saved and used by the next chat', async () => {
+    const at = { overlayId: 'o1', copy: 'c1' }
+    const s = service()
+    s.pick(owner(), { ...at, model: 'opus', effort: 'high' })
+    expect(s.pick(owner(), { ...at, model: null })).toMatchObject({ effort: 'high' })
+    expect(s.pick(owner(), at)).not.toHaveProperty('model')
+    expect(JSON.parse(readFileSync(join(dir, 'ask.json'), 'utf8'))).toEqual({ schemaVersion: 1, effort: 'high' })
+    // A name with the other field absent keeps that field.
+    expect(s.pick(owner(), { ...at, model: 'haiku' })).toMatchObject({ model: 'haiku', effort: 'high' })
+    const both = s.pick(owner(), { ...at, model: null, effort: null })
+    expect(both).not.toHaveProperty('model')
+    expect(both).not.toHaveProperty('effort')
+    expect(JSON.parse(readFileSync(join(dir, 'ask.json'), 'utf8'))).toEqual({ schemaVersion: 1 })
+    // The next chat runs with the CLI's own default: no --model, no --effort.
+    await s.start(owner(), { overlayId: 'o2', copy: 'c1', question: 'q' })
+    expect(procs[0]!.argv).not.toContain('--model')
+    expect(procs[0]!.argv).not.toContain('--effort')
+    expect(() => s.pick(owner(), { ...at, model: 'nope', effort: null })).toThrow(/model must be one of/)
+  })
+})
+
+describe('ends', () => {
+  it('killed on last copy end, plugin off, and each narrowing path (role, hidden, unshared, kick, revoke): the service side, dropGuest; the paths are in ask-guests.test.ts', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    await s.start(owner(OWNER_B), { overlayId: 'o2', copy: 'c1', question: 'q' }).catch(() => {})
+    // Two copies of the owner's o1 chat: the first end keeps it, the last ends the process.
+    s.pick(owner(OWNER_B), { overlayId: 'o1', copy: 'c2' })
+    for (const fn of ends) fn({ windowId: W, overlayId: 'o1', copy: 'c1', view: OWNER_VIEW })
+    expect(procs[0]!.killed).toBe(false)
+    for (const fn of ends) fn({ windowId: W, overlayId: 'o1', copy: 'c2', view: OWNER_B })
+    expect(procs[0]!.killed).toBe(true)
+    await s.start(guest(), q(GUEST_VIEW))
+    const g = procs.at(-1)!
+    s.dropGuest('g1')
+    expect(g.killed).toBe(true)
+    expect(pushesTo('cg').at(-1)).toMatchObject({ type: 'end', error: true })
+    // The guest's chat is gone from memory: a say has nothing to continue.
+    await expect(s.say(guest(), q(GUEST_VIEW))).rejects.toThrow(/no chat yet/)
+  })
+
+  it('a guest chat whose init lists a tool or MCP server is ended', async () => {
+    const s = service()
+    await s.start(guest(), q(GUEST_VIEW))
+    procs[0]!.emit({ type: 'system', subtype: 'init', session_id: SESSION, tools: ['Bash'], mcp_servers: [] })
+    expect(procs[0]!.killed).toBe(true)
+    expect(pushesTo('cg').at(-1)).toMatchObject({ type: 'end', error: true })
+    await s.start(guest(), q(GUEST_VIEW))
+    procs[1]!.emit({ type: 'system', subtype: 'init', session_id: SESSION, tools: [], mcp_servers: [{ name: 'x' }] })
+    expect(procs[1]!.killed).toBe(true)
+  })
+
+  it("a guest's exit text never carries claude's stderr (host paths); the owner's does", async () => {
+    const s = service()
+    await s.start(guest(), q(GUEST_VIEW))
+    procs[0]!.h.exit({ code: 1, signal: null, stderr: 'error at /home/owner/secret/file' })
+    expect(JSON.stringify(pushesTo('cg'))).not.toContain('/home/owner')
+    await s.start(owner(), q(OWNER_VIEW))
+    procs[1]!.h.exit({ code: 1, signal: null, stderr: 'error at /home/owner/x' })
+    expect(JSON.stringify(pushesTo('c1'))).toContain('/home/owner/x')
+  })
+})
+
+describe('kept sessions (D14)', () => {
+  it('the question after Esc passes --resume <stored id>; the history goes to the reopened copy', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    for (const fn of ends) fn({ windowId: W, overlayId: 'o1', copy: 'c1', view: OWNER_VIEW })
+    expect(procs[0]!.killed).toBe(true)
+    copies.set(ck('o1', 'c3'), OWNER_VIEW)
+    for (const fn of ready) fn({ windowId: W, overlayId: 'o1', copy: 'c3', view: OWNER_VIEW })
+    const history = pushesTo('c3')[0] as { type: string; turns: { question: string; answer: string }[] }
+    expect(history.type).toBe('history')
+    expect(history.turns).toEqual([{ question: 'What is this about?', answer: 'It is about X.' }])
+    onAsk = () => Promise.reject(new Error('a resumed session asks for no document'))
+    await s.say(owner(), { overlayId: 'o1', copy: 'c3', question: 'more' })
+    expect(procs[1]!.argv.slice(-2)).toEqual(['--resume', SESSION])
+    expect(sent(procs[1]!)).toBe('more')
+  })
+
+  it('the store survives a restart: a new service resumes the session', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    const again = service()
+    await again.say(owner(), q(OWNER_VIEW, 'after the restart'))
+    expect(procs[1]!.argv.slice(-2)).toEqual(['--resume', SESSION])
+  })
+
+  it('a non-UUID session id is never stored or resumed: a fresh session starts', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!, 'ok', '--settings=/tmp/evil')
+    const file = readFileSync(join(dir, 'ask', P, createHash('sha256').update('a.jira').digest('hex') + '.json'), 'utf8')
+    expect(file).not.toContain('evil')
+    const again = service()
+    await again.start(owner(), q(OWNER_VIEW, 'next'))
+    expect(procs[1]!.argv).not.toContain('--resume')
+  })
+
+  it("a guest's chat is never written", async () => {
+    const s = service()
+    await s.start(guest(), q(GUEST_VIEW))
+    answer(procs[0]!)
+    expect(() => readFileSync(join(dir, 'ask', P, createHash('sha256').update('a.jira').digest('hex') + '.json'), 'utf8')).toThrow()
+  })
+
+  it('a session that cannot be resumed is forgotten: the next question starts fresh', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    s.close(owner(), q(OWNER_VIEW))
+    await s.say(owner(), q(OWNER_VIEW, 'again'))
+    procs[1]!.exit(1)
+    expect(pushesTo('c1').at(-1)).toMatchObject({ type: 'end', message: expect.stringMatching(/could not be resumed/) })
+    await s.say(owner(), q(OWNER_VIEW, 'once more'))
+    expect(procs[2]!.argv).not.toContain('--resume')
+  })
+
+  it('dropped with the plugin and the project', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    s.removePlugin('a.jira')
+    expect(procs[0]!.killed).toBe(true)
+    await expect(service().say(owner(), q(OWNER_VIEW))).rejects.toThrow(/no chat yet/)
+    const t = service()
+    await t.start(owner(), q(OWNER_VIEW))
+    answer(procs[1]!)
+    t.dropProject(P)
+    await expect(service().say(owner(), q(OWNER_VIEW))).rejects.toThrow(/no chat yet/)
+  })
+
+  it('continue refused for a guest and for a key with no session; the Ask process ends before the tab spawns', async () => {
+    const s = service()
+    await expect(s.continueInTab(guest(), q(GUEST_VIEW))).rejects.toThrow(/only the owner/)
+    await expect(s.continueInTab(owner(), q(OWNER_VIEW))).rejects.toThrow(/no session/)
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    expect(await s.continueInTab(owner(), q(OWNER_VIEW))).toEqual({ tabId: 'tab-9' })
+    expect(opened).toEqual([{ projectId: P, sessionId: SESSION, afterKill: true }])
+    expect(pushesTo('c1').at(-1)).toMatchObject({ type: 'end', error: false })
+    // The session is the tab's now: the next question starts a fresh one, and the history says where it went.
+    await expect(s.continueInTab(owner(), q(OWNER_VIEW))).rejects.toThrow(/no session/)
+    copies.set(ck('o1', 'c4'), OWNER_VIEW)
+    for (const fn of ready) fn({ windowId: W, overlayId: 'o1', copy: 'c4', view: OWNER_VIEW })
+    expect(pushesTo('c4')[0]).toMatchObject({ type: 'history', continuedIn: 'tab-9' })
+  })
+})
+
+
+describe("D15: the owner's Ask in a folder Claude Code never trusted", () => {
+  const isolation = ['--restricted', '--safe-mode', '--strict-mcp-config', '--tools']
+  /** A service reading trust for real, from a temp HOME's .claude.json (never the real one). */
+  const withHome = (home: string): AskService =>
+    service({
+      folderTrusted: undefined,
+      loginEnv: () => Promise.resolve({ PATH: '/usr/bin', HOME: home })
+    })
+  const writeConfig = (home: string, projects: unknown): void => writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects }))
+  const notices = (): unknown[] => pushesTo('c1').filter((d) => d.type === 'state').map((d) => (d as { notice?: string }).notice)
+
+  it('trusted: the owner argv (no isolation flags) and no notice', async () => {
+    const home = mkdtempSync(join(dir, 'home-'))
+    mkdirSync(projectRoot, { recursive: true })
+    writeConfig(home, { [projectRoot]: { hasTrustDialogAccepted: true } })
+    await withHome(home).start(owner(), q(OWNER_VIEW))
+    for (const f of isolation) expect(procs[0]!.argv).not.toContain(f)
+    expect(notices().every((n) => n === undefined)).toBe(true)
+  })
+
+  it('untrusted, unreadable or a missing key: the isolated argv and the panel notice', async () => {
+    for (const setup of [
+      (home: string) => writeConfig(home, { [projectRoot]: { hasTrustDialogAccepted: false } }),
+      (home: string) => writeFileSync(join(home, '.claude.json'), '{ broken'),
+      (home: string) => writeConfig(home, { [projectRoot]: {} }),
+      () => {}
+    ]) {
+      procs = []
+      posts = []
+      const home = mkdtempSync(join(dir, 'home-'))
+      setup(home)
+      const s = withHome(home)
+      await s.start(owner(), q(OWNER_VIEW))
+      expect(procs[0]!.argv.join(' ')).toContain(ASK_GUEST_FLAGS.join(' '))
+      expect(notices().length).toBeGreaterThan(0)
+      expect(notices().every((n) => n === UNTRUSTED_NOTICE)).toBe(true)
+      // A tool or MCP server on the init line ends it as a guest chat's would.
+      procs[0]!.emit({ type: 'system', subtype: 'init', session_id: SESSION, tools: ['Bash'], mcp_servers: [] })
+      expect(procs[0]!.killed).toBe(true)
+      s.close(owner(), q(OWNER_VIEW))
+    }
+  })
+
+  it('trust is re-read at every chat start', async () => {
+    let trusted = false
+    let reads = 0
+    const s = service({
+      folderTrusted: () => {
+        reads++
+        return Promise.resolve(trusted)
+      }
+    })
+    await s.start(owner(), q(OWNER_VIEW))
+    expect(procs[0]!.argv).toContain('--safe-mode')
+    answer(procs[0]!)
+    // The running chat keeps its mode: a follow-up rides the same process, no read.
+    await s.say(owner(), q(OWNER_VIEW, 'more'))
+    expect(procs).toHaveLength(1)
+    expect(reads).toBe(1)
+    answer(procs[0]!)
+    // Trusted in a tab meanwhile: the next chat start reads it again and runs as the owner (resuming the session).
+    trusted = true
+    s.close(owner(), q(OWNER_VIEW))
+    await s.say(owner(), q(OWNER_VIEW, 'now with tools'))
+    expect(reads).toBe(2)
+    for (const f of isolation) expect(procs[1]!.argv).not.toContain(f)
+    expect(procs[1]!.argv.slice(-2)).toEqual(['--resume', SESSION])
+  })
+
+  it("a guest's chat never reads trust (always isolated)", async () => {
+    let reads = 0
+    const s = service({ folderTrusted: () => (reads++, Promise.resolve(true)) })
+    await s.start(guest(), q(GUEST_VIEW))
+    expect(reads).toBe(0)
+    expect(procs[0]!.argv).toContain('--safe-mode')
+  })
+})
+
+
+describe('fix round 1 (review r1)', () => {
+  it('S-1: a question during Continue is refused, and the tab opens only once the old process is gone', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    linger = true
+    const cont = s.continueInTab(owner(), q(OWNER_VIEW))
+    await Promise.resolve()
+    // The second owner view asks while Continue waits for the exit: refused, nothing spawned.
+    await expect(s.say(owner(OWNER_B), q(OWNER_B, 'now?'))).rejects.toThrow(/busy/)
+    expect(opened).toEqual([])
+    procs[0]!.gone()
+    expect(await cont).toEqual({ tabId: 'tab-9' })
+    expect(procs).toHaveLength(1)
+    expect(opened).toHaveLength(1)
+  })
+
+  it('S-1: a process that outlives the wait stays pending: a retry of Continue or a question waits for it again', async () => {
+    vi.useFakeTimers()
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    linger = true
+    const first = expect(s.continueInTab(owner(), q(OWNER_VIEW))).rejects.toThrow(/did not end in time/)
+    await vi.advanceTimersByTimeAsync(5001)
+    await first
+    // The retry finds no run but the old process still alive: it waits again, never opens the tab beside it.
+    const retry = expect(s.continueInTab(owner(), q(OWNER_VIEW))).rejects.toThrow(/did not end in time/)
+    await vi.advanceTimersByTimeAsync(5001)
+    await retry
+    const asked = expect(s.say(owner(), q(OWNER_VIEW, 'again'))).rejects.toThrow(/still ending/)
+    await vi.advanceTimersByTimeAsync(5001)
+    await asked
+    expect(opened).toEqual([])
+    expect(procs).toHaveLength(1)
+    procs[0]!.gone()
+    expect(await s.continueInTab(owner(), q(OWNER_VIEW))).toEqual({ tabId: 'tab-9' })
+  })
+
+  it('S-1: after a pick change, an old process that outlives the wait refuses the question (no second writer)', async () => {
+    vi.useFakeTimers()
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    s.pick(owner(), { overlayId: 'o1', copy: 'c1', model: 'opus' })
+    linger = true
+    const next = expect(s.say(owner(), q(OWNER_VIEW, 'with opus'))).rejects.toThrow(/still ending/)
+    await vi.advanceTimersByTimeAsync(5001)
+    await next
+    expect(procs).toHaveLength(1)
+    procs[0]!.gone()
+    await s.say(owner(), q(OWNER_VIEW, 'with opus'))
+    expect(procs).toHaveLength(2)
+    expect(procs[1]!.argv).toContain('opus')
+  })
+
+  it("S-2: a guest chat dropped while its question is set up never spawns", async () => {
+    let release!: () => void
+    help = () => new Promise((r) => (release = () => r(HELP_ALL)))
+    const s = service()
+    const asked = s.start(guest(), q(GUEST_VIEW))
+    await new Promise((r) => setTimeout(r, 0))
+    // An access change (a widening too) drops the guest's chats while startRun awaits --help.
+    s.dropGuest('g1')
+    release()
+    await expect(asked).rejects.toThrow(/refused/)
+    expect(procs).toHaveLength(0)
+  })
+
+  it("S-2b: a part released for the asking view during its onAsk is left out; released before the spawn, the question is refused", async () => {
+    parts = [{ overlayId: 'p1', pluginId: 'a.jira' }]
+    copies.set(ck('p1', 'x1'), OWNER_VIEW)
+    onAsk = (overlayId) => {
+      if (overlayId === 'p1') {
+        copies.delete(ck('p1', 'x1'))
+        return Promise.resolve({ text: 'PART SECRET' })
+      }
+      return Promise.resolve({ text: 'Mail body' })
+    }
+    await service().start(owner(), q(OWNER_VIEW))
+    expect(sent(procs[0]!)).not.toContain('PART SECRET')
+
+    procs = []
+    copies.set(ck('p1', 'x1'), OWNER_VIEW)
+    onAsk = (overlayId) => Promise.resolve({ text: overlayId === 'p1' ? 'PART SECRET' : 'Mail body' })
+    let release!: () => void
+    help = () => new Promise((r) => (release = () => r(HELP_ALL)))
+    const s = service()
+    const asked = s.start(owner(), { overlayId: 'o2', copy: 'c1', question: 'q' })
+    await new Promise((r) => setTimeout(r, 0))
+    parts = [{ overlayId: 'p1', pluginId: 'a.jira' }]
+    copies.delete(ck('p1', 'x1'))
+    release()
+    await expect(asked).rejects.toThrow(/refused/)
+    expect(procs).toHaveLength(0)
+  })
+
+  it("S-2c: a plugin's onAsk error reaches a guest as a fixed text, the owner as its own", async () => {
+    const logs: string[] = []
+    onAsk = () => Promise.reject(new Error("ENOENT: open '/home/owner/secret.txt'"))
+    const s = service({ log: (m) => logs.push(m) })
+    const g = await s.start(guest(), q(GUEST_VIEW)).catch((e: Error) => e.message)
+    expect(g).toBe(GUEST_CONTEXT_FAILED)
+    expect(logs.join('\n')).toContain('/home/owner/secret.txt')
+    await expect(s.start(owner(), q(OWNER_VIEW))).rejects.toThrow(/\/home\/owner\/secret\.txt/)
+  })
+
+  it('S-3: in-memory turns are capped as stored ones: a long guest chat still restores under the cap', async () => {
+    const s = service()
+    for (let i = 0; i < 4; i++) {
+      await (i === 0 ? s.start(guest(), q(GUEST_VIEW, 'q' + i)) : s.say(guest(), q(GUEST_VIEW, 'q' + i)))
+      answer(procs[0]!, 'x'.repeat(90_000))
+    }
+    copies.set(ck('o1', 'cg2'), GUEST_VIEW)
+    for (const fn of ready) fn({ windowId: W, overlayId: 'o1', copy: 'cg2', view: GUEST_VIEW })
+    const history = pushesTo('cg2')[0] as { type: string; turns: unknown[] }
+    expect(history.type).toBe('history')
+    expect(history.turns.length).toBeLessThan(4)
+    expect(JSON.stringify(history.turns).length).toBeLessThanOrEqual(ASK_STORE_MAX_TURNS_CHARS)
+  })
+
+  it('S-4: an isolated chat whose init has no tool list, or that answers before any init, is ended (fail closed)', async () => {
+    const s = service()
+    await s.start(guest(), q(GUEST_VIEW))
+    procs[0]!.emit({ type: 'system', subtype: 'init', session_id: SESSION })
+    expect(procs[0]!.killed).toBe(true)
+    await s.start(guest(), q(GUEST_VIEW))
+    procs[1]!.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'leak' } } })
+    expect(procs[1]!.killed).toBe(true)
+    expect(pushesTo('cg').some((d) => d.type === 'delta')).toBe(false)
+    // The owner's chat (trusted, not isolated) is not held to it.
+    await s.start(owner(), q(OWNER_VIEW))
+    procs[2]!.emit({ type: 'system', subtype: 'init', session_id: SESSION })
+    expect(procs[2]!.killed).toBe(false)
+  })
+
+  it('S-4: a resumed isolated chat that answers before its init forgets the session', async () => {
+    const s = service()
+    await s.start(guest(), q(GUEST_VIEW))
+    answer(procs[0]!)
+    s.close(guest(), q(GUEST_VIEW))
+    await s.say(guest(), q(GUEST_VIEW, 'again'))
+    expect(procs[1]!.argv).toContain('--resume')
+    procs[1]!.emit({ type: 'result', subtype: 'success', result: 'x' })
+    expect(procs[1]!.killed).toBe(true)
+    await s.say(guest(), q(GUEST_VIEW, 'once more'))
+    expect(procs[2]!.argv).not.toContain('--resume')
+  })
+
+  it('N3: a part has no Ask of its own and gets no history', async () => {
+    parts = [{ overlayId: 'p1', pluginId: 'a.jira' }]
+    copies.set(ck('p1', 'x1'), OWNER_VIEW)
+    const s = service()
+    await expect(s.start(owner(), { overlayId: 'p1', copy: 'x1', question: 'q' })).rejects.toThrow(/no Ask/)
+    for (const fn of ready) fn({ windowId: W, overlayId: 'p1', copy: 'x1', view: OWNER_VIEW })
+    expect(posts.filter((p) => p.overlayId === 'p1')).toEqual([])
+    expect(procs).toHaveLength(0)
+  })
+
+  it("N12: Continue re-checks the caller's copy after the wait", async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    linger = true
+    const cont = s.continueInTab(owner(), q(OWNER_VIEW))
+    await Promise.resolve()
+    copies.delete(ck('o1', 'c1'))
+    procs[0]!.gone()
+    await expect(cont).rejects.toThrow(/refused/)
+    expect(opened).toEqual([])
+  })
+})

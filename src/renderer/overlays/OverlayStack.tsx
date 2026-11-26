@@ -11,7 +11,9 @@ import { DiscussButton } from './DiscussPopover'
 import type { DiscussTab } from './discuss-tabs'
 import { domOrder, followOverlays, listOnce } from './follow-overlays'
 import { HtmlOverlay } from './HtmlOverlay'
-import { closeActionOf, htmlBodyOf, type CopyLineState } from './overlay-copies'
+import { OverlayParts } from './OverlayParts'
+import { closeActionOf, htmlBodyOf, overlayIntroOf, type CopyLineState } from './overlay-copies'
+import { PageDiscussGate, pageDiscussRefusal } from './page-discuss-model'
 import { OverlayLoader, OverlayToolbar } from './OverlayToolbar'
 import { urlViewBounds, type ToolbarEntry } from './overlay-toolbar'
 import { TerminalOverlay } from './TerminalOverlay'
@@ -103,13 +105,32 @@ export function OverlayStack(props: {
   const [copyStates, setCopyStates] = useState<Readonly<Record<string, CopyLineState>>>({})
   // What this view shows: main's stack less what was hidden here. Everything below (the top, the keys, the count
   // that makes the content below inert) reads this one.
-  const stack = useMemo(() => (hiddenHere.size === 0 ? listed : listed.filter((o) => !hiddenHere.has(o.id))), [listed, hiddenHere])
+  // Parts (design-parts.md §2) are listed after their parent with `partOf`: never on the stack themselves, they mount in
+  // their parent's body (OverlayParts), so the top, the keys and the count are the parents'.
+  const stack = useMemo(() => listed.filter((o) => o.partOf === undefined && !hiddenHere.has(o.id)), [listed, hiddenHere])
+  const partsByParent = useMemo(() => {
+    const out = new Map<string, OverlayInfo[]>()
+    for (const o of listed) {
+      if (o.partOf === undefined || hiddenHere.has(o.id)) continue
+      out.set(o.partOf, [...(out.get(o.partOf) ?? []), o])
+    }
+    return out
+  }, [listed, hiddenHere])
   const { tabCloseSide } = usePrefs()
   /** The overlay whose toolbar "…" menu is open, if any: a url overlay hides its view meanwhile. */
   const [menuOpenFor, setMenuOpenFor] = useState<string | undefined>(undefined)
   /** The overlay whose Discuss popover is open, if any: the same reason. */
   const [discussOpenFor, setDiscussOpenFor] = useState<string | undefined>(undefined)
+  /**
+   * Page-started Discuss (spec-review S6): the overlay whose page asked last and a number that changes on each
+   * request the gate let through (DiscussButton opens its popover in page mode on a new number).
+   */
+  const [pageDiscuss, setPageDiscuss] = useState<{ overlayId: string; n: number } | undefined>(undefined)
+  /** Which page requests open the popover (the top overlay only, with Discuss, a cooldown and a rate). */
+  const [discussGate] = useState(() => new PageDiscussGate())
   const [terms] = useState(() => new SessionRegistry(overlayIo))
+  /** The overlays of the last list, to forget a gone one's Discuss counts. */
+  const prevIds = useRef<ReadonlySet<string>>(new Set())
   /** Terminal overlays that have a session here, to dispose it once main drops the overlay. */
   const seen = useRef(new Set<string>())
   const onChange = useRef(props.onChange)
@@ -130,6 +151,8 @@ export function OverlayStack(props: {
         setView((prev) => ({ stack: next, order: domOrder(prev.order, next) }))
         // A hide or a copy's state outlives nothing: dropped once main's stack no longer has the overlay.
         const live = new Set(next.map((o) => o.id))
+        for (const o of prevIds.current) if (!live.has(o)) discussGate.forget(o)
+        prevIds.current = live
         setHiddenHere((prev) => ([...prev].every((id) => live.has(id)) ? prev : new Set([...prev].filter((id) => live.has(id)))))
         setCopyStates((prev) =>
           Object.keys(prev).every((id) => live.has(id)) ? prev : Object.fromEntries(Object.entries(prev).filter(([id]) => live.has(id)))
@@ -143,7 +166,7 @@ export function OverlayStack(props: {
       terms.disposeAll()
       known.clear()
     }
-  }, [terms])
+  }, [terms, discussGate])
 
   useEffect(() => {
     const ids = new Set(stack.map((o) => o.id))
@@ -167,6 +190,33 @@ export function OverlayStack(props: {
 
   const top = stack.at(-1)
   const topId = top?.id
+  /** Read when a page asks for Discuss (from its port, outside a render): this view's top and open popover now. */
+  const discussNow = useRef({ topId: undefined as string | undefined, stack, discussOpenFor })
+  useLayoutEffect(() => {
+    discussNow.current = { topId, stack, discussOpenFor }
+  })
+  /**
+   * A page's `discuss.open` (its copy's port, HtmlOverlay): opens core's popover in page mode when the gate lets it,
+   * else the refusal the page is answered with. The asking copy's overlay is named by the shell's own record (the
+   * frame that holds the port), and only the top overlay's counts.
+   */
+  const pageDiscussRequest = (overlayId: string): string | null => {
+    const now = discussNow.current
+    const overlay = now.stack.find((o) => o.id === overlayId)
+    const verdict = discussGate.request(overlayId, {
+      top: overlay !== undefined && now.topId === overlayId,
+      discuss: overlay?.discuss !== undefined,
+      write: shellAllows(viewAccessHint()).write,
+      open: now.discussOpenFor === overlayId
+    })
+    if (verdict === 'already-open') return null
+    if (verdict !== 'open') {
+      console.warn(`page Discuss request ignored: ${verdict}`)
+      return pageDiscussRefusal(verdict)
+    }
+    setPageDiscuss((prev) => ({ overlayId, n: (prev?.n ?? 0) + 1 }))
+    return null
+  }
   const topKind = top?.kind
   const topPerView = top?.perView === true
   const topEl = useRef<HTMLDivElement>(null)
@@ -252,6 +302,8 @@ export function OverlayStack(props: {
                     onOpenChange={(open) =>
                       setDiscussOpenFor((cur) => (open ? overlay.id : cur === overlay.id ? undefined : cur))
                     }
+                    {...(pageDiscuss?.overlayId === overlay.id ? { pageRequest: pageDiscuss.n } : {})}
+                    onPageCancel={() => discussGate.cancelled(overlay.id)}
                   />
                 )
               }
@@ -261,14 +313,45 @@ export function OverlayStack(props: {
                 <TerminalOverlay overlayId={overlay.id} active={active} sessions={terms} />
               )}
               {overlay.kind === 'html' && body?.kind === 'page' && (
-                <HtmlOverlay
-                  overlayId={overlay.id}
-                  title={overlay.title}
-                  src={overlay.src}
-                  perView={overlay.perView === true}
-                  onCopyState={(state) => setCopyStates((prev) => ({ ...prev, [overlay.id]: state }))}
-                  onHidden={() => setHiddenHere((prev) => new Set(prev).add(overlay.id))}
-                />
+                // Always inside OverlayParts, with or without parts: the opener's frame keeps its place when one attaches.
+                <OverlayParts
+                  parent={overlay}
+                  parts={partsByParent.get(overlay.id) ?? []}
+                  onClosePart={closeOverlay}
+                  renderPart={(part) => {
+                    if (part.kind !== 'html') return null
+                    const partCopy = copyStates[part.id]
+                    const partBody = htmlBodyOf(part, bodyShell, partCopy?.refused)
+                    if (partBody.kind === 'note') return <GuestOverlayNote text={partBody.text} />
+                    if (partBody.kind !== 'page') return null
+                    return (
+                      <>
+                        {/* A part's intro has nothing on (overlayIntroOf): no notes, Ask or page-started Discuss. */}
+                        <HtmlOverlay
+                          overlayId={part.id}
+                          title={part.title}
+                          src={part.src}
+                          perView
+                          onCopyState={(state) => setCopyStates((prev) => ({ ...prev, [part.id]: state }))}
+                          onHidden={() => setHiddenHere((prev) => new Set(prev).add(part.id))}
+                          intro={overlayIntroOf(part, viewAccessHint())}
+                        />
+                        <OverlayLoader loading={partCopy?.loading !== false} />
+                      </>
+                    )
+                  }}
+                >
+                  <HtmlOverlay
+                    overlayId={overlay.id}
+                    title={overlay.title}
+                    src={overlay.src}
+                    perView={overlay.perView === true}
+                    onCopyState={(state) => setCopyStates((prev) => ({ ...prev, [overlay.id]: state }))}
+                    onHidden={() => setHiddenHere((prev) => new Set(prev).add(overlay.id))}
+                    {...(overlay.perView === true ? { intro: overlayIntroOf(overlay, viewAccessHint()) } : {})}
+                    onDiscussRequest={() => pageDiscussRequest(overlay.id)}
+                  />
+                </OverlayParts>
               )}
               {body?.kind === 'held' && (
                 <HeldElsewhere device={body.device} className="overlay-held-elsewhere" onTakeOver={() => takeOverlay(overlay.id)} />
