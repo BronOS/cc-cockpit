@@ -197,6 +197,8 @@ test('connect joins a chunked state and passes other messages on', () => {
     ['message', { hello: 1 }],
     ['failed', { message: 'no', retry: true }],
   ])
+  // It says hello once, on connect (holder mode's greeting on an app before overlays.perView).
+  assert.deepEqual(panel.calls.filter((c) => c[0] === 'post'), [['post', { type: 'cc-kit.hello' }]])
 })
 
 test('postLink posts http(s) only', () => {
