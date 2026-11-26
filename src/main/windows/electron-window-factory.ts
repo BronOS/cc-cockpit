@@ -4,7 +4,7 @@
 import { BrowserWindow, screen, type MessagePortMain } from 'electron'
 import { errorText } from '../../shared/error-text'
 import type { ProjectView, WindowBounds } from '../../shared/types'
-import { createWindow, loadRenderer, type WindowLinkOpener } from './create-window'
+import { createWindow, loadRenderer, type OverlayPageLookup, type WindowLinkOpener } from './create-window'
 import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, type Rect } from './window-bounds'
 import { blurCall, projectWindowBackground, projectWindowChrome, type ProjectWindowLook } from './window-chrome'
 import type { WindowCallbacks, WindowFactory, WindowHandle } from './window-manager'
@@ -12,12 +12,15 @@ import type { WindowCallbacks, WindowFactory, WindowHandle } from './window-mana
 export class ElectronWindowFactory implements WindowFactory {
   /**
    * `openLink`: main's openExternal adapter, for the links a window's page asks to open (create-window.ts).
+   * `isOverlayPage`: main's overlays (OverlayManager.isOverlayPage), so a project window opens a link from a plugin
+   * overlay's mail frame (mail-frame-links.ts); absent, none is opened. The picker never gets it (it has no overlays).
    * `server`: server mode's, decided once at start (server-mode.ts): no window this factory makes is
    * ever shown (the hidden page; docs/plans/20261119-server-mode-mac.md decision 1).
    */
   constructor(
     private readonly openLink: WindowLinkOpener,
-    private readonly server = false
+    private readonly server = false,
+    private readonly isOverlayPage?: OverlayPageLookup
   ) {}
 
   createProjectWindow(
@@ -40,7 +43,7 @@ export class ElectronWindowFactory implements WindowFactory {
       title: project.name,
       minWidth: MIN_WINDOW_WIDTH,
       minHeight: MIN_WINDOW_HEIGHT
-    }, this.openLink, { server: this.server })
+    }, this.openLink, { server: this.server, ...(this.isOverlayPage ? { isOverlayPage: this.isOverlayPage } : {}) })
     // Not in server mode: maximize() shows a hidden window. The manager passes no bounds there (it
     // never reads or writes them for the hidden page), so this only keeps a later change from showing it.
     if ((maximized || fullScreen) && !this.server) {

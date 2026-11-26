@@ -20,6 +20,10 @@
 //                                                 scroll-edges-core.ts)
 //   { type: 'cc-plugin.slot', slot: { type } }     the page is a slot frame of that type (sent once, with
 //                                                 the port); from then on `ccPanel.slot` exists
+//   { type: 'cc-plugin.overlay', overlay: { notes, ask, discuss } }   the page is a perView overlay copy
+//                                                 (sent before every port): from then on `ccPanel.overlay`,
+//                                                 and `ccPanel.notes` / `ccPanel.ask` when on, exist, and `$cc`
+//                                                 envelopes on the port are the app's (panel-overlay.ts)
 //   { type: 'cc-plugin.tab', tab: { type }, keys? } the page is a page tab of that type (sent before every
 //                                                 port); from then on `ccPanel.tab` exists. A page tab's
 //                                                 frame is never reloaded to reconnect: a later port
@@ -55,9 +59,15 @@
 //
 // Messages on the port are ONE JSON string each, the format of the host side (host/ctx/ui.ts), with
 // the same 1 MiB cap. A page may post before its port arrived (it usually does, at load): those
-// wait in a bounded queue and go out, in order, once it does.
+// wait in a bounded queue and go out, in order, once it does. A top-level `$cc` key is the app's
+// (shared/overlay-envelope.ts): `post` refuses one, and on an overlay copy's port it is the app's
+// answer or push, never handed to `onMessage`.
 
 import { BASE_SCROLLBAR_CSS, SCROLL_EDGES_CSS } from './scroll-edges-core'
+import { hasEnvelopeKey, isEnvelope, OVERLAY_INTRO_MESSAGE } from '../shared/overlay-envelope'
+import { OverlayCopyClient, type PanelAskApi, type PanelNotesApi, type PanelOverlayApi } from './panel-overlay'
+
+export type { AskEventType, PanelAskApi, PanelNotesApi, PanelOverlayApi } from './panel-overlay'
 
 export const MAX_PANEL_MESSAGE_LENGTH = 1024 * 1024
 /** Posts kept while the page has no port yet; more is a page in a loop, not a page loading. */
@@ -347,6 +357,15 @@ export interface PanelApi {
    * an overlay opened with `ready: 'manual'` (the default loader goes at load); harmless elsewhere.
    */
   ready(): void
+  /**
+   * The overlay's notes (an overlay opened with `notes: { key }`, perView): only in an overlay copy whose
+   * app says so (its intro); undefined in a panel, slot, page tab, any other overlay and on an older app.
+   */
+  readonly notes: PanelNotesApi | undefined
+  /** Ask Claude about the overlay's document: as `notes`, and never for a read-only guest. */
+  readonly ask: PanelAskApi | undefined
+  /** In an overlay copy: `discuss()` opens the app's Discuss popover (when the overlay shows Discuss). */
+  readonly overlay: PanelOverlayApi | undefined
 }
 
 /** The fields of a DOM KeyboardEvent a chord is made of. */
@@ -446,6 +465,8 @@ export class PanelClient {
   private access: 'owner' | 'read' | 'write' = 'owner'
   /** `ccPanel.upload`, made once; the getter shows it only while the view may upload. */
   private readonly uploadApi: PanelUploadApi
+  /** An overlay copy's notes, Ask and Discuss (panel-overlay.ts): nothing until the shell's intro. */
+  private readonly overlayCopy: OverlayCopyClient
   readonly api: PanelApi
 
   /**
@@ -536,6 +557,16 @@ export class PanelClient {
         // Not in a slot or a page tab: the shell takes a panel frame's upload only (a post from those is dropped).
         this.remote && this.access !== 'read' && !this.slotApi && !this.tabApi ? this.uploadApi : undefined
     })
+    this.overlayCopy = new OverlayCopyClient(
+      (text) => this.postText(text),
+      (m) => this.warn(m),
+      () => this.access,
+      MAX_PANEL_MESSAGE_LENGTH
+    )
+    // Getters: the shell's intro comes after the page's script started (with the port).
+    Object.defineProperty(api, 'notes', { enumerable: true, get: (): PanelNotesApi | undefined => this.overlayCopy.notes })
+    Object.defineProperty(api, 'ask', { enumerable: true, get: (): PanelAskApi | undefined => this.overlayCopy.ask })
+    Object.defineProperty(api, 'overlay', { enumerable: true, get: (): PanelOverlayApi | undefined => this.overlayCopy.overlay })
     this.api = Object.freeze(api) as PanelApi
   }
 
@@ -556,6 +587,10 @@ export class PanelClient {
       this.setForwarded((data as { keys?: unknown }).keys)
     }
     else if (type === KEYS_MESSAGE) this.setForwarded((data as { keys?: unknown }).keys)
+    // Only a frame the shell drew as an overlay copy: a slot or a page tab never becomes one.
+    else if (type === OVERLAY_INTRO_MESSAGE) {
+      if (this.slotApi === undefined && this.tabApi === undefined) this.overlayCopy.intro((data as { overlay?: unknown }).overlay)
+    }
     else if (type === THEME_MESSAGE) {
       this.installBaseStyles((data as { mac?: unknown }).mac === true)
       this.applyTheme((data as { theme?: unknown }).theme)
@@ -635,6 +670,8 @@ export class PanelClient {
 
   private connect(port: PortLike): void {
     if (this.port) {
+      // What was asked on the old port gets no answer there.
+      this.overlayCopy.reset('the connection to the app was replaced')
       this.port.onmessage = null
       try {
         this.port.close()
@@ -709,6 +746,7 @@ export class PanelClient {
   }
 
   private post(message: JsonValue): void {
+    if (hasEnvelopeKey(message)) throw new TypeError('post: a message may not have a top-level "$cc" key (it is reserved for the app)')
     let text: string | undefined
     try {
       text = JSON.stringify(message)
@@ -719,15 +757,21 @@ export class PanelClient {
     if (text.length > MAX_PANEL_MESSAGE_LENGTH) {
       throw new RangeError(`post: message of ${text.length} chars exceeds ${MAX_PANEL_MESSAGE_LENGTH}`)
     }
+    this.postText(text)
+  }
+
+  /** One checked JSON text to the port, or to the bounded queue while there is none; false: dropped. */
+  private postText(text: string): boolean {
     if (this.port) {
       this.port.postMessage(text)
-      return
+      return true
     }
     if (this.queue.length >= MAX_QUEUED_MESSAGES) {
       this.warn(`post: not connected and ${MAX_QUEUED_MESSAGES} messages are waiting; this one is dropped`)
-      return
+      return false
     }
     this.queue.push(text)
+    return true
   }
 
   private onConnect(listener: () => void): () => void {
@@ -761,6 +805,12 @@ export class PanelClient {
       parsed = JSON.parse(raw) as JsonValue
     } catch {
       this.warn('dropped a message that is not JSON')
+      return
+    }
+    // An overlay copy's port: an envelope is the app's answer or push (the shell refuses one a page posts, the host
+    // and main one a plugin posts), never the plugin's message.
+    if (this.overlayCopy.isCopy && isEnvelope(parsed)) {
+      this.overlayCopy.receive(parsed as unknown as Record<string, unknown>)
       return
     }
     for (const listener of [...this.listeners]) {

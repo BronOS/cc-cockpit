@@ -6,9 +6,12 @@
 //                                      plugin's own folder, read by main); resolves when it closes
 //   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage,
 //                                      onConnect, onDisconnect, hide, close, focus, onButton,
-//                                      setButtons, onDiscuss, setDiscussPrimary, addSources };
-//                                      open(spec) is start(spec).result
+//                                      setButtons, onDiscuss, setDiscussPrimary, addSources, onAsk,
+//                                      announce }; open(spec) is start(spec).result
 //   overlay.buttons(type, provider)    buttons on every overlay of that type (host/overlay-buttons.ts)
+//   overlay.onAnnounce(kind, fn)       what this window's overlays show (host/overlay-announce.ts)
+//   overlay.part(overlayId, spec)      the plugin's own part beside an announced overlay's page: a
+//                                      handle like start's (design-parts.md §2; main decides)
 //   panels.post / panels.onMessage     over the panel's MessagePort
 //   panels.slots                       slot placements in the panel's column (shared/slots.ts rules,
 //                                      checked here for a fast error and again in main)
@@ -52,7 +55,9 @@ import type {
   JsonValue,
   OverlayButton,
   OverlayHandle,
+  OverlayAnnouncement,
   OverlayInfo,
+  OverlayPartSpec,
   OverlayResult,
   OverlaySpec,
   OverlayTypeButton,
@@ -61,6 +66,8 @@ import type {
   ViewFrom
 } from '../../sdk/types'
 import { MAX_DISCUSS_TEXT } from '../../shared/discuss'
+import { ASK_MAX_DOCUMENT } from '../../shared/ask'
+import { hasEnvelopeKey, HOST_OVERLAY_ANNOUNCE } from '../../shared/overlay-envelope'
 import { MAX_OVERLAY_SOURCES, parseOverlayButtons, parseOverlayExtras } from '../../shared/overlay-buttons'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { parsePanelHeader } from '../../shared/panel-header'
@@ -68,6 +75,8 @@ import { isAppSlotType, parseSlotPlacements } from '../../shared/slots'
 import { errorText } from '../../shared/error-text'
 import { PLUGIN_DESKTOP_VIEW, viewIdOf, type ViewId } from '../../shared/views'
 import type { OverlayButtonRegistry } from '../overlay-buttons'
+import type { OverlayAnnouncements } from '../overlay-announce'
+import { checkAnnounceRefs, isAnnounceKind, MAX_ANNOUNCES_PER_MINUTE, takeAnnounce } from '../../shared/announce'
 import { dispatchInView } from './origin-view'
 import { HostViews, tagAccess, viewFromOf } from './views'
 
@@ -413,6 +422,7 @@ type OverlayFrom = ViewFrom & { copy?: string }
 type OverlayMessageListener = (message: JsonValue, from: OverlayFrom) => void
 type CopyListener = (from: ViewFrom & { copy: string }) => void
 type FromHandler = (from: ViewFrom) => unknown
+type AskHandler = (from: ViewFrom & { copy: string }) => unknown
 
 /** One live copy of a perView overlay, as main announced it (`overlay.connect`). */
 interface LiveCopy {
@@ -441,6 +451,8 @@ interface OverlayLink {
   readonly buttonHandlers: Map<string, Set<FromHandler>>
   /** The Discuss context answerers, in the order added; the first to return text wins (main asks over RPC). */
   readonly discussHandlers: Set<FromHandler>
+  /** The Ask document answerers (perView only), in the order added; the first to return text wins (main asks over RPC). */
+  readonly askHandlers: Set<AskHandler>
   /** perView: the copies main announced and has not taken back, by copy id. */
   readonly copies: Map<string, LiveCopy>
   ended: boolean
@@ -483,6 +495,7 @@ export class OverlayLinks {
       disconnectListeners: new Set(),
       buttonHandlers: new Map(),
       discussHandlers: new Set(),
+      askHandlers: new Set(),
       copies: new Map(),
       ended: false
     }
@@ -502,6 +515,7 @@ export class OverlayLinks {
     link.disconnectListeners.clear()
     link.buttonHandlers.clear()
     link.discussHandlers.clear()
+    link.askHandlers.clear()
     for (const copy of [...link.copies.values()]) copy.release()
     link.copies.clear()
     const key = `${link.pluginId}/${link.handle}`
@@ -585,6 +599,49 @@ export class OverlayLinks {
         throw new TypeError('onDiscuss must answer { text } or null')
       }
       return { text: text.slice(0, MAX_DISCUSS_TEXT) }
+    }
+    return null
+  }
+
+  /**
+   * main's `overlay.ask { pluginId, handle, view?, copy, from }` (a copy's Ask, shared/design.md §5): the handle's
+   * `onAsk` handlers are asked with `from` and the asking `copy`, in that copy's view, in the order they were added,
+   * and the first that answers `{ text }` wins; `null` (or nothing) passes to the next, and all null answers null,
+   * which main reads as a refusal (nothing is spawned). A handler that throws, or answers anything else, fails the
+   * ask (main refuses the question; it also bounds the ask to ASK_CONTEXT_MS). The text is cut here at
+   * ASK_MAX_DOCUMENT, and the answer says so (`cut: true`) so main can add its note; a huge answer never crosses the
+   * port. Fail closed: a non-perView overlay, a copy that is not a live copy of that view, or a bad `from` refuses.
+   */
+  async ask(params: unknown): Promise<{ text: string; cut?: true } | null> {
+    const { pluginId, handle, view: rawView, copy: rawCopy, from: rawFrom } = (params ?? {}) as Record<string, unknown>
+    if (typeof pluginId !== 'string' || typeof handle !== 'string') throw new Error('overlay.ask: bad handle')
+    const view = viewIdOf(rawView)
+    if (rawView !== undefined && view === undefined) throw new Error('overlay.ask: bad view')
+    const from = viewFromOf(rawFrom, view)
+    if (!from) throw new Error('overlay.ask: bad from')
+    const copy = copyIdOf(rawCopy)
+    if (copy === undefined) throw new Error('overlay.ask: bad copy')
+    const link = this.links.get(`${pluginId}/${handle}`)
+    if (!link || link.ended) return null
+    if (!link.perView) throw new Error('overlay.ask: only an overlay shown in every view (overlays.perView) has Ask')
+    // Only a live copy of that view: a stale or unannounced one is nobody (as handleEvent).
+    const live = link.copies.get(copy)
+    if (!live || live.view !== view) throw new Error('overlay.ask: that copy is not live in that view')
+    for (const handler of [...link.askHandlers]) {
+      let answer: unknown
+      try {
+        answer = await dispatchInView(view, () => handler({ ...from, copy }), () => undefined)
+      } catch (err) {
+        this.log(pluginId, `an overlay onAsk handler threw: ${errorText(err)}`)
+        throw err
+      }
+      if (answer === null || answer === undefined) continue
+      const text = (answer as { text?: unknown }).text
+      if (typeof answer !== 'object' || typeof text !== 'string') {
+        this.log(pluginId, 'an overlay onAsk handler answered something other than { text } or null')
+        throw new TypeError('onAsk must answer { text } or null')
+      }
+      return text.length > ASK_MAX_DOCUMENT ? { text: text.slice(0, ASK_MAX_DOCUMENT), cut: true } : { text }
     }
     return null
   }
@@ -723,6 +780,25 @@ function overlayMessageText(message: unknown): string {
   return text
 }
 
+/**
+ * A part's spec (ctx.overlay.part) as an html overlay spec: `file`, and `title` and `ready` when given; checked at the
+ * call site (main checks the html spec again). Never `notes` (a part keeps none, design-parts.md §2): refused.
+ */
+function partSpecOf(spec: unknown): OverlaySpec {
+  if (typeof spec !== 'object' || spec === null) throw new TypeError('overlay.part needs a spec object { file, title?, ready? }')
+  const { file, title, ready } = spec as Record<string, unknown>
+  if ((spec as Record<string, unknown>)['notes'] !== undefined) throw new TypeError('overlay.part: a part keeps no notes')
+  if (typeof file !== 'string' || file === '') throw new TypeError('overlay.part: file must be a plugin-relative path')
+  if (title !== undefined && typeof title !== 'string') throw new TypeError('overlay.part: title must be a string')
+  if (ready !== undefined && ready !== 'load' && ready !== 'manual') throw new TypeError("overlay.part: ready must be 'load' or 'manual'")
+  return {
+    kind: 'html',
+    file,
+    ...(title !== undefined ? { title } : {}),
+    ...(ready !== undefined ? { ready } : {})
+  } as OverlaySpec
+}
+
 export interface UiApiDeps {
   pluginId: string
   /** Panel ids the manifest declares (main sent them in the spec). */
@@ -767,6 +843,11 @@ export interface UiApiDeps {
    * anything else. Absent: every non-empty string is kept, and a list past MAX_OVERLAY_SOURCES throws instead.
    */
   isHostPlugin?(pluginId: string): boolean
+  /**
+   * The window's live announcements and every plugin's onAnnounce listeners (host/overlay-announce.ts). Absent (a
+   * test host): onAnnounce throws, as there is nothing to hear.
+   */
+  announcements?: OverlayAnnouncements
 }
 
 /**
@@ -839,12 +920,19 @@ export function createUiApi(
     return chain.length > 0 ? { via: chain } : {}
   }
 
-  const start = (spec: OverlaySpec): OverlayHandle => {
+  /**
+   * ctx.overlay.start, and ctx.overlay.part with `partOf` (main's id of the parent overlay): the same handle, the
+   * same link; only the request differs (`overlay.part` names the parent and carries no `via`: a part never widens
+   * who may see its parent, design-parts.md §3). Main decides whether the part may attach.
+   */
+  const start = (spec: OverlaySpec, partOf?: string): OverlayHandle => {
     const html = typeof spec === 'object' && spec !== null && (spec as { kind?: unknown }).kind === 'html'
     // Main makes the same call from the same manifest (overlay-manager.ts: html and the opener's perView).
     const perView = html && deps.overlaysPerView === true
     // Read here, synchronously at the plugin's call site, while its service frame is the current one.
-    const openVia = viaNow()
+    const openVia = partOf === undefined ? viaNow() : {}
+    /** handle.announce's minute window: the opener's own refusal past MAX_ANNOUNCES_PER_MINUTE (main counts too). */
+    const announcedAt: number[] = []
     /** Made when the request goes out (below); stays undefined when the call is refused first. */
     let link: OverlayLink | undefined
     const result = deps.guardAsync(async () => {
@@ -858,8 +946,10 @@ export function createUiApi(
         // running host (reload, unload) resolves it as dismissed (main closes it on `plugin.disposed`). The request goes out
         // synchronously, inside start(), so a post right after start() reaches main behind it.
         return (await deps.call(
-          'overlay.open',
-          { pluginId, spec, handle: link.handle, ...openVia },
+          partOf === undefined ? 'overlay.open' : 'overlay.part',
+          partOf === undefined
+            ? { pluginId, spec, handle: link.handle, ...openVia }
+            : { pluginId, overlayId: partOf, spec, handle: link.handle },
           { timeoutMs: Infinity }
         )) as OverlayResult
       } finally {
@@ -903,15 +993,34 @@ export function createUiApi(
       // 00 contract stubs (shared/tasks/00-contract.md): the shapes are frozen in sdk/types.ts; task 05 replaces them.
       // Inert, not throwing: main has no Ask and no parts in this build, so a handler is never asked and an
       // announcement has no listener; a plugin that feature-detects them keeps working.
-      onAsk: (handler: unknown): Disposer => {
+      // Ask's document (shared/design.md §5): main asks over RPC (OverlayLinks.ask) for the asking copy. Only a perView
+      // overlay has Ask (main refuses any other); accepted on any html overlay, as onConnect, so one plugin's code runs
+      // on either kind.
+      onAsk: (handler: (from: ViewFrom & { copy: string }) => unknown): Disposer => {
+        htmlOnly('onAsk')
         if (typeof handler !== 'function') throw new TypeError('overlay onAsk needs a function')
-        return () => {}
+        return listen((l) => l.askHandlers, (from: ViewFrom & { copy: string }) => handler(from))
       },
-      announce: (): void => {},
+      // What this overlay shows, for other plugins' onAnnounce (design-parts.md §1): checked here, refused past the
+      // caps or the minute budget, never cut; main records it as the opener's consent to parts and tells the
+      // window's listeners. Fire and forget like setButtons; held in main until the overlay exists.
+      announce: (announcement: { kind: string; refs: readonly string[] }): void => {
+        htmlOnly('announce')
+        if (typeof announcement !== 'object' || announcement === null) throw new TypeError('overlay announce needs { kind, refs }')
+        const { kind } = announcement
+        if (!isAnnounceKind(kind)) throw new TypeError('overlay announce: kind must be 1 to 40 characters of a-z, 0-9, . and -')
+        const refs = checkAnnounceRefs(announcement.refs, 'overlay announce')
+        if (!link || link.ended) return
+        deps.alive()
+        if (!takeAnnounce(announcedAt)) throw new RangeError(`overlay announce: more than ${MAX_ANNOUNCES_PER_MINUTE} a minute`)
+        send(HOST_OVERLAY_ANNOUNCE, { pluginId, handle: link.handle, kind, refs })
+      },
       post: (message: JsonValue, options?: { copy?: string }): void => {
         htmlOnly('post')
         // Checked even when the overlay ended: a bad call fails where it is made.
         const copy = copyOption(options, 'post', false)
+        // `$cc` is core's (shared/overlay-envelope.ts): a post carrying it would pass for main's notes or Ask on the page.
+        if (hasEnvelopeKey(message)) throw new TypeError('overlay post: a message may not have a top-level "$cc" key (it is reserved for the app)')
         if (!link || link.ended) return
         deps.alive()
         overlayMessageText(message)
@@ -1099,14 +1208,25 @@ export function createUiApi(
     overlay: Object.freeze({
       open: (spec: OverlaySpec): Promise<OverlayResult> => start(spec).result,
       start,
-      // 00 contract stubs (sdk/types.ts); task 05 replaces them. No announcement is ever heard (inert); a part is
-      // refused, as main's attachPart refuses it in this build.
-      onAnnounce: (_kind: string, listener: unknown): Disposer => {
-        if (typeof listener !== 'function') throw new TypeError('overlay.onAnnounce needs a function')
-        return () => {}
+      // What this window's overlays show (host/overlay-announce.ts): any plugin of the host may listen; the refs are
+      // the opener's data, so a listener checks them before acting.
+      onAnnounce: (kind: string, listener: (announcement: OverlayAnnouncement) => unknown): Disposer => {
+        deps.alive()
+        if (!deps.announcements) throw new Error('overlay.onAnnounce is not available in this host')
+        return deps.announcements.listen(pluginId, kind, listener)
       },
-      part: (): OverlayHandle => {
-        throw new Error('overlay.part: parts are not available in this build')
+      // The plugin's own part beside an announced overlay (design-parts.md §2): a perView html overlay of its own with
+      // a parent. The spec is checked here; whether it may attach (announced, not a part, one per plugin, at most
+      // two) is main's alone, and its refusal rejects `result`.
+      part: (overlayId: string, spec: OverlayPartSpec): OverlayHandle => {
+        deps.alive()
+        if (typeof overlayId !== 'string' || overlayId === '' || overlayId.length > MAX_COPY_ID_LENGTH) {
+          throw new TypeError('overlay.part: overlayId must be the overlay.id an onAnnounce listener got')
+        }
+        if (deps.overlaysPerView !== true) {
+          throw new Error('overlay.part: a part needs "overlays": { "perView": true } in plugin.json')
+        }
+        return start(partSpecOf(spec), overlayId)
       },
       buttons: (type: string, provider: (o: OverlayInfo) => OverlayTypeButton[] | Promise<OverlayTypeButton[]>): Disposer => {
         deps.alive()

@@ -959,7 +959,10 @@ function start(server: boolean): void {
     // `server`: the factory never shows a window (the hidden page) and unthrottles its page (create-window.ts).
     factory: new ElectronWindowFactory(
       (url, windowId) => openExternal(url, { windowId, viewId: desktopViewId(windowId) }, { page: true }),
-      server
+      server,
+      // The mail-frame rule (mail-frame-links.ts): a srcdoc child of an open html overlay's page. `overlays` is made
+      // further down; this runs only when a page opens a link.
+      (windowId, url) => overlays.isOverlayPage(windowId, url)
     ),
     registry,
     platform: process.platform,

@@ -2174,6 +2174,138 @@ describe('overlay copies and who acted', () => {
     expect(of('overlay.connect').map((p) => (p as { copy: string }).copy)).toEqual([a])
     expect(of('overlay.disconnect')).toEqual([{ pluginId: 'a.one', handle: H, copy: a, view: 'web:3', from: { view: 'web:3', access: 'owner' } }])
   })
+
+  it("task 05: the channel's onAsk asks the host with the copy and who asked", async () => {
+    const { open, connect, hostCalls, channel } = pvHost()
+    const id = await open()
+    const web = connect(id, 'web:3')
+    await expect(channel().onAsk!('web:3', web)).resolves.toBeNull()
+    expect(hostCalls.at(-1)).toEqual({
+      method: 'overlay.ask',
+      params: { pluginId: 'a.one', handle: H, view: 'web:3', copy: web, from: { view: 'web:3', access: 'owner' } }
+    })
+    // A view the guest store no longer knows asks nothing.
+    revoked.add('web:3')
+    await expect(channel().onAsk!('web:3', web)).rejects.toThrow(/gone/)
+    expect(hostCalls.filter((c) => c.method === 'overlay.ask')).toHaveLength(1)
+  })
+
+  it("ccPanel.post throws on $cc; handle.post and host-api's overlay post refuse it", async () => {
+    // host-api's side (the page's in panel-core.test.ts, the host's handle.post in ctx-ui.test.ts).
+    const { m, call, open } = pvHost()
+    const id = await open()
+    const posted: string[] = []
+    deps.postOverlay = (_w, _id, text) => {
+      posted.push(text)
+      return true
+    }
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: { $cc: 1, ev: 'notes', seq: 99, data: {} } })).rejects.toThrow(/\$cc/)
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: { $cc: 1 }, copy: 'c1' })).rejects.toThrow(/\$cc/)
+    expect(posted).toEqual([])
+    await call('overlay.post', { pluginId: 'a.one', handle: H, message: { inner: { $cc: 1 } } })
+    expect(posted).toEqual(['{"inner":{"$cc":1}}'])
+    expect(m.infos(WIN_A).map((i) => i.id)).toEqual([id])
+  })
+
+  it('task 05: overlay.announce goes to the window\'s host with main\'s record; refused without the dep, past 5 a minute or checks; the end unannounces', async () => {
+    const { m, call, open, of } = pvHost()
+    const id = await open()
+    const ann = (extra: Record<string, unknown> = {}): Promise<unknown> =>
+      call('overlay.announce', { pluginId: 'a.one', handle: H, kind: 'mail.issues', refs: ['P-1'], ...extra })
+    await expect(ann()).rejects.toThrow(/not available/)
+    const asked: Array<[number, string]> = []
+    deps.announceOverlay = (windowId, overlayId) => {
+      asked.push([windowId, overlayId])
+      return overlayId === id ? { title: 'Re: P-1', type: { name: 'gmail.thread', data: { id: 't1' } } } : undefined
+    }
+    await expect(ann({ kind: 'Bad' })).rejects.toThrow(/kind/)
+    await expect(ann({ refs: Array.from({ length: 21 }, () => 'P') })).rejects.toThrow(/20/)
+    await expect(ann({ refs: ['x'.repeat(201)] })).rejects.toThrow(/200/)
+    // Another plugin of the host, which did not open the overlay, names nothing with this handle.
+    await expect(call('overlay.announce', { pluginId: 'a.two', handle: H, kind: 'mail', refs: [] })).resolves.toBe(false)
+    await expect(ann()).resolves.toBe(true)
+    expect(asked).toEqual([[WIN_A, id]])
+    expect(of('overlay.announced')).toEqual([
+      { overlay: { id, opener: 'a.one', title: 'Re: P-1', type: { name: 'gmail.thread', data: { id: 't1' } } }, kind: 'mail.issues', refs: ['P-1'] }
+    ])
+    for (let i = 0; i < 4; i++) await ann()
+    await expect(ann()).rejects.toThrow(/5 a minute/)
+    m.close(WIN_A, id)
+    await vi.waitFor(() => expect(of('overlay.unannounced')).toEqual([{ id }]))
+  })
+
+  it('task 05: overlay.part is refused without a handle, for a non-perView plugin, with via and without the dep', async () => {
+    const { call, open } = pvHost()
+    const id = await open()
+    const part = (extra: Record<string, unknown> = {}): Promise<unknown> =>
+      call('overlay.part', { pluginId: 'a.one', overlayId: id, spec: { kind: 'html', file: 'page.html' }, handle: H2, ...extra })
+    await expect(part()).rejects.toThrow(/not available/)
+    await expect(part({ handle: undefined })).rejects.toThrow(/needs a handle/)
+    await expect(part({ overlayId: '' })).rejects.toThrow(/overlay id/)
+    await expect(part({ via: ['a.two'] })).rejects.toThrow(/no via/)
+    await expect(part({ spec: { kind: 'url', url: 'https://example.com/' } })).rejects.toThrow(/html/)
+    await expect(part({ pluginId: 'a.two' })).rejects.toThrow(/perView/)
+    const attached: unknown[] = []
+    deps.attachPart = (windowId, parentId, pluginId, spec) => {
+      attached.push([windowId, parentId, pluginId, spec])
+      return Promise.reject(new Error('overlay.part: not announced'))
+    }
+    await expect(part()).rejects.toThrow('not announced')
+    expect(attached).toEqual([[WIN_A, id, 'a.one', expect.objectContaining({ kind: 'html', src: 'cc-plugin://a.one/page.html' })]])
+  })
+
+  it('ctx.notes reaches only its own plugin\'s namespace', async () => {
+    const got: unknown[] = []
+    let listener: ((c: { projectId: string; pluginId: string; key: string; seq: number }) => void) | undefined
+    const answer = { seq: 1 }
+    deps.notes = {
+      list: (...a: unknown[]) => (got.push(['list', ...a]), { global: '', notes: [], rev: 0, seq: 1 }),
+      add: (...a: unknown[]) => (got.push(['add', ...a]), answer),
+      change: (...a: unknown[]) => (got.push(['change', ...a]), answer),
+      remove: (...a: unknown[]) => (got.push(['remove', ...a]), answer),
+      setGlobal: (...a: unknown[]) => (got.push(['setGlobal', ...a]), answer),
+      onChange: (l: typeof listener) => {
+        listener = l
+        return () => {
+          listener = undefined
+        }
+      }
+    } as unknown as NonNullable<HostApiDeps['notes']>
+    const { api, call, of } = pvHost()
+    await call('notes.list', { pluginId: 'a.one', key: 'jira:P-1' })
+    await call('notes.add', { pluginId: 'a.one', key: 'jira:P-1', quote: 'q', text: 't', anchor: { line: 2 }, author: { person: 'Mallory' } })
+    await call('notes.change', { pluginId: 'a.two', key: 'k', id: 'n1', text: 'u' })
+    await call('notes.remove', { pluginId: 'a.one', key: 'k', id: 'n1' })
+    await call('notes.setGlobal', { pluginId: 'a.one', key: 'k', text: 'g' })
+    // The project is the host's scope, the plugin one it runs, the author main's: nothing from the payload.
+    expect(got).toEqual([
+      ['list', A, 'a.one', 'jira:P-1'],
+      ['add', A, 'a.one', 'jira:P-1', { quote: 'q', anchor: { line: 2 }, text: 't' }, { plugin: true }],
+      ['change', A, 'a.two', 'k', 'n1', 'u'],
+      ['remove', A, 'a.one', 'k', 'n1'],
+      ['setGlobal', A, 'a.one', 'k', 'g']
+    ])
+    // Fail closed: a plugin this host does not run, no plugin, a bad key, a value past its cap.
+    await expect(call('notes.list', { pluginId: 'a.three', key: 'k' })).rejects.toThrow()
+    await expect(call('notes.list', { key: 'k' })).rejects.toThrow()
+    await expect(call('notes.list', { pluginId: 'a.one', key: 'has space' })).rejects.toThrow(/key/)
+    await expect(call('notes.add', { pluginId: 'a.one', key: 'k', quote: 'q', text: 'x'.repeat(4001) })).rejects.toThrow(/exceeds/)
+    await expect(call('notes.add', { pluginId: 'a.one', key: 'k', quote: 'q', text: 't', anchor: 'a'.repeat(2048) })).rejects.toThrow(/anchor/)
+    expect(got).toHaveLength(5)
+    // The service's change reaches this host for this project's keys of its own plugins only.
+    listener!({ projectId: A, pluginId: 'a.one', key: 'jira:P-1', seq: 2 })
+    listener!({ projectId: B, pluginId: 'a.one', key: 'jira:P-1', seq: 3 })
+    listener!({ projectId: A, pluginId: 'a.three', key: 'k', seq: 4 })
+    expect(of('notes.changed')).toEqual([{ pluginId: 'a.one', key: 'jira:P-1' }])
+    // Revoked: unsubscribed, and every call refused.
+    api.revoke()
+    expect(listener).toBeUndefined()
+  })
+
+  it('ctx.notes without the service is refused', async () => {
+    const { call } = pvHost()
+    await expect(call('notes.list', { pluginId: 'a.one', key: 'k' })).rejects.toThrow(/not available/)
+  })
 })
 
 // design-next §4.1: scope 'all' with the manifest's declaration, focus any window's tab, close and

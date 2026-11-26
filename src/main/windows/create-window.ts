@@ -10,8 +10,14 @@ function builtinBackground(kind: 'light' | 'dark'): string {
   return BUILTIN_THEMES.find((t) => t.kind === kind)?.vars['--cc-bg'] ?? (kind === 'dark' ? '#1a1817' : '#faf8f6')
 }
 
-/** A link a window's page asked to open (the reviewer's mail frame): main's openExternal adapter for that window. */
+/** A link a window's page asked to open (a plugin overlay's mail frame): main's openExternal adapter for that window. */
 export type WindowLinkOpener = (url: string, windowId: number) => Promise<void>
+
+/**
+ * Whether a URL is the page of an open html overlay a plugin opened in that window (OverlayManager.isOverlayPage):
+ * the mail-frame rule's check (mail-frame-links.ts). Absent: no frame of the window opens a link.
+ */
+export type OverlayPageLookup = (windowId: number, url: string) => boolean
 
 /**
  * The only place a BrowserWindow is constructed. Every window (project picker, project windows)
@@ -21,9 +27,9 @@ export type WindowLinkOpener = (url: string, windowId: number) => Promise<void>
  * - navigation away from the app page is denied and window.open is denied: a link inside a
  *   terminal or a plugin panel must never turn the shell window into a browser. Opening a link in
  *   the system browser is an explicit request to main (`app.openExternal`, ctx.openExternal), not a
- *   navigation. One exception, still never a window: a link clicked in the reviewer's Original view
- *   of a mail (a frame with no script, so a popup request is its only signal) has its URL checked
- *   and handed to the system browser (mail-frame-links.ts).
+ *   navigation. One exception, still never a window: a link clicked in a mail frame of a plugin's
+ *   html overlay (the Original view of a mail: a frame with no script, so a popup request is its
+ *   only signal) has its URL checked and handed to the system browser (mail-frame-links.ts).
  *
  * `server` (server mode, design-web.md §9.8; docs/plans/20261119-server-mode-mac.md decision 1): the
  * window is the hidden page and is never shown, on Linux as on macOS, where there is no Ozone headless
@@ -34,7 +40,7 @@ export type WindowLinkOpener = (url: string, windowId: number) => Promise<void>
 export function createWindow(
   options: BrowserWindowConstructorOptions,
   openLink: WindowLinkOpener,
-  { server = false }: { server?: boolean } = {}
+  { server = false, isOverlayPage }: { server?: boolean; isOverlayPage?: OverlayPageLookup } = {}
 ): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
@@ -87,13 +93,17 @@ export function createWindow(
     if (event.initiator && event.initiator.parent === null) return
     if (!sameOrigin(event.frame?.url, event.url)) event.preventDefault()
   })
-  // Every request is denied as a window. The reviewer's mail frame (the focused frame at the time;
-  // Electron's details name no frame) gets its link opened in the system browser after the
-  // ctx.openExternal checks; Chromium asks only after a real click or Enter (user activation).
+  // Every request is denied as a window. A plugin overlay's mail frame (the focused frame at the time;
+  // Electron's details name no frame; the overlay page checked against main's own record of this
+  // window's overlays) gets its link opened in the system browser after the ctx.openExternal checks;
+  // Chromium asks only after a real click or Enter (user activation).
   // `openLink` is main's openExternal adapter (external/open-external.ts), given this window's id: it
   // looks shell.openExternal up at each call, so the e2e recorder replacing it is seen.
   const windowId = win.id
-  const onWindowOpen = windowOpenHandler({ openExternal: (url) => openLink(url, windowId) })
+  const onWindowOpen = windowOpenHandler({
+    openExternal: (url) => openLink(url, windowId),
+    ...(isOverlayPage ? { isOverlayPage: (url: string) => isOverlayPage(windowId, url) } : {})
+  })
   win.webContents.setWindowOpenHandler((details) => onWindowOpen(details, win.webContents.focusedFrame))
   // Never in server mode: nobody is at the screen, and on macOS the hidden page would appear on it.
   if (!server) win.once('ready-to-show', () => win.show())
