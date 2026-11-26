@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { OverlayManager } from '../../src/main/overlays/overlay-manager'
+import { FakePtyBackend } from '../fakes/fake-pty-backend'
 import {
   askVisible,
   guestByOverlay,
@@ -401,5 +403,39 @@ describe('split groups (G, D-16)', () => {
     expect(one.order).toEqual(['t1', 'plain'])
     const all = guestGroups(snapshot, ctx({ tabVisible: () => true }))
     expect(all).toEqual(snapshot)
+  })
+})
+
+
+// Task 14 (shared/design-parts.md §3): a part is its own overlay, and the wiring's overlayVisible is the manager's
+// visibleTo, which needs the parent visible and the part's plugin visible.
+describe('parts in the guest list', () => {
+  it('a guest not shown the part plugin lists the parent without the part', () => {
+    const m = new OverlayManager({
+      ownerView: () => true,
+      backend: new FakePtyBackend(),
+      views: { create: () => ({ setBounds: () => {}, setVisible: () => {}, focus: () => {}, destroy: () => {} }), focusWindow: () => {} },
+      isWindowOpen: () => true,
+      env: () => ({}),
+      emit: () => {},
+      commandForChord: () => undefined,
+      log: () => {}
+    })
+    const channel = { onMessage: () => {} }
+    void m.open(1, { kind: 'html', src: 'cc-plugin://bronos.gmail/t.html' }, 'plugin bronos.gmail', undefined, channel, 'bronos.gmail', undefined, undefined, { perView: true })
+    const parent = m.infos(1)[0]!.id
+    m.markAnnounced(1, parent)
+    m.attachPart(1, parent, 'bronos.jira', { kind: 'html', src: 'cc-plugin://bronos.jira/part.html' }, channel, { perView: true, inHost: true }).catch(() => {})
+    const part = m.partsOf(1, parent)[0]!.overlayId
+    const listFor = (plugins: string[]): string[] => {
+      const shown = new Set(plugins)
+      const pluginVisible = (p: string): boolean => shown.has(p)
+      return guestOverlays(m.infos(1), ctx({ pluginVisible, overlayVisible: (o) => m.visibleTo(1, o, () => false, pluginVisible) })).map((o) => o.id)
+    }
+    expect(listFor(['bronos.gmail'])).toEqual([parent])
+    expect(listFor(['bronos.gmail', 'bronos.jira'])).toEqual([parent, part])
+    // Not shown the opener: neither, even with the part's plugin shown.
+    expect(listFor(['bronos.jira'])).toEqual([])
+    m.disposeAll()
   })
 })

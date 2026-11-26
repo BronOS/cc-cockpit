@@ -10,6 +10,8 @@ exports.activate = (ctx) => {
     const doc = ctx.overlay.start({ kind: 'html', file: 'doc.html', title: 'Overlay notes', notes: { key: KEY } })
     doc.onConnect((from) => doc.post({ doc: DOC, access: from.access }, { copy: from.copy }))
     doc.onDiscuss(() => ({ text: DOC }))
+    // Task 14: consent to parts; the overlay-part fixture hears this and attaches its part.
+    if (typeof doc.announce === 'function') doc.announce({ kind: 'fixture.doc', refs: ['doc:fixture-1'] })
     if (typeof doc.onAsk === 'function') doc.onAsk(() => ({ text: DOC }))
     doc.onMessage((message) => ctx.notify(`heard ${JSON.stringify(message)}`))
     doc.result.then((result) => ctx.notify(`doc ${JSON.stringify(result)}`)).catch((err) => ctx.notify(`doc failed: ${err.message}`))

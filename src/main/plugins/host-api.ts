@@ -678,6 +678,8 @@ export interface HostApiDeps {
   /**
    * ctx.overlay.part (design-parts.md §2): OverlayManager.attachPart, which decides (announced, not a part, perView,
    * one per plugin, at most two) and rejects a refused part before it shows anything. Without it parts are refused.
+   * `inHost`: the part plugin is one this host runs (`plugin()` checked it). `peerGone`: the asking plugin copy's
+   * signal, as for an open, so the plugin's dispose dismisses its parts.
    */
   attachPart?(
     windowId: number,
@@ -685,7 +687,8 @@ export interface HostApiDeps {
     pluginId: string,
     spec: unknown,
     channel: OverlayChannel,
-    options: { perView?: boolean; via?: Iterable<string> }
+    options: { perView?: boolean; inHost?: boolean },
+    peerGone?: AbortSignal
   ): Promise<OverlayResult>
   /** OverlayManager.hideCopy (handle.hide). Without it the request is refused. */
   hideOverlayCopy?(windowId: number, overlayId: string, copy: string): boolean
@@ -2555,7 +2558,7 @@ export class HostApi {
       try {
         result =
           parentId !== undefined && channel !== undefined && this.deps.attachPart
-            ? await this.deps.attachPart(this.scope.windowId, parentId, plugin.id, managerSpec, channel, { perView, via })
+            ? await this.deps.attachPart(this.scope.windowId, parentId, plugin.id, managerSpec, channel, { perView, inHost: true }, peerGone)
             : await this.deps.openOverlay(
                 this.scope.windowId,
                 managerSpec,

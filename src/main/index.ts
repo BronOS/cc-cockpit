@@ -2098,6 +2098,12 @@ function start(server: boolean): void {
       openOverlay: (windowId, spec, opener, peerGone, channel, pluginId, view, options) =>
         openOverlay(windowId, spec, opener, peerGone, channel, pluginId, view, undefined, options),
       postOverlay: (windowId, overlayId, text, options) => overlays.post(windowId, overlayId, text, options),
+      // Parts (design-parts.md §1-§2): an announce is the opener's consent (markAnnounced), heard with main's own record
+      // of the overlay; a part is the manager's to attach or refuse.
+      announceOverlay: (windowId, overlayId) =>
+        overlays.markAnnounced(windowId, overlayId) ? overlays.announceRecord(windowId, overlayId) : undefined,
+      attachPart: (windowId, parentId, pluginId, spec, channel, options, peerGone) =>
+        overlays.attachPart(windowId, parentId, pluginId, spec, channel, options, peerGone),
       hideOverlayCopy: (windowId, overlayId, copy) => overlays.hideCopy(windowId, overlayId, copy),
       // Provenance (docs/design-overlay-views.md §4): HostApi checked the ids; the manager grows `via` and
       // releases guest copies that may no longer see the overlay before the call's content is delivered.

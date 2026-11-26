@@ -2246,12 +2246,17 @@ describe('overlay copies and who acted', () => {
     await expect(part({ spec: { kind: 'url', url: 'https://example.com/' } })).rejects.toThrow(/html/)
     await expect(part({ pluginId: 'a.two' })).rejects.toThrow(/perView/)
     const attached: unknown[] = []
-    deps.attachPart = (windowId, parentId, pluginId, spec) => {
-      attached.push([windowId, parentId, pluginId, spec])
+    let signal: AbortSignal | undefined
+    deps.attachPart = (windowId, parentId, pluginId, spec, _channel, options, peerGone) => {
+      attached.push([windowId, parentId, pluginId, spec, options])
+      signal = peerGone
       return Promise.reject(new Error('overlay.part: not announced'))
     }
     await expect(part()).rejects.toThrow('not announced')
-    expect(attached).toEqual([[WIN_A, id, 'a.one', expect.objectContaining({ kind: 'html', src: 'cc-plugin://a.one/page.html' })]])
+    // host-api's word on the plugin (one this host runs, perView) and the plugin copy's signal (a dispose ends its parts).
+    expect(attached).toEqual([[WIN_A, id, 'a.one', expect.objectContaining({ kind: 'html', src: 'cc-plugin://a.one/page.html' }), { perView: true, inHost: true }]])
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal?.aborted).toBe(false)
   })
 
   it('ctx.notes reaches only its own plugin\'s namespace', async () => {
