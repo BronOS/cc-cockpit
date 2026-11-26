@@ -278,6 +278,10 @@ import type {
   SessionSummary
 } from '../../sdk/types'
 import { DISCUSS_ASK_MS } from '../../shared/discuss'
+import { ASK_CONTEXT_MS } from '../../shared/ask'
+import { isNotesKey, MAX_GLOBAL_NOTE, MAX_NOTE_ANCHOR_JSON, MAX_NOTE_QUOTE, MAX_NOTE_TEXT } from '../../shared/notes-limits'
+import { hasEnvelopeKey, HOST_OVERLAY_ANNOUNCED, HOST_OVERLAY_UNANNOUNCED } from '../../shared/overlay-envelope'
+import { checkAnnounceRefs, isAnnounceKind, MAX_ANNOUNCES_PER_MINUTE, takeAnnounce } from '../../shared/announce'
 import { errorText } from '../../shared/error-text'
 import type { PanelBadge, PanelHeaderInfo, TabInfo } from '../../shared/ipc'
 import { isPanelHeaderIcon, parsePanelHeader, type CleanPanelHeader } from '../../shared/panel-header'
@@ -665,6 +669,24 @@ export interface HostApiDeps {
    * a perView overlay's copy (the manager drops a gone one).
    */
   postOverlay?(windowId: number, overlayId: string, text: string, options?: { copy?: string }): boolean
+  /**
+   * handle.announce (design-parts.md §1): record the opener's consent to parts (OverlayManager.markAnnounced) and
+   * answer main's own record of the overlay (title, type) for the window's onAnnounce listeners; undefined when it is
+   * gone or not this window's (nothing is announced). Without it announce is refused.
+   */
+  announceOverlay?(windowId: number, overlayId: string): { title: string; type?: { name: string; data: unknown } } | undefined
+  /**
+   * ctx.overlay.part (design-parts.md §2): OverlayManager.attachPart, which decides (announced, not a part, perView,
+   * one per plugin, at most two) and rejects a refused part before it shows anything. Without it parts are refused.
+   */
+  attachPart?(
+    windowId: number,
+    parentId: string,
+    pluginId: string,
+    spec: unknown,
+    channel: OverlayChannel,
+    options: { perView?: boolean; via?: Iterable<string> }
+  ): Promise<OverlayResult>
   /** OverlayManager.hideCopy (handle.hide). Without it the request is refused. */
   hideOverlayCopy?(windowId: number, overlayId: string, copy: string): boolean
   /**
@@ -861,6 +883,10 @@ export const TYPE_BUTTONS_ASK_MS = 2_000
 
 /** A host-chosen overlay handle: a UUID in practice; short and plain so it cannot bloat a key. */
 const HANDLE_RE = /^[A-Za-z0-9-]{1,64}$/
+/** Longest overlay id a part may name (main mints short ones); anything longer names nothing. */
+const MAX_OVERLAY_ID_LENGTH = 100
+/** A note id main mints is short; anything longer names no note. */
+const MAX_NOTE_ID_LENGTH = 100
 
 /** One ctx.overlay.start of this host: its overlay once created, and what waits for that. */
 interface OverlayLink {
@@ -876,6 +902,12 @@ interface OverlayLink {
   discuss?: boolean
   /** setDiscussPrimary() came before the overlay existed: applied as soon as it does (the last one). */
   discussPrimary?: boolean
+  /** announce() came before the overlay existed: applied as soon as it does (the last one). */
+  announce?: { kind: string; refs: string[] }
+  /** The window's listeners were told of an announcement of this overlay: `overlay.unannounced` goes at its end. */
+  announced?: boolean
+  /** When the last announces were taken (main's own minute budget, MAX_ANNOUNCES_PER_MINUTE). */
+  announceTimes: number[]
   /** The opener's manifest says `overlays.perView`: posts may name a copy, and `hide` is offered. */
   perView: boolean
   /**
@@ -1066,6 +1098,8 @@ export class HostApi {
   private readonly unsubscribeRateLimits: (() => void) | undefined
   /** The machine list subscription (absent without the dep). */
   private readonly unsubscribeMachines: (() => void) | undefined
+  /** The Notes service's change feed (absent without the dep): `notes.changed` to this host. */
+  private readonly unsubscribeNotes: (() => void) | undefined
   private readonly interval: number
   private readonly log: (message: string) => void
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -1091,6 +1125,7 @@ export class HostApi {
     this.unsubscribe = deps.onSessionsChange((change) => this.sessionsChanged(change))
     this.unsubscribeRateLimits = deps.onRateLimitsChange?.((rateLimits) => this.rateLimitsChanged(rateLimits))
     this.unsubscribeMachines = deps.onMachinesChange?.((machines) => this.machinesChanged(machines))
+    this.unsubscribeNotes = deps.notes?.onChange((change) => this.notesChanged(change))
   }
 
   /** The RPC methods, to merge into the host's endpoint handlers. */
@@ -1128,6 +1163,13 @@ export class HostApi {
       'overlay.setButtons': (params) => this.overlaySetButtons(params),
       'overlay.discussable': (params) => this.overlayDiscussable(params),
       'overlay.discussPrimary': (params) => this.overlayDiscussPrimary(params),
+      'overlay.announce': (params) => this.overlayAnnounce(params),
+      'overlay.part': (params, meta) => this.overlay(params, meta, true),
+      'notes.list': (params) => this.notesCall(params, 'notes.list'),
+      'notes.add': (params) => this.notesCall(params, 'notes.add'),
+      'notes.change': (params) => this.notesCall(params, 'notes.change'),
+      'notes.remove': (params) => this.notesCall(params, 'notes.remove'),
+      'notes.setGlobal': (params) => this.notesCall(params, 'notes.setGlobal'),
       'secrets.get': (params) => this.secretsGet(params),
       'secrets.set': (params) => this.secretsSet(params),
       'secrets.delete': (params) => this.secretsDelete(params),
@@ -1338,6 +1380,7 @@ export class HostApi {
     this.unsubscribe()
     this.unsubscribeRateLimits?.()
     this.unsubscribeMachines?.()
+    this.unsubscribeNotes?.()
     // Each pending sign-in closes its loopback and rejects (its finally drops the entry).
     for (const controller of this.signIns.values()) controller.abort()
     if (this.timer !== undefined) clearTimeout(this.timer)
@@ -2364,13 +2407,30 @@ export class HostApi {
     return null
   }
 
-  private async overlay(params: unknown, meta?: RpcMeta): Promise<PluginOverlayResult> {
+  /**
+   * ctx.overlay.start, and with `part` ctx.overlay.part (design-parts.md §2): the plugin's own perView html overlay
+   * drawn beside overlay `overlayId` of this window. The same link and channel either way, so every per-overlay rule
+   * (copies, onConnect, hide, Discuss and Ask) works on the part's own id; a part carries no `via` (it never widens
+   * who may see its parent) and the manager's attachPart decides whether it may attach.
+   */
+  private async overlay(params: unknown, meta?: RpcMeta, part = false): Promise<PluginOverlayResult> {
     this.alive()
+    const what = part ? 'overlay.part' : 'overlay.open'
     // Read now, before any await: the view is checked against the window as it is at the request.
     const view = this.originOf(meta)
-    const { pluginId, spec, handle, via: rawVia } = (params ?? {}) as Record<string, unknown>
-    const plugin = this.plugin(pluginId, 'overlay.open')
-    const via = new Set(this.overlaySources(rawVia, 'overlay.open'))
+    const { pluginId, spec, handle, via: rawVia, overlayId: rawParent } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, what)
+    let parentId: string | undefined
+    if (part) {
+      if (handle === undefined) throw new Error('overlay.part: needs a handle')
+      if (typeof rawParent !== 'string' || rawParent === '' || rawParent.length > MAX_OVERLAY_ID_LENGTH) throw new Error('overlay.part: overlayId must be an overlay id')
+      if (rawVia !== undefined) throw new Error('overlay.part: a part carries no via')
+      if (plugin.overlaysPerView !== true) throw new Error('overlay.part: a part needs "overlays": { "perView": true } in plugin.json')
+      if ((spec as { kind?: unknown } | null)?.kind !== 'html') throw new Error('overlay.part: a part is an html page')
+      if (!this.deps.attachPart) throw new Error('overlay.part: parts are not available')
+      parentId = rawParent
+    }
+    const via = new Set(this.overlaySources(rawVia, what))
     if (handle !== undefined && (typeof handle !== 'string' || !HANDLE_RE.test(handle))) {
       throw new Error('overlay: handle must be 1 to 64 letters, digits or dashes')
     }
@@ -2394,7 +2454,7 @@ export class HostApi {
     const perView = plugin.overlaysPerView === true
     let channel: OverlayChannel | undefined
     if (linkKey !== undefined) {
-      const link: OverlayLink = { pending: new OverlayOutbox(), closing: false, perView, via, copies: new Map() }
+      const link: OverlayLink = { pending: new OverlayOutbox(), closing: false, perView, via, copies: new Map(), announceTimes: [] }
       this.overlayLinks.set(linkKey, link)
       const pid = plugin.id
       channel = {
@@ -2423,6 +2483,11 @@ export class HostApi {
             this.deps.setOverlayDiscussPrimary?.(this.scope.windowId, overlayId, link.discussPrimary)
             link.discussPrimary = undefined
           }
+          if (link.announce !== undefined) {
+            const { kind, refs } = link.announce
+            link.announce = undefined
+            this.applyAnnounce(link, pid, overlayId, kind, refs)
+          }
           if (link.closing) this.deps.closeOverlay?.(this.scope.windowId, overlayId)
         },
         // A click on one of its own buttons: to this host, this plugin and this handle only.
@@ -2439,6 +2504,14 @@ export class HostApi {
           const from = this.overlayFrom(view)
           if (!from) return Promise.reject(new Error('the view that asked is gone'))
           return this.hostCall('overlay.discuss', { pluginId: pid, handle, ...remoteView(view), from }, DISCUSS_ASK_MS)
+        },
+        // Ask's document (shared/design.md §5): to this host, this plugin and this handle only, for the asking copy
+        // (main's own record of it, never a page's word), bounded to ASK_CONTEXT_MS (the Ask service bounds it too).
+        // `from`: who asked, read now (a view that is gone or revoked asks nothing).
+        onAsk: (view, copy) => {
+          const from = this.overlayFrom(view)
+          if (!from) return Promise.reject(new Error('the view that asked is gone'))
+          return this.hostCall('overlay.ask', { pluginId: pid, handle, ...remoteView(view), copy, from }, ASK_CONTEXT_MS)
         },
         // A dying host (revoked) gets nothing more; the overlay is dismissed when it is gone.
         // `view` (a remote view's page) only as main's own id: the host runs the listeners in it.
@@ -2480,18 +2553,21 @@ export class HostApi {
       }
       let result: OverlayResult
       try {
-        result = await this.deps.openOverlay(
-          this.scope.windowId,
-          managerSpec,
-          `plugin ${plugin.id}`,
-          peerGone,
-          channel,
-          plugin.id,
-          view,
-          // The live set: posts and addSources that arrive during the awaits before the manager creates the
-          // overlay land in it and are counted from its first listing.
-          { perView, via }
-        )
+        result =
+          parentId !== undefined && channel !== undefined && this.deps.attachPart
+            ? await this.deps.attachPart(this.scope.windowId, parentId, plugin.id, managerSpec, channel, { perView, via })
+            : await this.deps.openOverlay(
+                this.scope.windowId,
+                managerSpec,
+                `plugin ${plugin.id}`,
+                peerGone,
+                channel,
+                plugin.id,
+                view,
+                // The live set: posts and addSources that arrive during the awaits before the manager creates the
+                // overlay land in it and are counted from its first listing.
+                { perView, via }
+              )
       } catch (err) {
         // The manager rejects only before it creates anything (a bad argv or url, a program that
         // cannot start, a closed window); a shown overlay always resolves. Nothing was shown.
@@ -2504,8 +2580,13 @@ export class HostApi {
       const left = (this.openOverlays.get(plugin.id) ?? 1) - 1
       if (left > 0) this.openOverlays.set(plugin.id, left)
       else this.openOverlays.delete(plugin.id)
-      // The overlay ended (or never opened): its handle names nothing from here on.
-      if (linkKey !== undefined) this.overlayLinks.delete(linkKey)
+      // The overlay ended (or never opened): its handle names nothing from here on. Its announcement is void: the
+      // window's listeners added later no longer hear it.
+      if (linkKey !== undefined) {
+        const link = this.overlayLinks.get(linkKey)
+        if (link?.announced === true && link.overlayId !== undefined && !this.revoked) this.emit(HOST_OVERLAY_UNANNOUNCED, { id: link.overlayId })
+        this.overlayLinks.delete(linkKey)
+      }
     }
   }
 
@@ -2538,6 +2619,9 @@ export class HostApi {
       text = undefined
     }
     if (text === undefined) throw new Error('overlay.post: the message is not JSON')
+    // `$cc` is core's (shared/overlay-envelope.ts): a host's post carrying it would pass for main's notes or Ask on the
+    // page. Refused here too, whatever the host checked (spec-review S1).
+    if (hasEnvelopeKey(rest.message)) throw new Error('overlay.post: a message may not have a top-level "$cc" key (it is reserved for the app)')
     if (text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
       throw new Error(`overlay.post: message of ${text.length} chars exceeds ${MAX_OVERLAY_MESSAGE_LENGTH}`)
     }
@@ -2727,6 +2811,120 @@ export class HostApi {
       return true
     }
     return this.deps.setOverlayDiscussPrimary(this.scope.windowId, link.overlayId, rest.on)
+  }
+
+  /**
+   * handle.announce (design-parts.md §1): what the opener's overlay shows, for the window's onAnnounce listeners, and
+   * the opener's consent to parts. Checked again here (the kind, the refs, main's own minute budget per overlay);
+   * held until the overlay exists (the last one), like setButtons. False for an overlay that ended.
+   */
+  private overlayAnnounce(params: unknown): boolean {
+    const { link, rest } = this.overlayLink(params, 'overlay.announce')
+    const { kind } = rest
+    if (!isAnnounceKind(kind)) throw new Error('overlay.announce: kind must be 1 to 40 characters of a-z, 0-9, . and -')
+    const refs = checkAnnounceRefs(rest.refs, 'overlay.announce')
+    if (!link) return false
+    if (!this.deps.announceOverlay) throw new Error('overlay.announce: not available')
+    if (!takeAnnounce(link.announceTimes)) throw new Error(`overlay.announce: more than ${MAX_ANNOUNCES_PER_MINUTE} a minute`)
+    // overlayLink checked the plugin: it is one this host runs, and the opener of this handle.
+    const pid = rest.pluginId as string
+    if (link.overlayId === undefined) {
+      link.announce = { kind, refs }
+      return true
+    }
+    return this.applyAnnounce(link, pid, link.overlayId, kind, refs)
+  }
+
+  /**
+   * Record the consent (the manager) and tell this window's host, whose registry runs every plugin's listeners of the
+   * kind: `overlay.announced` with main's own record of the overlay (its id, the opener plugin, title and type),
+   * never the opener's words. Nothing goes out for an overlay the manager does not know (gone, another window's).
+   */
+  private applyAnnounce(link: OverlayLink, pluginId: string, overlayId: string, kind: string, refs: string[]): boolean {
+    if (this.revoked) return false
+    let record: { title: string; type?: { name: string; data: unknown } } | undefined
+    try {
+      record = this.deps.announceOverlay?.(this.scope.windowId, overlayId)
+    } catch (err) {
+      this.log(`plugin ${pluginId}: overlay.announce failed: ${errorText(err)}`)
+      return false
+    }
+    if (!record) return false
+    link.announced = true
+    this.emit(HOST_OVERLAY_ANNOUNCED, {
+      overlay: {
+        id: overlayId,
+        opener: pluginId,
+        title: record.title,
+        ...(record.type !== undefined ? { type: { name: record.type.name, data: record.type.data } } : {})
+      },
+      kind,
+      refs
+    })
+    return true
+  }
+
+  /**
+   * ctx.notes(key) (shared/design.md §3, spec-review S2): the plugin's own notes in this project. The plugin is one
+   * this host runs (`plugin()`), the project is the host's own scope: never a payload's. The key and the values are
+   * checked here (the shared rules) and again by the service, which refuses past a cap and never cuts. A host's note
+   * is marked as the plugin's (`{ plugin: true }`), main's word. Without the service every call is refused.
+   */
+  private async notesCall(params: unknown, method: 'notes.list' | 'notes.add' | 'notes.change' | 'notes.remove' | 'notes.setGlobal'): Promise<unknown> {
+    this.alive()
+    const p = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(p.pluginId, method)
+    if (!isNotesKey(p.key)) throw new Error(`${method}: key must be 1 to 200 characters of A-Z a-z 0-9 . _ : @ # + = ~ / -`)
+    const notes = this.deps.notes
+    if (!notes) throw new Error(`${method}: notes are not available`)
+    const { projectId } = this.scope
+    const text = (value: unknown, max: number, what: string): string => {
+      if (typeof value !== 'string') throw new Error(`${method}: ${what} must be a string`)
+      if (value.length > max) throw new Error(`${method}: ${what} of ${value.length} characters exceeds ${max}`)
+      return value
+    }
+    const id = (): string => {
+      if (typeof p.id !== 'string' || p.id === '' || p.id.length > MAX_NOTE_ID_LENGTH) throw new Error(`${method}: id must be a note's id`)
+      return p.id
+    }
+    switch (method) {
+      case 'notes.list':
+        return notes.list(projectId, plugin.id, p.key)
+      case 'notes.add': {
+        const anchor = p.anchor === undefined ? null : p.anchor
+        let anchorText: string | undefined
+        try {
+          anchorText = JSON.stringify(anchor)
+        } catch {
+          anchorText = undefined
+        }
+        if (anchorText === undefined) throw new Error('notes.add: anchor is not JSON')
+        if (anchorText.length > MAX_NOTE_ANCHOR_JSON) throw new Error(`notes.add: anchor of ${anchorText.length} characters of JSON exceeds ${MAX_NOTE_ANCHOR_JSON}`)
+        const input = {
+          quote: text(p.quote, MAX_NOTE_QUOTE, 'quote'),
+          // A copy through JSON: plain data only, never an object the host could still hold.
+          anchor: JSON.parse(anchorText) as unknown,
+          text: text(p.text, MAX_NOTE_TEXT, 'text')
+        }
+        return notes.add(projectId, plugin.id, p.key, input, { plugin: true })
+      }
+      case 'notes.change':
+        return notes.change(projectId, plugin.id, p.key, id(), text(p.text, MAX_NOTE_TEXT, 'text'))
+      case 'notes.remove':
+        return notes.remove(projectId, plugin.id, p.key, id())
+      case 'notes.setGlobal':
+        return notes.setGlobal(projectId, plugin.id, p.key, text(p.text, MAX_GLOBAL_NOTE, 'text'))
+    }
+  }
+
+  /**
+   * The Notes service changed a key: `notes.changed { pluginId, key }` to this host when the key is this project's and
+   * the plugin is one this host runs (its ctx.notes onChange listeners list again). Nothing of the notes rides it.
+   */
+  private notesChanged(change: { projectId: string; pluginId: string; key: string }): void {
+    if (this.revoked || change.projectId !== this.scope.projectId) return
+    if (!this.scope.plugins.some((p) => p.id === change.pluginId)) return
+    this.emit('notes.changed', { pluginId: change.pluginId, key: change.key })
   }
 
   /** A request to the host; refused once it is stopping, or when main wired no `call`. */
