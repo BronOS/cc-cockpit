@@ -96,6 +96,8 @@ test('no component sends, posts or opens without a click', async () => {
     assert.deepEqual(m.panel.calls.at(-1), ['post', { type: 'cc-kit.link', url: 'https://example.com/a?b=1&c=2' }])
     button(m.ask.el, 'Ask').click()
     assert.equal(count('ask.say'), 1, 'a running chat is continued')
+    // That turn ends before the next question (Ask waits while a turn runs, S-9).
+    m.panel.pushAsk({ type: 'answer', text: 'ok' })
     askInput.value = 'again'
     askInput.dispatch('keydown', { key: 'Enter' })
     assert.equal(count('ask.say'), 2, 'Enter asks too')
@@ -255,6 +257,42 @@ test('mountAsk hears the app with ccPanel.ask.on(type, fn), one listener per pus
   assert.deepEqual(panel.askListening(), [], 'destroy unsubscribes every type')
 })
 
+
+test('S-9: Ask waits while a turn runs: the running question keeps its answer, the new one stays in the box', async () => {
+  const doc = new FakeDocument()
+  const panel = fakePanel()
+  const root = doc.createElement('div')
+  doc.body.appendChild(root)
+  const ask = kit.mountAsk(root, { doc, panel })
+  await flush()
+  const input = byTag(ask.el, 'textarea')[0]
+  const askButton = button(ask.el, 'Ask')
+  const enter = () => input.dispatch('keydown', { key: 'Enter' })
+  input.value = 'first question'
+  askButton.click()
+  await flush()
+  panel.pushAsk({ type: 'state', phase: 'thinking' })
+  panel.pushAsk({ type: 'delta', text: 'part of the first ' })
+  assert.equal(askButton.disabled, true, 'Ask is off during the turn')
+  input.value = 'second question'
+  enter()
+  askButton.click()
+  await flush()
+  assert.deepEqual(panel.calls.filter((c) => c[0] === 'ask.start' || c[0] === 'ask.say').map((c) => c[1].question), ['first question'])
+  assert.equal(input.value, 'second question', 'the new question waits in the box')
+  panel.pushAsk({ type: 'answer', text: 'the first answer' })
+  panel.pushAsk({ type: 'state', phase: 'ready' })
+  await flush()
+  const turns = [...all(ask.el)].filter((e) => e.getAttribute && /cc-kit-turn( |$)/.test(e.getAttribute('class') || ''))
+  assert.equal(turns.length, 1)
+  assert.match(turns[0].textContent, /first question/)
+  assert.match(turns[0].textContent, /the first answer/)
+  assert.equal(askButton.disabled, false, 'Ask is on again')
+  enter()
+  await flush()
+  assert.deepEqual(panel.calls.filter((c) => c[0] === 'ask.say').map((c) => c[1].question), ['second question'])
+  ask.destroy()
+})
 
 test("mountAsk shows a state push's notice beside the phase, as text (D15)", async () => {
   const doc = new FakeDocument()

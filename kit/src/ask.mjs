@@ -66,6 +66,12 @@ export function mountAsk(container, opts = {}) {
   let running = false // a chat process is up (a state push came, no end since)
   let phase = null
   let quote = null
+  /**
+   * A turn is running: one this view asked (`open`), another view's streaming here, or main's phase says so (a page
+   * loaded mid-turn). Ask waits then: main refuses a question during a turn ("Ask: busy"), and asking used to replace
+   * `open`, so the running turn's question was lost and its answer streamed under an empty one (review S-9).
+   */
+  const busy = () => open !== null || phase === 'starting' || phase === 'thinking'
 
   const button = (label, onClick, extra = {}) => {
     const b = h(doc, 'button', { type: 'button', ...extra }, label)
@@ -85,7 +91,7 @@ export function mountAsk(container, opts = {}) {
   const error = h(doc, 'p', { class: 'cc-kit-error-line', role: 'alert', hidden: true })
   const submit = () => {
     const question = input.value.trim()
-    if (!question) return
+    if (!question || busy()) return
     const q = quote ? { question, quote } : { question }
     open = { question, ...(quote ? { quote } : {}), answer: '', tools: [] }
     input.value = ''
@@ -102,6 +108,10 @@ export function mountAsk(container, opts = {}) {
     })
   }
   const askButton = button('Ask', submit, { class: 'cc-kit-primary' })
+  /** Ask is off while a turn runs; the question typed meanwhile stays in the box. */
+  const syncBusy = () => {
+    askButton.disabled = busy()
+  }
   quoteBox.appendChild(button('✕', () => setQuote(null), { 'aria-label': 'Ask about the whole document', title: 'Ask about the whole document' }))
   listen(
     input,
@@ -152,6 +162,7 @@ export function mountAsk(container, opts = {}) {
     for (const t of turns) log.appendChild(turnEl(t, false))
     if (open) log.appendChild(turnEl(open, true))
     log.scrollTop = log.scrollHeight
+    syncBusy()
   }
   const fillSelect = (select, values, picked, label) => {
     clear(select)
@@ -194,6 +205,7 @@ export function mountAsk(container, opts = {}) {
         phase = ev.phase
         // D15: a notice from main (the owner's chat in a folder Claude Code has not trusted) stays beside the phase.
         setText(status, [PHASES[ev.phase] || '', typeof ev.notice === 'string' ? ev.notice : ''].filter(Boolean).join(' · '))
+        syncBusy()
         return
       case 'delta':
         if (typeof ev.text !== 'string') return
@@ -226,6 +238,7 @@ export function mountAsk(container, opts = {}) {
           draw()
         }
         setText(status, typeof ev.message === 'string' ? ev.message : '')
+        syncBusy()
         return
       default:
     }
