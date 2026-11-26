@@ -120,6 +120,12 @@ export class SessionRegistry {
    * entries so stamping it changes nothing anyone else sees: no new entry, no change event, no snapshot.
    */
   private readonly activity = new Map<string, number>()
+  /**
+   * Queued item id -> who waits to hear how it settled (onSettled: Discuss removes the notes it sent only once its text
+   * was typed in, task 03). An entry goes when its item settles; one whose item never does (an app quit) goes with
+   * the registry.
+   */
+  private readonly settleListeners = new Map<string, Array<(how: 'delivered' | 'dropped') => void>>()
 
   constructor(private readonly options: SessionRegistryOptions) {
     this.interval = options.intervalMs ?? DEFAULT_INTERVAL_MS
@@ -342,6 +348,7 @@ export class SessionRegistry {
       const dialogKey = entry.status === 'needs-permission' && isDialogKey(data)
       if (!dialogKey && next.draft !== true) next = { ...next, draft: true }
       if (next !== entry) this.set(entry, next, dropped)
+      this.settle(dropped, 'dropped')
       this.notify(this.inputListeners, tabId, 'person-input')
     }
     if (isAnswerKey(data)) {
@@ -375,6 +382,7 @@ export class SessionRegistry {
       this.log(`session ${tabId}: tab closed, dropped ${prev.queue.length} queued text(s)`)
     }
     this.changed(change)
+    this.settle(prev.queue, 'dropped')
   }
 
   /**
@@ -397,6 +405,35 @@ export class SessionRegistry {
     // Delivered only when this very item left the queue and was not put back by a failed write (nor dropped as a
     // refused guest's: then `step.delivered` is another item or none).
     return { id: item.id, delivered: step.delivered === item && !entry.queue.includes(item) }
+  }
+
+  /**
+   * Hear once how a queued item (`send`'s `id` when it was not `delivered`) settled: `delivered` when its paste was
+   * written into the tab, `dropped` when it left the queue unsent (the session ended or the tab closed, the person took
+   * the tab over, a guest's access ended). An item that never settles (the app quit with it queued) is never heard:
+   * a caller keeps what it would have undone (Discuss's notes). Register right after `send` returns, in the same
+   * synchronous step: a settle only ever happens on a later event.
+   */
+  onSettled(itemId: string, fn: (how: 'delivered' | 'dropped') => void): void {
+    const list = this.settleListeners.get(itemId)
+    if (list) list.push(fn)
+    else this.settleListeners.set(itemId, [fn])
+  }
+
+  private settle(items: readonly QueuedText[] | undefined, how: 'delivered' | 'dropped'): void {
+    if (!items) return
+    for (const item of items) {
+      const list = this.settleListeners.get(item.id)
+      if (!list) continue
+      this.settleListeners.delete(item.id)
+      for (const fn of list) {
+        try {
+          fn(how)
+        } catch (err) {
+          this.log(`session registry: a settle listener threw: ${errorText(err)}`)
+        }
+      }
+    }
   }
 
   /**
@@ -465,7 +502,10 @@ export class SessionRegistry {
     if (!prev || typeof itemId !== 'string') return false
     const step = gate.cancel(prev, itemId)
     if (!step) return false
+    const item = prev.queue.find((q) => q.id === itemId)
     this.commit(prev, step)
+    // Cancelled from the queue (the person's ✕ in the strip): never typed in, so a settle listener hears `dropped`.
+    if (item !== undefined && !this.entries.get(tabId)?.queue.includes(item)) this.settle([item], 'dropped')
     return true
   }
 
@@ -598,6 +638,7 @@ export class SessionRegistry {
     this.listeners.clear()
     this.inputListeners.clear()
     this.promptListeners.clear()
+    this.settleListeners.clear()
   }
 
   /** Tell one set of tab-id listeners; one that throws is logged and the others still run. */
@@ -637,10 +678,12 @@ export class SessionRegistry {
     const step = gate.skipRefused(gateStep, (item) => item.guestId === undefined || this.options.guestMayDeliver?.(item.guestId, gateStep.entry.tabId) === true)
     if (step !== gateStep) this.log(`session ${step.entry.tabId}: a guest's queued text was dropped (its access changed)`)
     let entry = step.entry
+    let written: QueuedText | undefined
     if (step.write !== undefined && step.delivered !== undefined) {
       try {
         this.options.write({ tabId: entry.tabId, projectId: entry.projectId }, step.write)
         this.startDeliveryTimer(entry.tabId)
+        written = step.delivered
       } catch (err) {
         this.log(`session ${entry.tabId}: writing queued text failed: ${errorText(err)}`)
         // A room pointer is not put back (send-gate.ts sendNow): its messages stay held in the room.
@@ -658,6 +701,15 @@ export class SessionRegistry {
       this.log(`session ${entry.tabId}: session ended, dropped ${gateStep.dropped.length} queued text(s)`)
     }
     if (entry !== prev) this.set(prev, entry, step.dropped) // else nothing changed
+    // Settled (task 03): the item typed in, and every item thrown away here: the session ended (the gate's own
+    // `dropped`) or a guest's text refused (skipRefused's, which does not carry the gate's along). A write that failed
+    // put its item back: not settled. The delivering timeout writes nothing and drops nothing: not a settle either.
+    if (written !== undefined) this.settle([written], 'delivered')
+    const thrown = [...(gateStep.dropped ?? []), ...(step.dropped ?? [])]
+    this.settle(
+      thrown.filter((item, i) => thrown.indexOf(item) === i),
+      'dropped'
+    )
     return { entry, step }
   }
 

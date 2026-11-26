@@ -1,11 +1,12 @@
-// The Notes API's seam in main (shared/design.md §3, spec-review S2-S4; 00 contract). Frozen here; task 03 implements
-// it (notes-store.ts, notes-service.ts) and replaces createNotesApi's body. Until then there is no service, and every
-// path that would use it refuses (S2: no dep = refused): the handlers (ipc/notes-handlers.ts), host-api's `notes.*`.
+// The Notes API's seam in main (shared/design.md §3, spec-review S2-S4; 00 contract), implemented by notes-service.ts
+// over notes-store.ts. A caller given no service refuses (S2: no dep = refused): the handlers (ipc/notes-handlers.ts),
+// host-api's `notes.*`.
 //
 // A store is per (project, plugin, key). The key is the overlay spec's `notes.key` as the opener gave it; the plugin is
 // main's record of the opener (OverlayManager.notesOf), or the host's own plugin for `ctx.notes(key)`, never a payload.
 import type { NoteAuthor, NotesSnapshot, NoteWriteResult } from '../../shared/overlay-envelope'
 import type { CopyEvent, OverlayManager } from '../overlays/overlay-manager'
+import { NotesService } from './notes-service'
 
 /** A new note as a page or host gives it; main mints the id and reads the author. */
 export interface NoteInput {
@@ -42,6 +43,17 @@ export interface NotesApi {
   removePlugin(pluginId: string): void
   /** Project forget: every store of the project (ProjectRegistry onForget, index.ts). */
   dropProject(projectId: string): void
+  /**
+   * Discuss's removal once its send is delivered (task 03, S3): the notes still at the id and rev they had when the
+   * text was composed, and the note for Claude while it is still the sent text. Absent: nothing is removed.
+   */
+  removeSent?(projectId: string, pluginId: string, key: string, sent: SentNotes): Promise<void>
+}
+
+/** What a Discuss text carried of a key's notes (S3): each note's id and rev, and the note for Claude as sent. */
+export interface SentNotes {
+  global: string
+  notes: { id: string; rev: number }[]
 }
 
 /** What the service gets from main (wired once in index.ts). Task 03 may ask the lead for more. */
@@ -56,8 +68,7 @@ export interface NotesApiDeps {
 /** Re-exported for the service's copy listeners. */
 export type { CopyEvent }
 
-/** The Notes service, or undefined while there is none (00: every caller then refuses). Task 03 fills it. */
+/** The Notes service (notes-service.ts). */
 export function createNotesApi(deps: NotesApiDeps): NotesApi | undefined {
-  void deps
-  return undefined
+  return new NotesService(deps)
 }
