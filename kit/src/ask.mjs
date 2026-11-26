@@ -41,13 +41,13 @@ export function renderMarkdown(text, doc = globalThis.document) {
 
 const PHASES = { starting: 'Starting…', thinking: 'Thinking…', ready: 'Ready' }
 
+/** The Ask push types (shared/overlay-envelope.ts AskPush), each heard with ccPanel.ask.on(type, fn). */
+const ASK_PUSHES = ['history', 'state', 'delta', 'tool', 'answer', 'end']
+
 /**
  * `fn()` as a promise: a synchronous throw (an SDK member missing or refusing its arguments) becomes a rejection, so
  * every click's error reaches the same catch and shows, never escaping the handler silently.
  */
-/** The Ask push types (shared/overlay-envelope.ts AskPush), each heard with ccPanel.ask.on(type, fn). */
-const ASK_PUSHES = ['history', 'state', 'delta', 'tool', 'answer', 'end']
-
 function attempt(fn) {
   try {
     return Promise.resolve(fn())
