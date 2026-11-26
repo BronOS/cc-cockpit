@@ -199,6 +199,43 @@ describe('ccPanel.ask and overlay.discuss', () => {
     expect(ends).toEqual([{ type: 'end', message: 'idle', error: false }])
     expect(() => ask.on('nope' as never, () => {})).toThrow(TypeError)
   })
+  it('a listener added after the push gets it once (history and state); deltas are never replayed', async () => {
+    const { c, port } = copy()
+    const ask = c.api.ask!
+    const history = { type: 'history', turns: [{ question: 'q1', answer: 'a1' }] }
+    port.push('ask', 1, history)
+    port.push('ask', 2, { type: 'state', state: 'idle' })
+    port.push('ask', 3, { type: 'delta', text: 'old' })
+    const heard: unknown[] = []
+    ask.on('history', (d) => void heard.push(d))
+    ask.on('state', (d) => void heard.push(d))
+    ask.on('delta', (d) => void heard.push(d))
+    // After the registering call returns, not inside it.
+    expect(heard).toEqual([])
+    await Promise.resolve()
+    expect(heard).toEqual([history, { type: 'state', state: 'idle' }])
+    await Promise.resolve()
+    expect(heard).toHaveLength(2)
+    // A listener removed before the replay, or one that heard a newer push meanwhile, gets no old one.
+    const late: unknown[] = []
+    const off = ask.on('history', (d) => void late.push(d))
+    off()
+    const fresh: unknown[] = []
+    ask.on('state', (d) => void fresh.push(d))
+    port.push('ask', 4, { type: 'state', state: 'busy' })
+    await Promise.resolve()
+    expect(late).toEqual([])
+    expect(fresh).toEqual([{ type: 'state', state: 'busy' }])
+    // A listener's own copy: changing it changes nothing for the next.
+    const first: Array<{ turns: unknown[] }> = []
+    ask.on('history', (d) => void first.push(d as never))
+    await Promise.resolve()
+    first[0]!.turns.length = 0
+    const second: Array<{ turns: unknown[] }> = []
+    ask.on('history', (d) => void second.push(d as never))
+    await Promise.resolve()
+    expect(second[0]!.turns).toHaveLength(1)
+  })
 })
 
 describe('ccPanel overlay copy: caps and timeouts', () => {
