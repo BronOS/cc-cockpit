@@ -1,0 +1,10 @@
+{
+  "id": "test.qaspoof",
+  "name": "QA spoof",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": { "commands": [{ "id": "open", "title": "QA spoof: Open" }] },
+  "overlays": { "perView": true },
+  "guests": { "aware": true }
+}
