@@ -58,8 +58,8 @@ export interface PanelAskApi {
   close(): Promise<null>
   /** Read (no argument) or change the model and effort; the lists come from the app. */
   pick(choice?: { model?: string; effort?: string }): Promise<AskPickState>
-  /** Continue this chat in a Claude tab (the owner only; the app refuses anyone else). */
-  continue(): Promise<{ tabId: string }>
+  /** Continue this chat in a Claude tab. The owner's only: absent for a guest (the app would refuse it). */
+  continue?(): Promise<{ tabId: string }>
   /** Hear one kind of push: `history`, `state`, `delta`, `tool`, `answer` or `end`. Returns the unsubscribe. */
   on<T extends AskEventType>(type: T, listener: (data: Extract<AskPush, { type: T }>) => void): () => void
 }
@@ -100,6 +100,8 @@ export class OverlayCopyClient {
   private readonly askListeners = new Map<AskEventType, Set<(data: unknown) => void>>()
   private readonly notesApi: PanelNotesApi
   private readonly askApi: PanelAskApi
+  /** A guest's Ask: the same, without `continue` (spec-review S12: Continue only with owner access). */
+  private readonly guestAskApi: PanelAskApi
   private readonly discussApi: PanelOverlayApi
   private readonly bareOverlayApi: PanelOverlayApi
 
@@ -142,12 +144,11 @@ export class OverlayCopyClient {
         }
       }
     }) as PanelNotesApi
-    this.askApi = Object.freeze({
+    const ask = {
       start: (q: string | { question: string; quote?: string }) => this.call('ask.start', () => questionOf(q, 'ask.start')) as Promise<null>,
       say: (q: string | { question: string; quote?: string }) => this.call('ask.say', () => questionOf(q, 'ask.say')) as Promise<null>,
       close: () => this.request('ask.close', {}) as Promise<null>,
       pick: (choice?: { model?: string; effort?: string }) => this.call('ask.pick', () => pickOf(choice)) as Promise<AskPickState>,
-      continue: () => this.request('ask.continue', {}) as Promise<{ tabId: string }>,
       on: (type: AskEventType, listener: (data: never) => void) => {
         if (!ASK_EVENTS.includes(type)) throw new TypeError(`ask.on: type must be one of ${ASK_EVENTS.join(', ')}`)
         if (typeof listener !== 'function') throw new TypeError('ask.on needs a function')
@@ -168,7 +169,9 @@ export class OverlayCopyClient {
           set.delete(entry)
         }
       }
-    }) as PanelAskApi
+    }
+    this.askApi = Object.freeze({ ...ask, continue: () => this.request('ask.continue', {}) as Promise<{ tabId: string }> }) as PanelAskApi
+    this.guestAskApi = Object.freeze({ ...ask }) as PanelAskApi
     this.discussApi = Object.freeze({ discuss: () => this.request('discuss.open', {}) as Promise<null> })
     this.bareOverlayApi = Object.freeze({})
   }
@@ -189,7 +192,9 @@ export class OverlayCopyClient {
   }
 
   get ask(): PanelAskApi | undefined {
-    return this.features?.ask === true ? this.askApi : undefined
+    if (this.features?.ask !== true) return undefined
+    // Read live: the access comes with the port, after the intro.
+    return this.access() === 'owner' ? this.askApi : this.guestAskApi
   }
 
   get overlay(): PanelOverlayApi | undefined {

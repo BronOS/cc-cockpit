@@ -208,7 +208,7 @@ so when your script runs they are still undefined on every app:
   notice? }`: `notice` is a line to show while the chat runs, such as the owner's Ask in a folder Claude Code has not
   trusted answering from the document only), `delta`
   (answer text as it comes, `{ text }`), `tool`, `answer` (`{ text }`) and `end`; another type throws. `pick` with nothing reads the model and effort lists and the pick; the owner's pick is remembered.
-  `continue()` (the owner's) opens the same session in a Claude tab. Undefined for a read guest. Render answers
+  `continue()` (the owner's; a guest's `ccPanel.ask` has none) opens the same session in a Claude tab. Undefined for a read guest. Render answers
   as text or sanitized Markdown, never as raw HTML, and never post or send an answer without the person's click.
 - `ccPanel.overlay.discuss()`: open the toolbar's Discuss with Claude popover from your own button (New session, or
   a Claude tab); the person sends from there. Nothing is sent by the call itself.
