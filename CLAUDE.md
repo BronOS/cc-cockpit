@@ -85,8 +85,8 @@ on a copy's port; parts, `handle.announce`, `ctx.overlay.onAnnounce`, `ctx.overl
 is implemented for 0.28.0; design in `docs/design.md` §4 ("Overlay notes" to "Mail-frame links"), user docs in
 `docs/features.md` (the notes and Ask, page Discuss, parts and kit entries; "Web access" › "Guests"; Known limitations). The
 Reviewer's `annotate` is deprecated (goes in 0.29.0). Ask's guest mode was proved against the real CLI by
-`scripts/ask-guest-check.mjs`. TODO(07-e2e): where `overlay-notes-ask.spec.ts`, `overlay-page-discuss.spec.ts` and
-`overlay-parts.spec.ts` ran. D15: in a project folder Claude Code never trusted (`-p` shows no trust dialog), the owner's Ask runs
+`scripts/ask-guest-check.mjs` (Linux, claude 2.1.332; not run on macOS). The e2e (`overlay-notes-ask.spec.ts`,
+`overlay-page-discuss.spec.ts`, `overlay-parts.spec.ts`, QA's `qa-overlay-*.spec.ts`) has run on Linux only, never macOS. D15: in a project folder Claude Code never trusted (`-p` shows no trust dialog), the owner's Ask runs
 with the guest isolation and the panel says to open a Claude tab there once (`main/ask/ask-trust.ts`).
 
 ## Commands
