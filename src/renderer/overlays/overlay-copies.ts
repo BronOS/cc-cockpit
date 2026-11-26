@@ -22,8 +22,10 @@
 // guest's one-way copy answers false to every one, which would loop into the cap).
 
 import { MAX_QUEUED_MESSAGES } from '../../sdk/panel-core'
-import type { OverlayCopyRefusal, OverlayInfo, OverlayReadyAnswer, PageHolder } from '../../shared/ipc'
+import type { IpcInvokeMap, OverlayCopyRefusal, OverlayInfo, OverlayReadyAnswer, PageHolder } from '../../shared/ipc'
+import { ENVELOPE_VERSION, OVERLAY_INTRO_MESSAGE, type EnvelopeAnswer, type OverlayIntro } from '../../shared/overlay-envelope'
 import type { ViewAccess } from '../../shared/views'
+import { textHasEnvelopeKey, type PageEnvelope } from '../plugins/frame-messages'
 
 /** What ✕ (and the close keys) send for an overlay in this view. */
 export type CloseAction = 'close' | 'hide'
@@ -105,6 +107,103 @@ export function htmlBodyOf(overlay: OverlayInfo, shell: HtmlBodyShell, refused?:
   return overlay.waiting === true ? { kind: 'none' } : { kind: 'page' }
 }
 
+/**
+ * The intro a copy's frame gets before its port (shared/overlay-envelope.ts OverlayIntro, spec-review S1): which of
+ * notes, Ask and page-started Discuss it has. `notes`: the overlay has a notes key. `ask`: the same, and this view may
+ * Ask (never a read guest, D1). `discuss`: the toolbar shows Discuss here (`info.discuss` set and a view that may
+ * write, as OverlayStack draws it). A part (design-parts.md §2) has none of them. A hint for the page's SDK only: main
+ * refuses each call again by the view it bound.
+ */
+export function overlayIntroOf(overlay: Pick<OverlayInfo, 'notes' | 'discuss' | 'partOf'>, access: ViewAccess): OverlayIntro {
+  const part = overlay.partOf !== undefined
+  const notes = !part && overlay.notes === true
+  return {
+    type: OVERLAY_INTRO_MESSAGE,
+    overlay: { notes, ask: notes && access !== 'read', discuss: !part && overlay.discuss !== undefined && access !== 'read' }
+  }
+}
+
+/** The main channels a copy page's notes and Ask requests become. */
+export type EnvelopeChannel =
+  | 'overlays.notes.read'
+  | 'overlays.notes.write'
+  | 'overlays.ask.start'
+  | 'overlays.ask.say'
+  | 'overlays.ask.close'
+  | 'overlays.ask.pick'
+  | 'overlays.ask.continue'
+
+/** One invoke of main for a page request: the channel and its request, built here from checked fields only. */
+export type EnvelopeCall = { [C in EnvelopeChannel]: { channel: C; req: IpcInvokeMap[C]['req'] } }[EnvelopeChannel]
+
+/**
+ * The invoke a page's request becomes (shared/overlay-envelope.ts EnvelopeArgs), or the reason it is refused. The
+ * overlay and the copy are the shell's own record, never the page's: the request is built field by field, so a page's
+ * `overlayId`, `copy` or any other extra in `args` goes nowhere. Types only are checked here; main checks the caps.
+ * `discuss.open` is the shell's own (the popover), never an invoke: undefined channel, `{ discuss: true }`.
+ */
+export function envelopeCallOf(overlayId: string, copy: string, envelope: Pick<PageEnvelope, 'op' | 'args'>): EnvelopeCall | { discuss: true } | { error: string } {
+  const a = envelope.args
+  const str = (k: string): string | undefined => (typeof a[k] === 'string' ? (a[k] as string) : undefined)
+  const optStr = (k: string): string | undefined | false => (a[k] === undefined ? undefined : typeof a[k] === 'string' ? (a[k] as string) : false)
+  const bad = (what: string): { error: string } => ({ error: `${envelope.op}: ${what}` })
+  const at = { overlayId, copy }
+  switch (envelope.op) {
+    case 'notes.list':
+      return { channel: 'overlays.notes.read', req: at }
+    case 'notes.add': {
+      const quote = str('quote')
+      const text = str('text')
+      if (quote === undefined || text === undefined) return bad('quote and text must be strings')
+      return { channel: 'overlays.notes.write', req: { ...at, op: 'add', quote, anchor: a.anchor ?? null, text } }
+    }
+    case 'notes.change': {
+      const id = str('id')
+      const text = str('text')
+      if (id === undefined || text === undefined) return bad('id and text must be strings')
+      return { channel: 'overlays.notes.write', req: { ...at, op: 'change', id, text } }
+    }
+    case 'notes.remove': {
+      const id = str('id')
+      if (id === undefined) return bad('id must be a string')
+      return { channel: 'overlays.notes.write', req: { ...at, op: 'remove', id } }
+    }
+    case 'notes.setGlobal': {
+      const text = str('text')
+      if (text === undefined) return bad('text must be a string')
+      return { channel: 'overlays.notes.write', req: { ...at, op: 'setGlobal', text } }
+    }
+    case 'ask.start':
+    case 'ask.say': {
+      const question = str('question')
+      const quote = optStr('quote')
+      if (question === undefined || quote === false) return bad('question (and quote) must be strings')
+      const req = { ...at, question, ...(quote !== undefined ? { quote } : {}) }
+      return envelope.op === 'ask.start' ? { channel: 'overlays.ask.start', req } : { channel: 'overlays.ask.say', req }
+    }
+    case 'ask.close':
+      return { channel: 'overlays.ask.close', req: at }
+    case 'ask.pick': {
+      const model = optStr('model')
+      const effort = optStr('effort')
+      if (model === false || effort === false) return bad('model and effort must be strings')
+      return { channel: 'overlays.ask.pick', req: { ...at, ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}) } }
+    }
+    case 'ask.continue':
+      return { channel: 'overlays.ask.continue', req: at }
+    case 'discuss.open':
+      return { discuss: true }
+  }
+}
+
+/** The text of the shell's answer to a page request (shared/overlay-envelope.ts EnvelopeAnswer). */
+export function envelopeAnswerText(re: number, outcome: { ok: true; value: unknown } | { ok: false; error: string }): string {
+  const answer: EnvelopeAnswer = outcome.ok
+    ? { $cc: ENVELOPE_VERSION, re, ok: true, value: outcome.value === undefined ? null : outcome.value }
+    : { $cc: ENVELOPE_VERSION, re, ok: false, error: outcome.error }
+  return JSON.stringify(answer)
+}
+
 /** The first wait before a refused (`cap`) or failed connect is asked again, doubled each time up to the max. */
 export const COPY_RETRY_FIRST_MS = 1000
 /** main's connect cap counts 10 connects in 10 s per view (panel-ports.ts CONNECT_WINDOW_MS): never wait longer. */
@@ -139,6 +238,11 @@ export interface CopyLineDeps {
   close(): void
   /** `overlays.result { copy }`: true when main took it. */
   result(copy: string, value: unknown): Promise<boolean>
+  /**
+   * A page's envelope request for this copy (notes, Ask, page-started Discuss): HtmlOverlay turns it into main's
+   * channel (envelopeCallOf) or the Discuss popover. Resolves the answer's value; rejects with the refusal.
+   */
+  request(copy: string, envelope: PageEnvelope): Promise<unknown>
   /** Load the page again (a new port, a new copy). */
   reload(): void
   /** main hid this view's copy: the overlay leaves this view's stack. */
@@ -177,8 +281,11 @@ export class CopyLine {
   private earlyCount = 0
   private earlyHide = new Set<string>()
   private earlyReload = new Set<string>()
-  /** The page's posts before its copy is known (bounded like the page SDK's own queue). */
-  private held: string[] = []
+  /**
+   * The page's posts before its copy is known (bounded like the page SDK's own queue): plain messages and envelope
+   * requests in one queue, so they reach main in the order the page sent them.
+   */
+  private held: Array<string | PageEnvelope> = []
   /** The page said it has drawn before its copy was known. */
   private drawn = false
   private attempt = 0
@@ -205,6 +312,12 @@ export class CopyLine {
    * `envelope`: the event's `envelope: true` (main's notes and Ask pushes), carried to the port as it is.
    */
   fromMain(copy: string, text: string, envelope?: true): void {
+    // Only main's mark makes an envelope (spec-review S12): an opener's post with a top-level `$cc` (handle.post and
+    // host-api refuse one; this is the shell's own line) would reach the page as core's notes or Ask.
+    if (envelope !== true && textHasEnvelopeKey(text)) {
+      this.deps.log?.('overlay message dropped: an unmarked message with a top-level $cc is never core\'s push')
+      return
+    }
     if (this.phase === 'live' && copy === this.copy) {
       if (envelope) this.port?.post(text, envelope)
       else this.port?.post(text)
@@ -246,6 +359,45 @@ export class CopyLine {
     if (this.phase !== 'asking' && this.phase !== 'waiting') return
     if (this.held.length < MAX_QUEUED_MESSAGES) this.held.push(text)
     else this.deps.log?.('overlay message dropped: the page has no copy yet and the queue is full')
+  }
+
+  /**
+   * The page sent an envelope request (`$cc`: notes, Ask, Discuss; never relayed as `overlays.message`). With a live
+   * copy it goes to `request` with that copy's id; while the copy is asked for it waits in the page's queue, in order
+   * with the plain messages; with no copy to come (a final refusal, no load) it is answered `ok: false` at once. Every
+   * request is answered on the port it came from, unless that load ended (its page is gone).
+   */
+  fromPageEnvelope(envelope: PageEnvelope): void {
+    if (this.phase === 'live' && this.copy !== undefined) return this.dispatch(this.copy, envelope)
+    if (this.phase === 'asking' || this.phase === 'waiting') {
+      if (this.held.length < MAX_QUEUED_MESSAGES) this.held.push(envelope)
+      else this.answer(envelope.id, { ok: false, error: 'the page has no copy yet and the queue is full' })
+      return
+    }
+    this.answer(envelope.id, { ok: false, error: this.phase === 'refused' ? 'this view has no copy of the overlay' : 'the page is not connected' })
+  }
+
+  /** Answers a request on the current load's port (a page request's answer is an envelope: the port's mark). */
+  answer(re: number, outcome: { ok: true; value: unknown } | { ok: false; error: string }): void {
+    this.port?.post(envelopeAnswerText(re, outcome), true)
+  }
+
+  private dispatch(copy: string, envelope: PageEnvelope): void {
+    const visit = this.visit
+    const settle = (outcome: { ok: true; value: unknown } | { ok: false; error: string }): void => {
+      // The load that asked is gone (its page with it): nobody to answer.
+      if (visit === this.visit) this.answer(envelope.id, outcome)
+    }
+    let pending: Promise<unknown>
+    try {
+      pending = this.deps.request(copy, envelope)
+    } catch (err) {
+      pending = Promise.reject(err)
+    }
+    pending.then(
+      (value) => settle({ ok: true, value }),
+      (err: unknown) => settle({ ok: false, error: err instanceof Error ? err.message : String(err) })
+    )
   }
 
   /**
@@ -313,6 +465,8 @@ export class CopyLine {
     if (answer === undefined || 'refused' in answer) {
       const reason: OverlayCopyRefusal = answer?.refused ?? 'not-per-view'
       if (reason === 'cap') return this.retry()
+      // No copy will come for this load: each request the page is waiting on is answered, never left to time out.
+      for (const item of this.held) if (typeof item !== 'string') this.answer(item.id, { ok: false, error: `no copy of the overlay here (${reason})` })
       this.clearBuffers()
       this.phase = 'refused'
       this.report({ loading: false, refused: reason })
@@ -335,7 +489,10 @@ export class CopyLine {
       if (envelope) this.port?.post(text, envelope)
       else this.port?.post(text)
     }
-    for (const text of held) this.deps.message(copy, text)
+    for (const item of held) {
+      if (typeof item === 'string') this.deps.message(copy, item)
+      else this.dispatch(copy, item)
+    }
     if (drawn) this.deps.loaded(copy)
     this.report({ loading: answer.loaded !== true && !drawn })
   }
