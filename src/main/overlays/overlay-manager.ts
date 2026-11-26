@@ -2668,7 +2668,13 @@ function withDiscuss(
 ): OverlayInfo {
   const next = { ...info }
   delete next.discuss
-  if (overlay.discussSpec === false || (!overlay.type && !overlay.discussHandler)) return next
+  delete next.discussOff
+  // Known at start and for good: the page's intro offers no Discuss either (review r2 n1).
+  if (overlay.discussSpec === false) {
+    next.discussOff = true
+    return next
+  }
+  if (!overlay.type && !overlay.discussHandler) return next
   const tabId = overlay.discussSpec?.tabId
   next.discuss = tabId === undefined ? {} : { tabId }
   if (overlay.discussPrimary) next.discuss.primary = true
