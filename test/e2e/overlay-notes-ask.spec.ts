@@ -11,6 +11,12 @@
 //     ccPanel.ask out); writes and an Ask forged from its own shell page are refused too, and no claude runs.
 //  3. Ask's chat survives Esc (the stored turns come back on the next open, and the next question resumes the same
 //     session), and Continue in a tab (`ccPanel.ask.continue()`) opens a Claude tab with `--resume <id>` of that session.
+//     The project folder carries Claude Code's trust record (D15), so the owner's Ask runs with the owner's flags.
+//  4. D15: in a folder Claude Code has not trusted (no record), the owner's Ask runs isolated (the guest flags) and the
+//     panel shows main's notice.
+//
+// Trust is read from the app's login env's `$HOME/.claude.json`: the e2e's own temp HOME (fixtures.ts), never the real one.
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { FrameLocator, Page } from '@playwright/test'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
@@ -24,6 +30,15 @@ const PLUGIN = 'test.overlaynotes'
 const TITLE = 'Overlay notes'
 const DOC = 'Fixture document: the quick brown fox.'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/**
+ * Claude Code's trust record for the project folder (`projects[<folder>].hasTrustDialogAccepted`, main's ask-trust.ts),
+ * in the test app's own temp HOME (launchCockpit's `<root>/home`, the HOME of its login env): D15 then lets the owner's
+ * Ask run with the owner's flags.
+ */
+function trustProject(c: Cockpit): void {
+  writeFileSync(join(c.root, 'home', '.claude.json'), JSON.stringify({ projects: { [c.projectDir]: { hasTrustDialogAccepted: true } } }))
+}
 
 /** An invoke from a page's own `window.cockpit` (the desktop's preload or a browser view's web client). */
 function invokeIn<T>(page: Page, channel: string, payload?: unknown): Promise<T> {
@@ -227,6 +242,7 @@ test('Ask after Esc shows the chat; Continue in a tab opens a Claude tab with --
   test.setTimeout(180_000)
   const { cockpit: c, close } = await launchCockpit()
   try {
+    trustProject(c)
     await withFixture(c)
     await openDoc(c)
     let doc = await copyOf(c.page, 'notes ask discuss')
@@ -240,6 +256,7 @@ test('Ask after Esc shows the chat; Continue in a tab opens a Claude tab with --
     expect(printRuns()).toHaveLength(1)
     expect(printRuns()[0]).not.toContain('--resume')
     expect(printRuns()[0]).not.toContain('--safe-mode')
+    await expect(doc.locator('#ask-notice')).toHaveText('')
 
     // Esc closes the overlay; the chat is kept by the app (D14), so the next open shows its turn.
     await pressEsc(c)
@@ -265,6 +282,27 @@ test('Ask after Esc shows the chat; Continue in a tab opens a Claude tab with --
     const tabRun = c.claudeRuns().slice(before).find((a) => a[0] !== '-p' && !a.includes('--help'))
     expect(tabRun, JSON.stringify(c.claudeRuns().slice(before))).toBeDefined()
     expect(tabRun![tabRun!.indexOf('--resume') + 1]).toBe(id)
+  } finally {
+    await close()
+  }
+})
+
+test("D15: in a folder Claude Code has not trusted, the owner's Ask runs isolated and the panel says so", async () => {
+  test.setTimeout(120_000)
+  const { cockpit: c, close } = await launchCockpit()
+  try {
+    // No trust record: the temp HOME has no .claude.json at all.
+    await withFixture(c)
+    await openDoc(c)
+    const doc = await copyOf(c.page, 'notes ask discuss')
+    await doc.locator('#question').fill('what is the fox')
+    await doc.locator('#ask-send').click()
+    await expect(doc.locator('#ask-notice')).toContainText('Claude Code has not trusted this folder yet', { timeout: 20_000 })
+    await expect.poll(() => c.claudeRuns().filter((a) => a[0] === '-p').length, { timeout: 20_000 }).toBe(1)
+    const run = c.claudeRuns().find((a) => a[0] === '-p')!
+    // The guest isolation (D12): no tools, none of the folder's hooks or settings, no MCP.
+    for (const flag of ['--restricted', '--safe-mode', '--strict-mcp-config']) expect(run, flag).toContain(flag)
+    expect(run[run.indexOf('--tools') + 1]).toBe('')
   } finally {
     await close()
   }
