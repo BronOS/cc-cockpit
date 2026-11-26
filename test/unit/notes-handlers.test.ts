@@ -46,15 +46,18 @@ class FakeIpcMain implements IpcMainLike {
 // Views: web:1 the owner's browser; web:5 a read guest (Rita), web:6 a write guest (Walt); web:8 revoked.
 const whoOf = (v: string): Who | undefined =>
   v === 'desktop:1' || v === 'web:1' ? 'owner' : v === 'web:5' ? { guest: 'gR' } : v === 'web:6' ? { guest: 'gW' } : v === 'web:8' ? { guest: 'gX' } : undefined
+// Walt's role as the guest store has it now: the owner may change it while a write waits (S-2d).
+let waltRole: 'read' | 'write' | 'revoked' = 'write'
 const accessOf = (who: Who): GuestAccess => {
   if (who === 'owner') return { kind: 'owner' }
   if (who.guest === 'gR') return { kind: 'guest', id: 'gR', name: 'Rita', role: 'read', projectId: PROJECT, scope: 'all' }
-  if (who.guest === 'gW') return { kind: 'guest', id: 'gW', name: 'Walt', role: 'write', projectId: PROJECT, scope: 'all' }
+  if (who.guest === 'gW') return waltRole === 'revoked' ? { kind: 'revoked' } : { kind: 'guest', id: 'gW', name: 'Walt', role: waltRole, projectId: PROJECT, scope: 'all' }
   return { kind: 'revoked' }
 }
 
 let dir: string
 beforeEach(() => {
+  waltRole = 'write'
   dir = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-notes-handlers-')))
 })
 afterEach(() => {
@@ -258,6 +261,40 @@ describe('notes handlers', () => {
     expect(await t.outcome(t.call('web:1', 'overlays.notes.read', { overlayId: id, copy: 'made-up' }))).toMatch(/not your copy/)
     t.m.releaseCopy(W1, id, 'web:6', walt)
     expect(await t.outcome(t.call('web:6', 'overlays.notes.read', { overlayId: id, copy: walt }))).toMatch(/^refused/)
+  })
+
+  it('a write that waited in the store\'s queue re-checks the caller first (S-2d)', async () => {
+    const t = setup()
+    const id = t.open()
+    const own = t.copyOf(id, 'web:1')
+    const store = (t.notes as unknown as { store: { serial(fn: () => Promise<unknown>): Promise<unknown> } }).store
+    /** Holds the store's queue, starts `write`, lets the handler's own checks pass and queue it, runs `meanwhile`, then lets the queue go. */
+    const queued = async (write: () => Promise<unknown>, meanwhile: () => void): Promise<unknown> => {
+      let release!: () => void
+      const held = store.serial(() => new Promise<void>((resolve) => (release = resolve)))
+      const result = t.outcome(write())
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      meanwhile()
+      release()
+      await held
+      return result
+    }
+    const add = (viewId: string, copy: string, text: string) => () =>
+      t.call(viewId, 'overlays.notes.write', { overlayId: id, copy, op: 'add', quote: '', anchor: null, text })
+    // Set to read, revoked, or the copy released while the write waited: refused, nothing saved.
+    const walt = t.copyOf(id, 'web:6')
+    expect(await queued(add('web:6', walt, 'as read'), () => (waltRole = 'read'))).toMatch(/^refused/)
+    waltRole = 'write'
+    expect(await queued(() => t.call('web:6', 'overlays.notes.write', { overlayId: id, copy: walt, op: 'setGlobal', text: 'g' }), () => (waltRole = 'revoked'))).toMatch(/^refused/)
+    waltRole = 'write'
+    expect(await queued(add('web:6', walt, 'released'), () => t.m.releaseCopy(W1, id, 'web:6', walt))).toMatch(/not your copy/)
+    const state = await t.notes.list(PROJECT, 'a.one', 'doc:1')
+    expect(state.notes).toEqual([])
+    expect(state.global).toBe('')
+    // Nothing changed meanwhile: the queued writes of the owner and of a write guest land.
+    const walt2 = t.copyOf(id, 'web:6')
+    expect(await queued(add('web:1', own, 'owner'), () => {})).toMatchObject({ note: { text: 'owner' } })
+    expect(await queued(add('web:6', walt2, 'walt'), () => {})).toMatchObject({ note: { text: 'walt', author: { access: 'write', person: 'Walt' } } })
   })
 
   it('the store is the opener\'s, never a plugin or key from the payload', async () => {

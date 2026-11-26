@@ -26,13 +26,17 @@ export interface NotesChange {
 
 export interface NotesApi {
   list(projectId: string, pluginId: string, key: string): Promise<NotesSnapshot>
-  /** Refused past a cap (shared/notes-limits.ts), never cut. `author` is main's word (S4), never the caller's. */
-  add(projectId: string, pluginId: string, key: string, input: NoteInput, author: NoteAuthor): Promise<NoteWriteResult>
+  /**
+   * Refused past a cap (shared/notes-limits.ts), never cut. `author` is main's word (S4), never the caller's.
+   * `recheck` (every write): runs once the write's turn in the store's queue came and the file is loaded, right before
+   * the change; it throws to refuse. A page's write re-checks its caller there (review S-2d).
+   */
+  add(projectId: string, pluginId: string, key: string, input: NoteInput, author: NoteAuthor, recheck?: () => void): Promise<NoteWriteResult>
   /** Any writer may change any note; its author stays the first writer's (S4). Bumps the note's `rev`. */
-  change(projectId: string, pluginId: string, key: string, id: string, text: string): Promise<NoteWriteResult>
-  remove(projectId: string, pluginId: string, key: string, id: string): Promise<NoteWriteResult>
+  change(projectId: string, pluginId: string, key: string, id: string, text: string, recheck?: () => void): Promise<NoteWriteResult>
+  remove(projectId: string, pluginId: string, key: string, id: string, recheck?: () => void): Promise<NoteWriteResult>
   /** The note for Claude ('' clears it). */
-  setGlobal(projectId: string, pluginId: string, key: string, text: string): Promise<NoteWriteResult>
+  setGlobal(projectId: string, pluginId: string, key: string, text: string, recheck?: () => void): Promise<NoteWriteResult>
   /**
    * After every write (a page's, a host's, Discuss's removal of sent notes): the service pushes the new state to each
    * live copy of the key's overlays itself (OverlayManager.overlaysWithNotes, postEnvelope); this is for the host's

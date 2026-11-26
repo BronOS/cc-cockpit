@@ -57,7 +57,7 @@ export interface PanelAskApi {
   /** End the chat's process (the stored turns stay). */
   close(): Promise<null>
   /** Read (no argument) or change the model and effort; the lists come from the app. */
-  pick(choice?: { model?: string; effort?: string }): Promise<AskPickState>
+  pick(choice?: { model?: string | null; effort?: string | null }): Promise<AskPickState>
   /** Continue this chat in a Claude tab. The owner's only: absent for a guest (the app would refuse it). */
   continue?(): Promise<{ tabId: string }>
   /** Hear one kind of push: `history`, `state`, `delta`, `tool`, `answer` or `end`. Returns the unsubscribe. */
@@ -68,7 +68,9 @@ export interface PanelAskApi {
 export interface PanelOverlayApi {
   /**
    * Open the app's own Discuss with Claude popover (new session or an open tab) from the page's own button; the app
-   * arms its Send after a moment and sends nothing by itself. Present only when the overlay shows Discuss.
+   * arms its Send after a moment and sends nothing by itself. Present in a view that may write (never
+   * a read guest's), also before the overlay has Discuss: the call rejects while it has none (the plugin adds
+   * `handle.onDiscuss` when it likes, and the page is told once, before its port).
    */
   readonly discuss?: () => Promise<null>
 }
@@ -148,7 +150,7 @@ export class OverlayCopyClient {
       start: (q: string | { question: string; quote?: string }) => this.call('ask.start', () => questionOf(q, 'ask.start')) as Promise<null>,
       say: (q: string | { question: string; quote?: string }) => this.call('ask.say', () => questionOf(q, 'ask.say')) as Promise<null>,
       close: () => this.request('ask.close', {}) as Promise<null>,
-      pick: (choice?: { model?: string; effort?: string }) => this.call('ask.pick', () => pickOf(choice)) as Promise<AskPickState>,
+      pick: (choice?: { model?: string | null; effort?: string | null }) => this.call('ask.pick', () => pickOf(choice)) as Promise<AskPickState>,
       on: (type: AskEventType, listener: (data: never) => void) => {
         if (!ASK_EVENTS.includes(type)) throw new TypeError(`ask.on: type must be one of ${ASK_EVENTS.join(', ')}`)
         if (typeof listener !== 'function') throw new TypeError('ask.on needs a function')
@@ -351,11 +353,13 @@ function questionOf(raw: unknown, what: string): { question: string; quote?: str
   return { question: clean, quote: text(quote, ASK_MAX_QUOTE, `${what}: quote`) }
 }
 
-function pickOf(choice: unknown): { model?: string; effort?: string } {
+/** A field's name sets it, null goes back to the default, absent leaves it (review S-8); {} reads the pick. */
+function pickOf(choice: unknown): { model?: string | null; effort?: string | null } {
   if (choice === undefined) return {}
   if (typeof choice !== 'object' || choice === null) throw new TypeError('ask.pick takes { model?, effort? }')
   const { model, effort } = choice as { model?: unknown; effort?: unknown }
-  const name = (value: unknown, what: string): string => {
+  const name = (value: unknown, what: string): string | null => {
+    if (value === null) return null
     if (typeof value !== 'string' || value === '' || value.length > MAX_ID_LENGTH) throw new TypeError(`ask.pick: ${what} must be a name from the list`)
     return value
   }

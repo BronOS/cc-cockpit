@@ -53,11 +53,10 @@ export const MAIL_CLASSES = new Set([
   'mail-remote', 'mail-minor', 'mail-note',
 ])
 
-// `data-action` ids and `data-part` names (features 'actions' and 'update'), and the original ids of
+// `data-part` names (feature 'update'), and the original ids of
 // `data-original` / `data-reader` (feature 'original'): what the host's review.actionSet, updateInput
 // and the originals check accept.
 const NAME = /^[a-z][a-z0-9-]{0,39}$/
-const MAX_ACTION_LABEL = 60
 
 // A lozenge has one colour: past the first tone named, the others are dropped (the CSS would
 // otherwise pick by rule order, which a caller cannot see). `lozenge-error` is the older name of
@@ -162,17 +161,6 @@ function cleanAttrs(tag, a) {
   return out
 }
 
-/** The text of a node and its descendants (bounded by MAX_DEPTH, as the walk is). */
-function textOf(node, depth = 0) {
-  if (node.nodeType === 3) return String(node.nodeValue || '')
-  if (node.nodeType !== 1 || depth >= MAX_DEPTH) return ''
-  // What the walk drops is no label either (a script's source, an SVG's text).
-  if ((node.namespaceURI && node.namespaceURI !== HTML_NS) || DROP.has(String(node.nodeName).toLowerCase())) return ''
-  let t = ''
-  for (const c of node.childNodes || []) t += textOf(c, depth + 1)
-  return t
-}
-
 /**
  * The sanitized children of `parent`: an array of { text } and { tag, attrs: [[name, value]],
  * children }. Images are { tag: 'img', attrs } with `data-asset`, `alt`, `title` and `class` only,
@@ -210,20 +198,8 @@ export function sanitizeTree(parent, depth = 0) {
       out.push({ tag: 'img', attrs, children: [] })
       continue
     }
-    // A caller's button (feature 'actions'): `<span data-action="id">Label</span>` becomes a button
-    // of the page's own, labelled with the span's text only (no markup of the caller's inside a
-    // control), which the page posts as { type: 'action', id }. The host emits only an id the
-    // caller's strings have. No label, or a bad id: the span's text stays as text.
-    if (tag === 'span' && a.has('data-action')) {
-      const id = a.get('data-action')
-      const label = textOf(node).replace(/\s+/g, ' ').trim().slice(0, MAX_ACTION_LABEL)
-      if (NAME.test(id) && label) {
-        const attrs = [['type', 'button'], ['class', 'doc-action'], ['data-action', id]]
-        if (a.has('title')) attrs.push(['title', short(a.get('title'))])
-        out.push({ tag: 'button', attrs, children: [{ text: label }] })
-        continue
-      }
-    }
+    // `<span data-action="id">` (the old Reviewer's caller buttons) is a plain span here: the kit has no action
+    // feature to wire, and a button nobody wired was a dead control that looked like the page's own (review N9).
     const children = tag === 'br' || tag === 'hr' ? [] : sanitizeTree(node, depth + 1)
     out.push({ tag, attrs: cleanAttrs(tag, a), children })
   }

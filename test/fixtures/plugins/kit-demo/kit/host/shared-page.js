@@ -5,8 +5,9 @@
 // never a broadcast. A state past the page message cap goes in chunks the kit's connect() joins.
 //
 // It acts on the kit's own messages by the access main filled in `from` (never anything the page says about
-// itself): a link opens only when it is an http(s) URL of the document it holds, with that view's `from.view`;
-// the last used tab is written for the owner only; Try again runs for the owner only. Plain CommonJS, no
+// itself): a link opens only when it is an http(s) URL of what that copy was sent (its projected state, and of the
+// document when set() names one), with that view's `from.view`; guests' links share a small budget, so they never
+// use up the owner's; the last used tab is written for the owner only; Try again runs for the owner only. Plain CommonJS, no
 // dependencies: copied into a plugin as it is (SHA256SUMS).
 //
 // Holder mode (an app before overlays.perView: the handle has no onConnect): one page, the overlay's holder, with
@@ -31,6 +32,18 @@ const CHUNK_CHARS = 160000
 /** At most this many chunks (about 40 MB of JSON): a larger state fails that copy instead of flooding its port. */
 const MAX_CHUNKS = 256
 const MAX_URL = 2048
+/**
+ * Guests' link opens, every guest copy of every page of one plugin together: at most GUEST_LINKS per LINK_WINDOW_MS.
+ * main allows a plugin 3 opens per 10 s in a window (host-api's externalOpens, per plugin, not per view), so a guest
+ * clicking in a loop used to make the owner's clicks fail (review S-7); now guests can take one of the three and the
+ * owner always keeps two. The owner's clicks are not counted here (main's own limit is theirs).
+ */
+const GUEST_LINKS = 1
+const LINK_WINDOW_MS = 10000
+/** Recent guest link opens per plugin: ctx (one per plugin in a window's host, as main's budget is) -> times. */
+const guestOpens = new WeakMap()
+/** How deep set()'s state is walked for the URLs a copy was sent. */
+const MAX_DEPTH = 64
 
 /** main's `from` of a copy, checked; null when it is not one. */
 const viewerOf = (from) =>
@@ -69,6 +82,26 @@ function urlsIn(document) {
   return out
 }
 
+/**
+ * The URLs in the strings of a value (a copy's projected state), as urlsIn reads them: its strings one by one, never
+ * its JSON, whose `\"` escapes made an attribute's URL end in `\` and `new URL` read that as `/` (review N4).
+ */
+function urlsOf(value) {
+  const out = new Set()
+  const seen = new Set()
+  const walk = (v, depth) => {
+    if (typeof v === 'string') {
+      if (v.includes('http')) for (const u of urlsIn(v)) out.add(u)
+      return
+    }
+    if (!v || typeof v !== 'object' || depth > MAX_DEPTH || seen.has(v)) return
+    seen.add(v)
+    for (const x of Array.isArray(v) ? v : Object.values(v)) walk(x, depth + 1)
+  }
+  walk(value, 0)
+  return out
+}
+
 function makePage(handle, opts = {}) {
   const ctx = opts.ctx
   if (!ctx || typeof ctx !== 'object') throw new TypeError('makePage: opts.ctx is required')
@@ -90,15 +123,16 @@ function makePage(handle, opts = {}) {
         }
   const project = typeof opts.project === 'function' ? opts.project : (state) => state
   const guestError = typeof opts.guestError === 'string' && opts.guestError ? opts.guestError : GUEST_ERROR
+  const now = typeof opts.now === 'function' ? opts.now : Date.now
   const ids = opts.tabs && Array.isArray(opts.tabs.ids) ? opts.tabs.ids.filter((id) => typeof id === 'string' && TAB_ID.test(id)) : ['details', 'ask']
   const first = opts.tabs && ids.includes(opts.tabs.first) ? opts.tabs.first : ids.includes('ask') ? 'ask' : ids[0] || ''
 
-  const copies = new Map() // copy id -> { copy, from, greeted }
+  const copies = new Map() // copy id -> { copy, from, greeted, links }
   const listeners = new Set()
   const offs = []
   let phase = 'loading' // 'loading' | 'failed' | 'ready'
   let state
-  let documentText = ''
+  let documentLinks = null // the URLs of set()'s `document`, or null when it named none (the state alone counts)
   let failure = null // { message, retry }
   let lastTab = null
   let chunkSeq = 0
@@ -144,6 +178,10 @@ function makePage(handle, opts = {}) {
       return send(c, { type: 'cc-kit.failed', message: c.from.access === 'owner' ? 'This could not be shown.' : guestError, retry: false })
     }
     if (projected === undefined) return false
+    // The links this copy may open: what it was sent (a part projected away from it is not; review N5), and of the
+    // document when set() named one.
+    const sent = urlsOf(projected)
+    c.links = documentLinks ? new Set([...sent].filter((u) => documentLinks.has(u))) : sent
     const message = { type: 'cc-kit.state', state: projected }
     const whole = JSON.stringify(message)
     if (whole.length <= MESSAGE_CHARS) return send(c, message)
@@ -174,12 +212,29 @@ function makePage(handle, opts = {}) {
   }
   const greeted = () => [...copies.values()].filter((c) => c.greeted)
 
-  const kitMessage = (m, from) => {
+  /** A guest's link open, counted against the plugin's guest budget; false when it is spent. */
+  const guestMayOpen = () => {
+    const t = now()
+    const recent = (guestOpens.get(ctx) || []).filter((at) => t - at < LINK_WINDOW_MS)
+    if (recent.length >= GUEST_LINKS) {
+      guestOpens.set(ctx, recent)
+      return false
+    }
+    recent.push(t)
+    guestOpens.set(ctx, recent)
+    return true
+  }
+
+  const kitMessage = (m, from, c) => {
     if (m.type === 'cc-kit.link') {
       const href = httpUrl(m.url)
-      // Fail closed: only a URL of the document this page holds, never one the page made up.
-      if (!href || !urlsIn(documentText).has(href)) {
+      // Fail closed: only a URL of what this copy was sent, never one the page made up.
+      if (!href || !c.links || !c.links.has(href)) {
         log('kit: a link not in the document was not opened')
+        return
+      }
+      if (from.access !== 'owner' && !guestMayOpen()) {
+        log(`kit: a guest's link was not opened (guests open at most ${GUEST_LINKS} per ${LINK_WINDOW_MS / 1000} s)`)
         return
       }
       Promise.resolve()
@@ -242,7 +297,7 @@ function makePage(handle, opts = {}) {
         return
       }
       if (m && typeof m === 'object' && typeof m.type === 'string' && m.type.startsWith('cc-kit.')) {
-        kitMessage(m, v)
+        kitMessage(m, v, copies.get(v.copy))
         return
       }
       for (const fn of [...listeners]) {
@@ -260,7 +315,7 @@ function makePage(handle, opts = {}) {
       state = next
       phase = 'ready'
       failure = null
-      documentText = typeof setOpts.document === 'string' ? setOpts.document : JSON.stringify(next) || ''
+      documentLinks = typeof setOpts.document === 'string' ? urlsIn(setOpts.document) : null
       for (const c of greeted()) stateTo(c)
     },
     loading() {
@@ -303,4 +358,4 @@ function makePage(handle, opts = {}) {
   }
 }
 
-module.exports = { makePage, urlsIn, CHUNK_CHARS, MESSAGE_CHARS, MAX_CHUNKS, HOLDER }
+module.exports = { makePage, urlsIn, urlsOf, CHUNK_CHARS, MESSAGE_CHARS, MAX_CHUNKS, HOLDER, GUEST_LINKS, LINK_WINDOW_MS }

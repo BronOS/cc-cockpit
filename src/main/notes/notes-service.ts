@@ -93,8 +93,8 @@ export class NotesService implements NotesApi {
     })
   }
 
-  add(projectId: string, pluginId: string, key: string, input: NoteInput, author: NoteAuthor): Promise<NoteWriteResult> {
-    return this.write(projectId, pluginId, key, (state, isNew, keyCount) => {
+  add(projectId: string, pluginId: string, key: string, input: NoteInput, author: NoteAuthor, recheck?: () => void): Promise<NoteWriteResult> {
+    return this.write(projectId, pluginId, key, recheck, (state, isNew, keyCount) => {
       const i = (typeof input === 'object' && input !== null ? input : {}) as Partial<NoteInput>
       const quote = checkText(i.quote ?? '', MAX_NOTE_QUOTE, 'a quote')
       const text = checkText(i.text ?? '', MAX_NOTE_TEXT, 'a note')
@@ -107,8 +107,8 @@ export class NotesService implements NotesApi {
     })
   }
 
-  change(projectId: string, pluginId: string, key: string, id: string, text: string): Promise<NoteWriteResult> {
-    return this.write(projectId, pluginId, key, (state) => {
+  change(projectId: string, pluginId: string, key: string, id: string, text: string, recheck?: () => void): Promise<NoteWriteResult> {
+    return this.write(projectId, pluginId, key, recheck, (state) => {
       const next = checkText(text, MAX_NOTE_TEXT, 'a note')
       const old = state.notes.find((note) => note.id === id)
       if (!old) throw new Error('Not saved: that note is gone')
@@ -118,15 +118,15 @@ export class NotesService implements NotesApi {
     })
   }
 
-  remove(projectId: string, pluginId: string, key: string, id: string): Promise<NoteWriteResult> {
-    return this.write(projectId, pluginId, key, (state) => {
+  remove(projectId: string, pluginId: string, key: string, id: string, recheck?: () => void): Promise<NoteWriteResult> {
+    return this.write(projectId, pluginId, key, recheck, (state) => {
       if (!state.notes.some((note) => note.id === id)) throw new Error('Not removed: that note is gone')
       return { state: { ...state, notes: state.notes.filter((note) => note.id !== id) } }
     })
   }
 
-  setGlobal(projectId: string, pluginId: string, key: string, text: string): Promise<NoteWriteResult> {
-    return this.write(projectId, pluginId, key, (state, isNew, keyCount) => {
+  setGlobal(projectId: string, pluginId: string, key: string, text: string, recheck?: () => void): Promise<NoteWriteResult> {
+    return this.write(projectId, pluginId, key, recheck, (state, isNew, keyCount) => {
       const global = checkText(text, MAX_GLOBAL_NOTE, 'the note for Claude')
       if (isNew && global !== '' && keyCount >= MAX_NOTES_KEYS) {
         throw new Error(`Not saved: this plugin keeps notes on at most ${n(MAX_NOTES_KEYS)} documents in a project`)
@@ -174,16 +174,23 @@ export class NotesService implements NotesApi {
     return this.store.serial(async () => undefined)
   }
 
-  /** One write: `change` computes the next state from the current one (or throws the refusal), checked whole here. */
+  /**
+   * One write: `change` computes the next state from the current one (or throws the refusal), checked whole here.
+   * `recheck` runs after the last await before the commit (the queue and the load) and throws to refuse: a write that
+   * waited behind others must not land for a caller whose rights changed meanwhile (review S-2d).
+   */
   private write(
     projectId: string,
     pluginId: string,
     key: string,
+    recheck: (() => void) | undefined,
     change: (state: NotesState, isNew: boolean, keyCount: number) => { state: NotesState; note?: OverlayNote }
   ): Promise<NoteWriteResult> {
     return this.store.serial(async () => {
       checkKey(pluginId, key)
       const file = await this.store.load(projectId, pluginId)
+      // Nothing awaits between this check and the commit's file update below.
+      recheck?.()
       const prev = file.get(key)
       const next = change(prev ?? EMPTY, prev === undefined, file.size)
       const state: NotesState = { ...next.state, rev: (prev?.rev ?? 0) + 1 }

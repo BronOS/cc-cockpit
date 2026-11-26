@@ -37,7 +37,8 @@ A plugin's `test/kit-pin.test.js` hashes its copy against its `SHA256SUMS`. The 
   Note writes are not sends. A note's Save is a click, and the note for Claude saves as it is typed, so Esc loses
   nothing.
 - Links: the kit posts `{ type: 'cc-kit.link', url }` on a click. The host's `makePage` opens only an http(s) URL
-  that is in the document it holds, with `{ view: from.view }`. A URL not found is not opened. Links in an Ask
+  that is in what that copy was sent (its projected state, and the document when `set()` names one), with
+  `{ view: from.view }`. A URL not found is not opened. Guests' clicks share a small budget (below). Links in an Ask
   answer are not clickable: they show their full URL as text.
 - `ccPanel.notes` and `ccPanel.ask` are undefined on an older app, on an overlay without `notes`, and `ask` for
   a read guest. Each component that needs one draws nothing and returns `el: null` when it is missing.
@@ -159,7 +160,9 @@ ccKit.mountAsk(container: HTMLElement, opts: {
   focus(): void
 }
   // Shows the pushed history, the answer as it streams (Markdown, no raw HTML), tool lines and errors; the model and
-  // effort picks (ask.pick on change); Ask (click or Enter): ask.start when no chat runs, else ask.say; Close (ask.close).
+  // effort picks (ask.pick on change, both fields, null for a select on default: back to default needs an app with
+  // the null pick, kit 0.1.4); Ask (click or Enter): ask.start when no chat runs, else ask.say, and off while a turn
+  // runs (the question typed meanwhile waits in the box); Close (ask.close).
 
 ccKit.renderMarkdown(text: string, doc?: Document): DocumentFragment   // an answer: allow-listed tags, text nodes only
 ccKit.markdownTree(text: string): MarkdownNode                         // the editor's chat-markdown.mjs
@@ -213,12 +216,14 @@ makePage(handle: OverlayHandle, opts: {
   guestError?: string                 // a guest's text for a failure (default 'This could not be loaded.'); the owner gets the message
   tabs?: { ids: string[]; first?: string }   // the page's side tabs (default ['details', 'ask'], first 'ask')
   holderAccess?: 'owner' | 'write' | 'read'  // holder mode only (below): the one page's access (default 'read')
+  now?(): number                      // the clock of the guests' link budget (default Date.now), for tests
 }): SharedPage
 
 interface SharedPage {
   set(state: unknown, opts?: { document?: string }): void
-    // The overlay's state. Every live copy gets project(state, from) now, a later copy on its connect. `document`
-    // (the text or HTML shown) is what links are checked against; absent: the JSON of the state.
+    // The overlay's state. Every live copy gets project(state, from) now, a later copy on its connect. A copy may open
+    // the URLs in the strings of what it was sent; `document` (the text or HTML shown, which must be in the state too)
+    // narrows that to the URLs it has. Absent: every URL in the strings of the copy's projected state.
   loading(): void
   fail(message: string, opts?: { retry?: () => void }): void   // Try again is the owner's; retry runs on its click
   post(copy: string, message: unknown): boolean   // one copy, never a broadcast; false when gone or refused
@@ -229,6 +234,8 @@ interface SharedPage {
 }
 
 urlsIn(document: string): Set<string>   // the normalized http(s) URLs in a text or HTML string (&amp; decoded)
+urlsOf(value: unknown): Set<string>     // urlsIn over every string of a value (a projected state), keys left out
+GUEST_LINKS: number, LINK_WINDOW_MS: number   // guests' link budget: 1 per 10 s per plugin (below)
 CHUNK_CHARS: number                     // a state message longer than this is sent in chunks (under the 1 MiB page cap)
 ```
 
@@ -240,8 +247,12 @@ Messages on the copy's port (the kit handles them, never yours):
   `{ type: 'cc-kit.hello' }` (sent by `connect` on every load; only holder mode answers it).
 
 `makePage` hears copies only through `onConnect` / `onDisconnect` (`from` filled by main) and acts by
-`from.access`: it opens a link for any access (the link is the document's own), writes the last used tab only for
-the owner, and runs `retry` only for the owner. Your `onAsk`, `onDiscuss` and writes stay yours.
+`from.access`: it opens a link for any access (the link is in that copy's own document), writes the last used tab
+only for the owner, and runs `retry` only for the owner. Guests' link opens are counted together, every guest copy
+of every page of the plugin (one `ctx`): at most `GUEST_LINKS` (1) per `LINK_WINDOW_MS` (10 s). main allows a plugin
+3 opens per 10 s in a window, whoever clicks, so a guest clicking in a loop would otherwise make the owner's clicks
+fail; the owner keeps two of the three. The owner's clicks are not counted by the kit. In holder mode the holder's
+access is what counts (default `'read'`, so an older app's one page has the guests' budget). Your `onAsk`, `onDiscuss` and writes stay yours.
 
 Holder mode (kit 0.1.1): on an app before `overlays.perView` the handle has no `onConnect`, and `makePage` does not
 throw: the overlay has one page (its holder) and one state. The copy is `'holder'` (`copies()`, `post('holder', m)`),

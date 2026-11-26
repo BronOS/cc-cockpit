@@ -96,6 +96,8 @@ test('no component sends, posts or opens without a click', async () => {
     assert.deepEqual(m.panel.calls.at(-1), ['post', { type: 'cc-kit.link', url: 'https://example.com/a?b=1&c=2' }])
     button(m.ask.el, 'Ask').click()
     assert.equal(count('ask.say'), 1, 'a running chat is continued')
+    // That turn ends before the next question (Ask waits while a turn runs, S-9).
+    m.panel.pushAsk({ type: 'answer', text: 'ok' })
     askInput.value = 'again'
     askInput.dispatch('keydown', { key: 'Enter' })
     assert.equal(count('ask.say'), 2, 'Enter asks too')
@@ -255,6 +257,128 @@ test('mountAsk hears the app with ccPanel.ask.on(type, fn), one listener per pus
   assert.deepEqual(panel.askListening(), [], 'destroy unsubscribes every type')
 })
 
+
+test('S-9: Ask waits while a turn runs: the running question keeps its answer, the new one stays in the box', async () => {
+  const doc = new FakeDocument()
+  const panel = fakePanel()
+  const root = doc.createElement('div')
+  doc.body.appendChild(root)
+  const ask = kit.mountAsk(root, { doc, panel })
+  await flush()
+  const input = byTag(ask.el, 'textarea')[0]
+  const askButton = button(ask.el, 'Ask')
+  const enter = () => input.dispatch('keydown', { key: 'Enter' })
+  input.value = 'first question'
+  askButton.click()
+  await flush()
+  panel.pushAsk({ type: 'state', phase: 'thinking' })
+  panel.pushAsk({ type: 'delta', text: 'part of the first ' })
+  assert.equal(askButton.disabled, true, 'Ask is off during the turn')
+  input.value = 'second question'
+  enter()
+  askButton.click()
+  await flush()
+  assert.deepEqual(panel.calls.filter((c) => c[0] === 'ask.start' || c[0] === 'ask.say').map((c) => c[1].question), ['first question'])
+  assert.equal(input.value, 'second question', 'the new question waits in the box')
+  panel.pushAsk({ type: 'answer', text: 'the first answer' })
+  panel.pushAsk({ type: 'state', phase: 'ready' })
+  await flush()
+  const turns = [...all(ask.el)].filter((e) => e.getAttribute && /cc-kit-turn( |$)/.test(e.getAttribute('class') || ''))
+  assert.equal(turns.length, 1)
+  assert.match(turns[0].textContent, /first question/)
+  assert.match(turns[0].textContent, /the first answer/)
+  assert.equal(askButton.disabled, false, 'Ask is on again')
+  enter()
+  await flush()
+  assert.deepEqual(panel.calls.filter((c) => c[0] === 'ask.say').map((c) => c[1].question), ['second question'])
+  ask.destroy()
+})
+
+test('S-10: a note being edited keeps what was typed when the notes change anywhere', async () => {
+  const doc = new FakeDocument()
+  const one = { id: 'n1', quote: 'the fox', anchor: { prefix: '', suffix: '', occurrence: 0, length: 7, at: 0 }, text: 'saved text', rev: 1, author: { access: 'owner' } }
+  const panel = fakePanel({ state: { global: '', notes: [one], rev: 1 } })
+  const root = doc.createElement('div')
+  doc.body.appendChild(root)
+  const notes = kit.mountNotes(root, { doc, panel, canWrite: true })
+  await flush()
+  button(notes.el, 'Edit').click()
+  const box = byTag(notes.el, 'textarea')[0]
+  assert.equal(box.value, 'saved text')
+  box.value = 'what the owner is typing'
+  box.dispatch('input')
+  // A write guest adds a note meanwhile: the list redraws.
+  const two = { ...one, id: 'n2', text: "the guest's note", author: { access: 'write', person: 'Ann' } }
+  panel.pushNotes({ global: '', notes: [one, two], rev: 2 })
+  await flush()
+  const after = byTag(notes.el, 'textarea')[0]
+  assert.equal(after.value, 'what the owner is typing')
+  assert.match(notes.el.textContent, /by guest Ann/)
+  button(notes.el, 'Save').click()
+  await flush()
+  assert.deepEqual(panel.calls.filter((c) => c[0] === 'notes.change'), [['notes.change', 'n1', { text: 'what the owner is typing' }]])
+  // The note gone elsewhere ends the edit.
+  button(notes.el, 'Edit').click()
+  panel.pushNotes({ global: '', notes: [two], rev: 3 })
+  await flush()
+  assert.equal(byTag(notes.el, 'textarea').length, 0)
+  notes.destroy()
+})
+
+test('N9: a document\'s span[data-action] stays a plain span: no button the kit never wired', async () => {
+  const doc = new FakeDocument()
+  const root = doc.createElement('div')
+  doc.body.appendChild(root)
+  const html = parsed(doc, el(doc, 'p', {}, 'Pictures are hidden. ', el(doc, 'span', { 'data-action': 'show-images', title: 'Show' }, 'Show images')))
+  const r = kit.renderDocument(root, { html: 'ignored' }, { doc, parse: () => html })
+  assert.equal(byTag(r.root, 'button').length, 0)
+  const span = byTag(r.root, 'span').find((s) => s.textContent === 'Show images')
+  assert.ok(span, 'the label stays as text')
+  assert.equal(span.getAttribute('data-action'), null)
+})
+
+test('S-8: the model and effort picks go back to default: a select on default sends null (null clears, {} only reads)', async () => {
+  const doc = new FakeDocument()
+  const panel = fakePanel()
+  // The app's contract (ask-service pick): null clears a field, undefined keeps it, {} reads the saved pick.
+  let saved = { model: 'opus' }
+  const LISTS = { models: ['sonnet', 'opus'], efforts: ['low', 'high'] }
+  panel.ask.pick = (choice) => {
+    panel.calls.push(['ask.pick', choice])
+    if (Object.keys(choice).length) {
+      for (const k of ['model', 'effort']) {
+        if (choice[k] === null) delete saved[k]
+        else if (choice[k] !== undefined) saved[k] = choice[k]
+      }
+    }
+    return Promise.resolve({ ...LISTS, ...saved })
+  }
+  const root = doc.createElement('div')
+  doc.body.appendChild(root)
+  const ask = kit.mountAsk(root, { doc, panel })
+  await flush()
+  const [model, effort] = byTag(ask.el, 'select')
+  assert.equal(model.value, 'opus', 'the saved pick shows')
+  effort.value = 'high'
+  effort.dispatch('change')
+  await flush()
+  assert.deepEqual(saved, { model: 'opus', effort: 'high' })
+  model.value = ''
+  model.dispatch('change')
+  await flush()
+  effort.value = ''
+  effort.dispatch('change')
+  await flush()
+  assert.deepEqual(panel.calls.filter((c) => c[0] === 'ask.pick').slice(1).map((c) => c[1]), [
+    { model: 'opus', effort: 'high' },
+    { model: null, effort: 'high' },
+    { model: null, effort: null },
+  ])
+  assert.deepEqual(saved, {}, 'both back to default')
+  assert.equal(model.value, '')
+  assert.equal(effort.value, '')
+  ask.destroy()
+})
 
 test("mountAsk shows a state push's notice beside the phase, as text (D15)", async () => {
   const doc = new FakeDocument()

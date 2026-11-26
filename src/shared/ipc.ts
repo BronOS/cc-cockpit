@@ -1816,7 +1816,7 @@ export interface IpcInvokeMap {
    * The model and effort pick (D3), checked against session-options.ts's lists; empty: a read. Saved app-wide only
    * for the owner (S5); a guest's pick holds for its own chat only.
    */
-  'overlays.ask.pick': { req: { overlayId: string; copy: string; model?: string; effort?: string }; res: AskPickState }
+  'overlays.ask.pick': { req: { overlayId: string; copy: string; model?: string | null; effort?: string | null }; res: AskPickState }
   /**
    * Continue in a tab (D14): main ends the Ask process and opens a Claude tab resuming the key's session, in the
    * project root. The owner's only (`isOwner(view)`); refused for a key with no session.
