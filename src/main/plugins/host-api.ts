@@ -2224,7 +2224,8 @@ export class HostApi {
     if (!this.deps.openExternal) throw new Error('openExternal: opening links is not available')
     // Before the budget: a refused view opens nothing, so it costs nothing.
     const named = view === undefined ? undefined : this.linkView(plugin.id, view)
-    if (!this.externalOpens.take(plugin.id)) {
+    const viewId = named ?? this.originOf(meta)
+    if (!this.externalOpens.take(this.externalOpenKey(plugin.id, viewId))) {
       throw new Error(
         `openExternal: more than ${MAX_EXTERNAL_OPENS_PER_WINDOW} links in ${EXTERNAL_OPEN_WINDOW_MS / 1000} s; try again in a moment`
       )
@@ -2234,15 +2235,27 @@ export class HostApi {
     // §6.1) and, in server mode, never opens the host's browser. Same budget either way.
     // A named view (linkView) replaces the hint: the adapter sends there alone or refuses (addressed).
     const target: OpenTarget =
-      named === undefined
-        ? { windowId: this.scope.windowId, viewId: this.originOf(meta) }
-        : { windowId: this.scope.windowId, viewId: named, addressed: true }
+      named === undefined ? { windowId: this.scope.windowId, viewId } : { windowId: this.scope.windowId, viewId: named, addressed: true }
     try {
       await this.deps.openExternal(href, target)
     } catch (err) {
       throw withMethod('openExternal', err)
     }
     return null
+  }
+
+  /**
+   * Whose openExternal budget an open spends (review S-7): the owner's (the desktop page, an owner's browser view, no
+   * view) is the plugin's; a guest's is its own per plugin and guest (all that guest's views), so a guest's clicks
+   * never spend the owner's 3 per 10 s. A remote view that is no one's now (revoked, unknown, no lookup wired) gets one
+   * per view: never the owner's by default.
+   */
+  private externalOpenKey(pluginId: string, viewId: ViewId | undefined): string {
+    if (viewId === undefined || !isRemoteViewId(viewId)) return pluginId
+    const access = this.deps.viewAccess?.(viewId)
+    if (access?.kind === 'owner') return pluginId
+    if (access?.kind === 'guest') return `${pluginId} guest ${access.id}`
+    return `${pluginId} view ${viewId}`
   }
 
   /**

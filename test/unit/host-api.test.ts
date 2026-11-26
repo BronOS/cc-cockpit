@@ -2695,6 +2695,22 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
       expect(calls).toHaveLength(MAX_EXTERNAL_OPENS_PER_WINDOW)
     })
 
+    it("a guest's opens spend a budget of their own: a guest's 3 leave the owner's 3 (review S-7)", async () => {
+      // The guest's: addressed to its view, or acting there (the hint).
+      for (let i = 0; i < MAX_EXTERNAL_OPENS_PER_WINDOW; i++) {
+        if (i % 2 === 0) await host('openExternal', { pluginId: 'a.one', url: URL_A, view: GUEST_VIEW }, {})
+        else await host('openExternal', { pluginId: 'a.one', url: URL_A }, { view: GUEST_VIEW })
+      }
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: GUEST_VIEW }, {})).rejects.toThrow(/more than \d+ links/)
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A }, { view: GUEST_VIEW })).rejects.toThrow(/more than \d+ links/)
+      // The owner's are all still there: the desktop page, an owner's browser view, and no view.
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'desktop' }, {})
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, {})
+      await host('openExternal', { pluginId: 'a.one', url: URL_A }, {})
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A }, { view: 'web:1' })).rejects.toThrow(/more than \d+ links/)
+      expect(calls).toHaveLength(2 * MAX_EXTERNAL_OPENS_PER_WINDOW)
+    })
+
     it("'desktop' (the desktop page's from.view) names THIS host's window's desktop page; refused in server mode", async () => {
       // Whatever the hint says: the address is the host's own window, never a window from the plugin.
       await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'desktop' }, { view: 'web:1' })
