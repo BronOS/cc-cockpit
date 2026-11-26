@@ -349,3 +349,37 @@ test("a write guest: its Ask works, Continue is refused, a start naming another 
     await close()
   }
 })
+
+test("a guest not shown the plugin gets no frame with the owner's note text; shown, it sees the note", async () => {
+  test.setTimeout(240_000)
+  const { cockpit: c, close } = await launchCockpit()
+  let wesB: WebBrowser | undefined
+  try {
+    await linkActive(c, 'overlay-notes', PLUGIN)
+    await enableWebAccess(c)
+    const invited = await inviteGuest(c, { name: 'Wes', role: 'write' })
+    wesB = await openBrowser(invited.link)
+    await expect(wesB.page.getByTestId('guest-banner')).toHaveAttribute('data-role', 'write', { timeout: 20_000 })
+    // Every socket frame the guest's page gets from here on (a reload starts its socket again under the listener).
+    const frames: string[] = []
+    wesB.page.on('websocket', (ws) => ws.on('framereceived', (f) => frames.push(typeof f.payload === 'string' ? f.payload : f.payload.toString('utf8'))))
+    await wesB.page.reload()
+    await expect(wesB.page.getByTestId('guest-banner')).toHaveAttribute('data-role', 'write', { timeout: 20_000 })
+    await openDoc(c)
+    const doc = await copyOf(c.page, 'notes ask discuss')
+    await addNote(doc, 'SECRET-NOTE-4711')
+    await expect.poll(() => noteLines(doc)).toHaveLength(1)
+    await c.page.waitForTimeout(2_000)
+    expect(frames.length, 'the guest socket is live').toBeGreaterThan(0)
+    expect(frames.filter((f) => f.includes('SECRET-NOTE-4711'))).toEqual([])
+    await expect(wesB.page.getByRole('dialog', { name: TITLE })).toHaveCount(0)
+
+    // Positive control: shown to guests, its copy comes and carries the note.
+    await invokeIn(c.page, 'settings.pluginGuestAccessSet', { pluginId: PLUGIN, target: 'app', value: 'shown' })
+    const wes = await copyOf(wesB.page, 'notes ask discuss')
+    await expect.poll(() => noteLines(wes), { timeout: 20_000 }).toEqual(['«the quick brown fox» SECRET-NOTE-4711'])
+  } finally {
+    await wesB?.close().catch(() => {})
+    await close()
+  }
+})

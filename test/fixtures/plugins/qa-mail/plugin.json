@@ -1,0 +1,10 @@
+{
+  "id": "test.qamail",
+  "name": "QA mail",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": { "commands": [{ "id": "open", "title": "QA mail: Open a mail naming QA-1" }] },
+  "overlays": { "perView": true },
+  "guests": { "aware": true }
+}

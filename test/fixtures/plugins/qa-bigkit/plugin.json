@@ -1,0 +1,17 @@
+{
+  "id": "test.qabigkit",
+  "name": "QA big kit",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [
+      { "id": "open", "title": "QA big kit: Open (small, with links)" },
+      { "id": "open10", "title": "QA big kit: Open a 10 MB state" },
+      { "id": "open36", "title": "QA big kit: Open a 36 MB state" },
+      { "id": "failpath", "title": "QA big kit: Fail with a host path" }
+    ]
+  },
+  "overlays": { "perView": true },
+  "guests": { "aware": true }
+}
