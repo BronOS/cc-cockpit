@@ -110,16 +110,19 @@ export function htmlBodyOf(overlay: OverlayInfo, shell: HtmlBodyShell, refused?:
 /**
  * The intro a copy's frame gets before its port (shared/overlay-envelope.ts OverlayIntro, spec-review S1): which of
  * notes, Ask and page-started Discuss it has. `notes`: the overlay has a notes key. `ask`: the same, and this view may
- * Ask (never a read guest, D1). `discuss`: the toolbar shows Discuss here (`info.discuss` set and a view that may
- * write, as OverlayStack draws it). A part (design-parts.md §2) has none of them. A hint for the page's SDK only: main
- * refuses each call again by the view it bound.
+ * Ask (never a read guest, D1). `discuss`: a view that may write, whether or not the toolbar shows Discuss yet. The
+ * intro goes once, before the port, and a plugin may add `handle.onDiscuss` later (after an await, in `onConnect`):
+ * gating on `info.discuss` here left such a page without page-started Discuss for its life (review S-11). The
+ * page's request still goes through PageDiscussGate, which refuses it while the overlay has no Discuss
+ * (`no-discuss`). A part (design-parts.md §2) has none of them. A hint for the page's SDK only: main refuses each
+ * call again by the view it bound.
  */
-export function overlayIntroOf(overlay: Pick<OverlayInfo, 'notes' | 'discuss' | 'partOf'>, access: ViewAccess): OverlayIntro {
+export function overlayIntroOf(overlay: Pick<OverlayInfo, 'notes' | 'partOf'>, access: ViewAccess): OverlayIntro {
   const part = overlay.partOf !== undefined
   const notes = !part && overlay.notes === true
   return {
     type: OVERLAY_INTRO_MESSAGE,
-    overlay: { notes, ask: notes && access !== 'read', discuss: !part && overlay.discuss !== undefined && access !== 'read' }
+    overlay: { notes, ask: notes && access !== 'read', discuss: !part && access !== 'read' }
   }
 }
 

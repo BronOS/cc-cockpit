@@ -211,7 +211,8 @@ so when your script runs they are still undefined on every app:
   `continue()` (the owner's) opens the same session in a Claude tab. Undefined for a read guest. Render answers
   as text or sanitized Markdown, never as raw HTML, and never post or send an answer without the person's click.
 - `ccPanel.overlay.discuss()`: open the toolbar's Discuss with Claude popover from your own button (New session, or
-  a Claude tab); the person sends from there. Nothing is sent by the call itself.
+  a Claude tab); the person sends from there. Nothing is sent by the call itself. There for any view that may write,
+  also before your host's `handle.onDiscuss` (it may come after an await): until then the call rejects.
 
 Each call rejects after 30 s without an answer and past 50 outstanding.
 

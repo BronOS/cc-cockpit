@@ -563,15 +563,18 @@ describe('CopyLine: main\'s pushes keep their mark (S12)', () => {
 })
 
 describe('the copy intro (S1, design-parts §2)', () => {
-  it('the intro says ask false for a read guest, discuss false without info.discuss, all false for a part', () => {
+  it('the intro says ask false for a read guest, discuss for any writer (S-11), all false for a part', () => {
     const both = { notes: true as const, discuss: {} }
     expect(overlayIntroOf(both, 'owner')).toEqual({ type: 'cc-plugin.overlay', overlay: { notes: true, ask: true, discuss: true } })
     expect(overlayIntroOf(both, 'write').overlay).toEqual({ notes: true, ask: true, discuss: true })
     // A read guest sees the notes, never asks or discusses (D1, D-22).
     expect(overlayIntroOf(both, 'read').overlay).toEqual({ notes: true, ask: false, discuss: false })
-    expect(overlayIntroOf({ notes: true }, 'owner').overlay).toEqual({ notes: true, ask: true, discuss: false })
+    // No Discuss on the toolbar yet: the intro still offers it (a plugin may add onDiscuss after the page loaded,
+    // review S-11); PageDiscussGate refuses the request while there is none (`no-discuss`).
+    expect(overlayIntroOf({ notes: true }, 'owner').overlay).toEqual({ notes: true, ask: true, discuss: true })
+    expect(overlayIntroOf({ notes: true }, 'read').overlay).toEqual({ notes: true, ask: false, discuss: false })
     // No notes key: no notes and no Ask.
-    expect(overlayIntroOf({ discuss: {} }, 'owner').overlay).toEqual({ notes: false, ask: false, discuss: true })
+    expect(overlayIntroOf({}, 'owner').overlay).toEqual({ notes: false, ask: false, discuss: true })
     expect(overlayIntroOf({ ...both, partOf: 'o1' }, 'owner').overlay).toEqual({ notes: false, ask: false, discuss: false })
   })
 })
