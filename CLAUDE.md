@@ -548,8 +548,9 @@ with the guest isolation and the panel says to open a Claude tab there once (`ma
   waits for the Ask process to be gone before the tab resumes the session (one writer per session). Handlers re-check the
   copy and the person after every await. The Ask process's token resolves to a window caller, never a tab, so its `ccc`
   gets no shell-only command. The owner's Ask in a folder Claude Code never trusted (D15) runs with the guest isolation
-  until it is: trust is `projects[<folder or a parent>].hasTrustDialogAccepted === true` in `$CLAUDE_CONFIG_DIR/.claude.json` or
-  `$HOME/.claude.json` of the login env (`main/ask/ask-trust.ts`), read-only and re-read at every chat start (a running
+  until it is: trust is `projects[<dir>].hasTrustDialogAccepted === true` in `$CLAUDE_CONFIG_DIR/.claude.json` or
+  `$HOME/.claude.json` of the login env (`main/ask/ask-trust.ts`) for the folder, its git root, or (outside a repo) a parent,
+  never the home folder's record, never wider than Claude Code's own check (read from its 2.1.332 binary), read-only and re-read at every chat start (a running
   chat keeps its mode); unreadable, oversized, malformed or unknown is untrusted, and every `state` push of such a chat
   carries `notice` (`UNTRUSTED_NOTICE`). Tests set `folderTrusted` or a temp HOME, never the real file.
 - The overlay envelope (`shared/overlay-envelope.ts`): a leaf with no imports (panel.js inlines it, as

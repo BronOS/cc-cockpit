@@ -864,7 +864,8 @@ of the project, never a tab and never shell-only. Like any `claude -p` run, its 
 `~/.claude/projects`. An Ask answer never fills a plugin's write by itself; pages render it as text or sanitized Markdown.
 In a project folder Claude Code never trusted (D15), the owner's Ask runs with the guest isolation: `claude -p` shows no
 trust dialog and would run the folder's own `.claude` hooks and settings. Trust is Claude Code's own record
-(`projects[<folder or a parent>].hasTrustDialogAccepted` in `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`), read-only
+(`projects[<dir>].hasTrustDialogAccepted` in `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`, for the folder, its git
+root, or outside a repo a parent; never the home folder's record), read-only
 and re-read at every chat start; unreadable or unknown is untrusted. Such a chat's `state` pushes carry a `notice` telling the
 person to open a Claude tab in the folder once to trust it.
 
