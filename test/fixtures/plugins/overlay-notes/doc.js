@@ -1,21 +1,24 @@
 /* global document, window, ccPanel */
 // The fixture's page: the document (textContent only), and the notes, Ask and Discuss parts when the app gives them
 // (ccPanel.notes, ccPanel.ask, ccPanel.overlay are undefined on an app or an overlay without them). #features lists
-// which, for the e2e to read. The parts are set up on the first host message (the document, posted on the copy's
-// connect): the shell's cc-plugin.overlay intro, which makes ccPanel.notes / ask / overlay, comes before the port, but
-// after this deferred script has run, so at load they are not there yet.
+// which, for the e2e to read. The parts are set up once the page is connected (ccPanel.onConnect, or the first host
+// message, whichever comes first): the shell's cc-plugin.overlay intro, which makes ccPanel.notes / ask / overlay,
+// comes just before the port, after this deferred script has run, so at load they are not there yet.
 const $ = (id) => document.getElementById(id)
 const features = []
 let setUp = false
-ccPanel.onMessage((m) => {
-  if (!setUp) {
-    setUp = true
-    try {
-      setup()
-    } catch (err) {
-      $('features').dataset.setupError = String(err && err.message)
-    }
+const setUpOnce = () => {
+  if (setUp) return
+  setUp = true
+  try {
+    setup()
+  } catch (err) {
+    $('features').dataset.setupError = String(err && err.message)
   }
+}
+ccPanel.onConnect(setUpOnce)
+ccPanel.onMessage((m) => {
+  setUpOnce()
   if (typeof m.doc === 'string') {
     const p = document.createElement('p')
     p.textContent = m.doc
