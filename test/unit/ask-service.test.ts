@@ -5,11 +5,11 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AskService, UNTRUSTED_NOTICE, fenced, type AskServiceDeps } from '../../src/main/ask/ask-service'
+import { AskService, GUEST_CONTEXT_FAILED, UNTRUSTED_NOTICE, fenced, type AskServiceDeps } from '../../src/main/ask/ask-service'
 import type { AskCaller, AskPerson } from '../../src/main/ask/ask-api'
 import type { AskProcess, AskProcessHandlers } from '../../src/main/ask/ask-runner'
 import { ASK_GUEST_FLAGS } from '../../src/main/ask/ask-argv'
-import { ASK_IDLE_MS, ASK_MAX_ANSWER, ASK_MAX_DOCUMENT } from '../../src/shared/ask'
+import { ASK_IDLE_MS, ASK_MAX_ANSWER, ASK_MAX_DOCUMENT, ASK_STORE_MAX_TURNS_CHARS } from '../../src/shared/ask'
 import type { AskPush } from '../../src/shared/overlay-envelope'
 
 const P = 'aaaaaaaaaaaaaaaa'
@@ -29,6 +29,7 @@ interface FakeProc extends AskProcess {
   killed: boolean
   h: AskProcessHandlers
   emit(ev: unknown): void
+  gone(): void
   exit(code?: number): void
 }
 
@@ -43,6 +44,7 @@ let onAsk: (overlayId: string, view: string, copy: string) => Promise<unknown>
 let ready: ((ev: { windowId: number; overlayId: string; copy: string; view: string }) => void)[]
 let ends: ((ev: { windowId: number; overlayId: string; copy: string; view: string }) => void)[]
 let help: () => Promise<string>
+let linger: boolean
 let parts: { overlayId: string; pluginId: string }[]
 let opened: { projectId: string; sessionId: string; afterKill: boolean }[]
 let clock: number
@@ -75,6 +77,7 @@ beforeEach(() => {
   ready = []
   ends = []
   help = () => Promise.resolve(HELP_ALL)
+  linger = false
   parts = []
   opened = []
   clock = 1_000_000
@@ -107,7 +110,12 @@ function service(over: Partial<AskServiceDeps> = {}): AskService {
         return () => {}
       },
       partsOf: () => parts,
-      openerPluginOf: (_w, overlayId) => (String(overlayId) === 'o3' ? 'b.cal' : notes.get(String(overlayId))?.pluginId),
+      openerPluginOf: (_w, overlayId) => (String(overlayId) === 'o3' ? 'b.cal' : /^p[0-9]$/.test(String(overlayId)) ? 'a.jira' : notes.get(String(overlayId))?.pluginId),
+      // Every overlay a copy or a notes key names; a part (parts) has partOf, as main's infos lists it.
+      infos: () =>
+        [...new Set([...[...copies.keys()].map((k) => k.split('/')[0]!), ...notes.keys()])].map(
+          (id) => ({ id, ...(parts.some((p) => p.overlayId === id) ? { partOf: 'o1' } : {}) }) as never
+        ),
       askContext: (_w, overlayId, view, copy) => onAsk(overlayId, view, copy)
     },
     projectRoot: (id) => (id === P ? projectRoot : undefined),
@@ -138,8 +146,10 @@ function service(over: Partial<AskServiceDeps> = {}): AskService {
         kill: () => {
           if (p.killed) return
           p.killed = true
-          resolve()
+          // A process that outlives its kill (review S-1): its exit comes with gone().
+          if (!linger) resolve()
         },
+        gone: () => resolve(),
         emit: (ev) => h.line(JSON.stringify(ev)),
         exit: (code = 1) => {
           resolve()
@@ -654,5 +664,179 @@ describe("D15: the owner's Ask in a folder Claude Code never trusted", () => {
     await s.start(guest(), q(GUEST_VIEW))
     expect(reads).toBe(0)
     expect(procs[0]!.argv).toContain('--safe-mode')
+  })
+})
+
+
+describe('fix round 1 (review r1)', () => {
+  it('S-1: a question during Continue is refused, and the tab opens only once the old process is gone', async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    linger = true
+    const cont = s.continueInTab(owner(), q(OWNER_VIEW))
+    await Promise.resolve()
+    // The second owner view asks while Continue waits for the exit: refused, nothing spawned.
+    await expect(s.say(owner(OWNER_B), q(OWNER_B, 'now?'))).rejects.toThrow(/busy/)
+    expect(opened).toEqual([])
+    procs[0]!.gone()
+    expect(await cont).toEqual({ tabId: 'tab-9' })
+    expect(procs).toHaveLength(1)
+    expect(opened).toHaveLength(1)
+  })
+
+  it('S-1: a process that outlives the wait stays pending: a retry of Continue or a question waits for it again', async () => {
+    vi.useFakeTimers()
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    linger = true
+    const first = expect(s.continueInTab(owner(), q(OWNER_VIEW))).rejects.toThrow(/did not end in time/)
+    await vi.advanceTimersByTimeAsync(5001)
+    await first
+    // The retry finds no run but the old process still alive: it waits again, never opens the tab beside it.
+    const retry = expect(s.continueInTab(owner(), q(OWNER_VIEW))).rejects.toThrow(/did not end in time/)
+    await vi.advanceTimersByTimeAsync(5001)
+    await retry
+    const asked = expect(s.say(owner(), q(OWNER_VIEW, 'again'))).rejects.toThrow(/still ending/)
+    await vi.advanceTimersByTimeAsync(5001)
+    await asked
+    expect(opened).toEqual([])
+    expect(procs).toHaveLength(1)
+    procs[0]!.gone()
+    expect(await s.continueInTab(owner(), q(OWNER_VIEW))).toEqual({ tabId: 'tab-9' })
+  })
+
+  it('S-1: after a pick change, an old process that outlives the wait refuses the question (no second writer)', async () => {
+    vi.useFakeTimers()
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    s.pick(owner(), { overlayId: 'o1', copy: 'c1', model: 'opus' })
+    linger = true
+    const next = expect(s.say(owner(), q(OWNER_VIEW, 'with opus'))).rejects.toThrow(/still ending/)
+    await vi.advanceTimersByTimeAsync(5001)
+    await next
+    expect(procs).toHaveLength(1)
+    procs[0]!.gone()
+    await s.say(owner(), q(OWNER_VIEW, 'with opus'))
+    expect(procs).toHaveLength(2)
+    expect(procs[1]!.argv).toContain('opus')
+  })
+
+  it("S-2: a guest chat dropped while its question is set up never spawns", async () => {
+    let release!: () => void
+    help = () => new Promise((r) => (release = () => r(HELP_ALL)))
+    const s = service()
+    const asked = s.start(guest(), q(GUEST_VIEW))
+    await new Promise((r) => setTimeout(r, 0))
+    // An access change (a widening too) drops the guest's chats while startRun awaits --help.
+    s.dropGuest('g1')
+    release()
+    await expect(asked).rejects.toThrow(/refused/)
+    expect(procs).toHaveLength(0)
+  })
+
+  it("S-2b: a part released for the asking view during its onAsk is left out; released before the spawn, the question is refused", async () => {
+    parts = [{ overlayId: 'p1', pluginId: 'a.jira' }]
+    copies.set(ck('p1', 'x1'), OWNER_VIEW)
+    onAsk = (overlayId) => {
+      if (overlayId === 'p1') {
+        copies.delete(ck('p1', 'x1'))
+        return Promise.resolve({ text: 'PART SECRET' })
+      }
+      return Promise.resolve({ text: 'Mail body' })
+    }
+    await service().start(owner(), q(OWNER_VIEW))
+    expect(sent(procs[0]!)).not.toContain('PART SECRET')
+
+    procs = []
+    copies.set(ck('p1', 'x1'), OWNER_VIEW)
+    onAsk = (overlayId) => Promise.resolve({ text: overlayId === 'p1' ? 'PART SECRET' : 'Mail body' })
+    let release!: () => void
+    help = () => new Promise((r) => (release = () => r(HELP_ALL)))
+    const s = service()
+    const asked = s.start(owner(), { overlayId: 'o2', copy: 'c1', question: 'q' })
+    await new Promise((r) => setTimeout(r, 0))
+    parts = [{ overlayId: 'p1', pluginId: 'a.jira' }]
+    copies.delete(ck('p1', 'x1'))
+    release()
+    await expect(asked).rejects.toThrow(/refused/)
+    expect(procs).toHaveLength(0)
+  })
+
+  it("S-2c: a plugin's onAsk error reaches a guest as a fixed text, the owner as its own", async () => {
+    const logs: string[] = []
+    onAsk = () => Promise.reject(new Error("ENOENT: open '/home/owner/secret.txt'"))
+    const s = service({ log: (m) => logs.push(m) })
+    const g = await s.start(guest(), q(GUEST_VIEW)).catch((e: Error) => e.message)
+    expect(g).toBe(GUEST_CONTEXT_FAILED)
+    expect(logs.join('\n')).toContain('/home/owner/secret.txt')
+    await expect(s.start(owner(), q(OWNER_VIEW))).rejects.toThrow(/\/home\/owner\/secret\.txt/)
+  })
+
+  it('S-3: in-memory turns are capped as stored ones: a long guest chat still restores under the cap', async () => {
+    const s = service()
+    for (let i = 0; i < 4; i++) {
+      await (i === 0 ? s.start(guest(), q(GUEST_VIEW, 'q' + i)) : s.say(guest(), q(GUEST_VIEW, 'q' + i)))
+      answer(procs[0]!, 'x'.repeat(90_000))
+    }
+    copies.set(ck('o1', 'cg2'), GUEST_VIEW)
+    for (const fn of ready) fn({ windowId: W, overlayId: 'o1', copy: 'cg2', view: GUEST_VIEW })
+    const history = pushesTo('cg2')[0] as { type: string; turns: unknown[] }
+    expect(history.type).toBe('history')
+    expect(history.turns.length).toBeLessThan(4)
+    expect(JSON.stringify(history.turns).length).toBeLessThanOrEqual(ASK_STORE_MAX_TURNS_CHARS)
+  })
+
+  it('S-4: an isolated chat whose init has no tool list, or that answers before any init, is ended (fail closed)', async () => {
+    const s = service()
+    await s.start(guest(), q(GUEST_VIEW))
+    procs[0]!.emit({ type: 'system', subtype: 'init', session_id: SESSION })
+    expect(procs[0]!.killed).toBe(true)
+    await s.start(guest(), q(GUEST_VIEW))
+    procs[1]!.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'leak' } } })
+    expect(procs[1]!.killed).toBe(true)
+    expect(pushesTo('cg').some((d) => d.type === 'delta')).toBe(false)
+    // The owner's chat (trusted, not isolated) is not held to it.
+    await s.start(owner(), q(OWNER_VIEW))
+    procs[2]!.emit({ type: 'system', subtype: 'init', session_id: SESSION })
+    expect(procs[2]!.killed).toBe(false)
+  })
+
+  it('S-4: a resumed isolated chat that answers before its init forgets the session', async () => {
+    const s = service()
+    await s.start(guest(), q(GUEST_VIEW))
+    answer(procs[0]!)
+    s.close(guest(), q(GUEST_VIEW))
+    await s.say(guest(), q(GUEST_VIEW, 'again'))
+    expect(procs[1]!.argv).toContain('--resume')
+    procs[1]!.emit({ type: 'result', subtype: 'success', result: 'x' })
+    expect(procs[1]!.killed).toBe(true)
+    await s.say(guest(), q(GUEST_VIEW, 'once more'))
+    expect(procs[2]!.argv).not.toContain('--resume')
+  })
+
+  it('N3: a part has no Ask of its own and gets no history', async () => {
+    parts = [{ overlayId: 'p1', pluginId: 'a.jira' }]
+    copies.set(ck('p1', 'x1'), OWNER_VIEW)
+    const s = service()
+    await expect(s.start(owner(), { overlayId: 'p1', copy: 'x1', question: 'q' })).rejects.toThrow(/no Ask/)
+    for (const fn of ready) fn({ windowId: W, overlayId: 'p1', copy: 'x1', view: OWNER_VIEW })
+    expect(posts.filter((p) => p.overlayId === 'p1')).toEqual([])
+    expect(procs).toHaveLength(0)
+  })
+
+  it("N12: Continue re-checks the caller's copy after the wait", async () => {
+    const s = service()
+    await s.start(owner(), q(OWNER_VIEW))
+    answer(procs[0]!)
+    linger = true
+    const cont = s.continueInTab(owner(), q(OWNER_VIEW))
+    await Promise.resolve()
+    copies.delete(ck('o1', 'c1'))
+    procs[0]!.gone()
+    await expect(cont).rejects.toThrow(/refused/)
+    expect(opened).toEqual([])
   })
 })
