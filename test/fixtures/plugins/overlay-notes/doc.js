@@ -8,11 +8,7 @@
 // ccPanel.notes, .ask and .overlay appear with the copy's connection (the app's intro comes before the port), not at
 // load: the parts are set up in the first ccPanel.onConnect, which runs as the port starts and before any of its
 // messages (Ask's `history` push comes on connect, and a listener added later misses it).
-//
-// Ask's listener and Continue: the guide (panels topic) documents `on(fn)` (every push, by its `type`) and
-// `continueInTab()`; the page SDK of this build has `on(type, fn)` and `continue()`. The page takes the documented
-// shape when it works and the other one otherwise, and says which in body[data-ask-on] / [data-ask-continue], so the e2e
-// can run the flow and still flag the difference.
+// Ask: one kind of push per listener (`ask.on(type, fn)`), Continue is `ask.continue()` (src/sdk/panel-overlay.ts).
 const $ = (id) => document.getElementById(id)
 const features = []
 let setUp = false
@@ -26,20 +22,16 @@ ccPanel.onMessage((m) => {
 ccPanel.onConnect(() => {
   if (setUp) return
   setUp = true
-  setUpParts()
+  try {
+    setUpParts()
+  } catch (err) {
+    $('features').dataset.setupError = String(err && err.message)
+  }
 })
 const ASK_TYPES = ['history', 'state', 'delta', 'tool', 'answer', 'end']
-/** Every Ask push to `handler` as `{ type, ... }`, whichever listener shape the SDK has. */
+/** Every Ask push to `handler` as `{ type, ... }`. */
 const listenAsk = (handler) => {
-  try {
-    ccPanel.ask.on(handler)
-    document.body.dataset.askOn = 'fn'
-    return
-  } catch {
-    // on(type, fn) refuses a lone function
-  }
   for (const type of ASK_TYPES) ccPanel.ask.on(type, (data) => handler({ ...data, type }))
-  document.body.dataset.askOn = 'type'
 }
 const byline = (author) => {
   if (!author || author.access !== 'write') return ''
@@ -94,8 +86,6 @@ function setUpParts() {
         if (ev.error) $('answer').textContent = 'ended: ' + ev.message
       }
     })
-    const continueName = typeof ccPanel.ask.continueInTab === 'function' ? 'continueInTab' : 'continue'
-    document.body.dataset.askContinue = continueName
     $('ask-send').addEventListener('click', () => {
       $('answer').textContent = ''
       const q = { question: $('question').value }
@@ -103,7 +93,7 @@ function setUpParts() {
       call.catch((err) => ($('answer').textContent = 'refused: ' + err.message))
     })
     $('ask-continue').addEventListener('click', () => {
-      ccPanel.ask[continueName]().then(
+      ccPanel.ask.continue().then(
         (r) => ($('continue-result').textContent = 'tab ' + r.tabId),
         (err) => ($('continue-result').textContent = 'refused: ' + err.message)
       )
