@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { OverlayInfo } from '../../shared/ipc'
 import { dragPartFraction, loadPartFraction, partShares, partSplitMode, savePartFraction, type PartSplitMode, type PartStorage } from './part-split'
 
@@ -106,36 +106,40 @@ export function OverlayParts(props: {
       </div>
       {parts.map((part, i) => {
         const name = part.pluginTitle ?? part.title
-        return [
-          mode !== 'switch' && (
-            <div
-              key={`divider-${part.id}`}
-              className="overlay-part-divider"
-              role="separator"
-              aria-orientation={mode === 'side' ? 'vertical' : 'horizontal'}
-              aria-label={`Resize ${name}`}
-              onPointerDown={(e) => startDrag(i, e)}
-            />
-          ),
-          <section
-            key={part.id}
-            className="overlay-part"
-            aria-label={name}
-            data-part-plugin={part.pluginId}
-            data-shown={shown(part.id)}
-            style={{ flex: flexOf(shares[i] ?? 0) }}
-          >
-            <div className="overlay-part-strip">
-              <span className="overlay-part-name">{name}</span>
-              <button type="button" className="overlay-part-close" aria-label={`Close ${name}`} title={`Close ${name}`} onClick={() => props.onClosePart(part)}>
-                ✕
-              </button>
-            </div>
-            <div className="overlay-part-body">
-              {props.renderPart(part)}
-            </div>
-          </section>
-        ]
+        // Keyed by the part, not by position: closing the first of two parts must never remount the second (its page
+        // would reload and its copy reconnect). An unkeyed array per part is matched by index (review S-5).
+        return (
+          <Fragment key={part.id}>
+            {mode !== 'switch' && (
+              <div
+                key={`divider-${part.id}`}
+                className="overlay-part-divider"
+                role="separator"
+                aria-orientation={mode === 'side' ? 'vertical' : 'horizontal'}
+                aria-label={`Resize ${name}`}
+                onPointerDown={(e) => startDrag(i, e)}
+              />
+            )}
+            <section
+              key={part.id}
+              className="overlay-part"
+              aria-label={name}
+              data-part-plugin={part.pluginId}
+              data-shown={shown(part.id)}
+              style={{ flex: flexOf(shares[i] ?? 0) }}
+            >
+              <div className="overlay-part-strip">
+                <span className="overlay-part-name">{name}</span>
+                <button type="button" className="overlay-part-close" aria-label={`Close ${name}`} title={`Close ${name}`} onClick={() => props.onClosePart(part)}>
+                  ✕
+                </button>
+              </div>
+              <div className="overlay-part-body">
+                {props.renderPart(part)}
+              </div>
+            </section>
+          </Fragment>
+        )
       })}
       {mode === 'switch' && (
         <div key="switch" className="overlay-parts-switch" role="tablist" aria-label="Shown here">

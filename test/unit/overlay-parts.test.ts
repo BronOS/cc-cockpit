@@ -162,6 +162,28 @@ describe('OverlayManager parts', () => {
     expect(m.visibleTo(W1, partId, () => false, (p) => ['g.mail', 'r.reviewer', 'j.jira'].includes(p))).toBe(true)
   })
 
+  it("a guest who hid the parent has its parts hidden too: not listed, not connectable, its copies released (N11)", () => {
+    const m = manager()
+    const { id } = openMail(m)
+    const partId = attach(m, id, 'j.jira').id()
+    seen.set('web:7', new Set(['g.mail', 'j.jira']))
+    seen.set('web:8', new Set(['g.mail', 'j.jira']))
+    const parentCopy = m.connectCopy(W1, id, 'web:7')
+    const partCopy = m.connectCopy(W1, partId, 'web:7')
+    if (!parentCopy.ok || !partCopy.ok) throw new Error('copies refused')
+    // The read guest's ✕ on the parent.
+    expect(m.guestHide(W1, id, 'web:7')).toBe(true)
+    // The wiring's rule reads hiddenFrom for the list, the ready snapshot, events and connects: the part with it.
+    expect(m.hiddenFrom(W1, id, 'guest-web:7')).toBe(true)
+    expect(m.hiddenFrom(W1, partId, 'guest-web:7')).toBe(true)
+    expect(m.connectCopy(W1, partId, 'web:7')).toEqual({ ok: false, reason: 'not-allowed' })
+    // Its live part copy was released: an envelope to it goes nowhere.
+    expect(m.postEnvelope(W1, partId, partCopy.copy, '{}')).toBe(false)
+    // Another guest is untouched.
+    expect(m.hiddenFrom(W1, partId, 'guest-web:8')).toBe(false)
+    expect(m.connectCopy(W1, partId, 'web:8').ok).toBe(true)
+  })
+
   it("a part's connectCopy refused when its parent is hidden from that guest", () => {
     const m = manager()
     const { id } = openMail(m)

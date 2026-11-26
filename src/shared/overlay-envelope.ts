@@ -220,8 +220,8 @@ export function hasEnvelopeKey(value: unknown): boolean {
 }
 
 // ---- Host RPC of parts and announcements (design-parts.md; spec-review S12) ------------------------------------
-// Names and payloads only, frozen here for tasks 05 (host) and 14 (main); nothing sends them in this build. The host
-// never knows an overlay's id for its own handle, so it names the handle; main resolves it to the overlay.
+// Names and payloads, one source for the host (ctx/ui.ts, overlay-announce.ts) and main. The host never knows an
+// overlay's id for its own handle, so it names the handle; main resolves it to the overlay.
 
 /** host → main call: `handle.announce({ kind, refs })`. */
 export const HOST_OVERLAY_ANNOUNCE = 'overlay.announce'

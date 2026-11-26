@@ -174,7 +174,7 @@ describe('ccPanel.ask and overlay.discuss', () => {
     void ask.say({ question: 'and this?', quote: 'a line' })
     void ask.close()
     const picked = ask.pick({ model: 'sonnet' })
-    void ask.continue()
+    void ask.continue!()
     void c.api.overlay!.discuss!()
     const reqs = port.requests()
     expect(reqs.map((r) => [r.op, r.args])).toEqual([
@@ -239,6 +239,18 @@ describe('ccPanel.ask and overlay.discuss', () => {
     ask.on('history', (d) => void second.push(d as never))
     await Promise.resolve()
     expect(second[0]!.turns).toHaveLength(1)
+  })
+})
+
+describe('ccPanel.ask.continue: the owner only', () => {
+  it('continue is there for the owner and absent for a write or read guest', () => {
+    expect(typeof copy(ALL).c.api.ask!.continue).toBe('function')
+    // A write guest has Ask but never Continue (main refuses it: guest class no, isOwner), so a page that
+    // feature-detects it shows no button that always errors.
+    const write = copy(ALL, 'write').c.api.ask!
+    expect(write.continue).toBeUndefined()
+    expect(typeof write.start).toBe('function')
+    expect(copy(ALL, 'read').c.api.ask!.continue).toBeUndefined()
   })
 })
 

@@ -15,6 +15,11 @@ function registry(listenerMs?: number): { reg: OverlayAnnouncements; logs: Array
   return { reg: new OverlayAnnouncements((pluginId, m) => void logs.push([pluginId, m]), listenerMs), logs }
 }
 
+/** Let queued microtasks (the replay's turns) run. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 5; i++) await Promise.resolve()
+}
+
 afterEach(() => {
   vi.useRealTimers()
 })
@@ -71,7 +76,7 @@ describe('OverlayAnnouncements', () => {
     expect(heard).toEqual(['ov1', 'ov2'])
   })
 
-  it('a later listener hears the live announcements only', () => {
+  it('a later listener hears the live announcements only', async () => {
     const { reg } = registry()
     reg.announced(event('ov1'))
     reg.announced(event('ov2'))
@@ -81,8 +86,35 @@ describe('OverlayAnnouncements', () => {
     reg.announced(event('ov3', 'other.kind'))
     const heard: Announcement[] = []
     reg.listen('a.late', 'mail.issues', (a: Announcement) => void heard.push(a))
+    // After the registering call returns, each in its own turn.
+    expect(heard).toEqual([])
+    await flush()
     expect(heard.map((a) => [a.overlay.id, a.refs])).toEqual([['ov1', ['P-7']]])
     expect(reg.liveIds().sort()).toEqual(['ov1', 'ov3'])
+  })
+
+  it('the replay runs after onAnnounce returns: a listener may call its own disposer (N6)', async () => {
+    const { reg, logs } = registry()
+    reg.announced(event('ov1'))
+    reg.announced(event('ov2'))
+    const heard: string[] = []
+    const off = reg.listen('a.once', 'mail.issues', (a: Announcement) => {
+      off()
+      heard.push(a.overlay.id)
+    })
+    await flush()
+    // The first replay disposed it: no throw (the disposer exists), and the second is not heard.
+    expect(heard).toEqual(['ov1'])
+    expect(logs).toEqual([])
+    // A replayed announcement that ended, or was replaced, before its turn is not heard.
+    reg.announced(event('ov3'))
+    const late: string[] = []
+    reg.listen('a.late', 'mail.issues', (a: Announcement) => void late.push(`${a.overlay.id}:${a.refs.join()}`))
+    reg.unannounced({ id: 'ov1' })
+    reg.announced(event('ov2', 'mail.issues', ['P-9']))
+    await flush()
+    // ov2's new one is heard live (it replaced the old before its replay), ov3 replayed, ov1 not at all.
+    expect(late.sort()).toEqual(['ov2:P-9', 'ov3:P-1'])
   })
 
   it('each listener gets its own frozen copy; the disposer and removePlugin end listening', () => {

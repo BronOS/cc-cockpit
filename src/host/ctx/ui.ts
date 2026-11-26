@@ -990,9 +990,6 @@ export function createUiApi(
     }
     const handle: OverlayHandle = {
       result,
-      // 00 contract stubs (shared/tasks/00-contract.md): the shapes are frozen in sdk/types.ts; task 05 replaces them.
-      // Inert, not throwing: main has no Ask and no parts in this build, so a handler is never asked and an
-      // announcement has no listener; a plugin that feature-detects them keeps working.
       // Ask's document (shared/design.md §5): main asks over RPC (OverlayLinks.ask) for the asking copy. Only a perView
       // overlay has Ask (main refuses any other); accepted on any html overlay, as onConnect, so one plugin's code runs
       // on either kind.
