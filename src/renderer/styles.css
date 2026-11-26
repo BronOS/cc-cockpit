@@ -2539,6 +2539,81 @@ body.shell-dragging .page-tab-frame {
   display: flex;
   flex-direction: column;
 }
+
+/* Parts (design-parts.md §4, OverlayParts.tsx): an html overlay's body as a row of the opener's page and up to 2 parts,
+   a column when stacked, one frame behind a switch when narrow. The shares are inline (computed); a frame not shown
+   is display: none, never unmounted (its page keeps running). */
+.overlay-parts {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+}
+.overlay-parts[data-mode='stacked'],
+.overlay-parts[data-mode='switch'] {
+  flex-direction: column;
+}
+.overlay-part-opener,
+.overlay-part {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.overlay-part-opener[data-shown='false'],
+.overlay-part[data-shown='false'] {
+  display: none;
+}
+.overlay-part-divider {
+  flex: 0 0 6px;
+  background: var(--cc-border);
+  cursor: col-resize;
+  touch-action: none;
+}
+.overlay-parts[data-mode='stacked'] .overlay-part-divider {
+  cursor: row-resize;
+}
+.overlay-part-divider:hover {
+  background: var(--cc-border-strong);
+}
+.overlay-part-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+  border-bottom: 1px solid var(--cc-border);
+}
+.overlay-part-name {
+  flex: 1;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overlay-part-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Last in the DOM (the opener's frame stays first), drawn first. */
+.overlay-parts-switch {
+  order: -1;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+}
+/* Shape as well as colour: the shown one is bold and underlined. */
+.overlay-parts-switch [aria-selected='true'] {
+  font-weight: 700;
+  text-decoration: underline;
+}
 .overlay-terminal {
   background: var(--cc-terminal-bg);
 }
