@@ -84,7 +84,8 @@ export interface EnvelopeArgs {
   'ask.start': { question: string; quote?: string }
   'ask.say': { question: string; quote?: string }
   'ask.close': Record<string, never>
-  'ask.pick': { model?: string; effort?: string }
+  /** Per field: a name sets it, null goes back to the default, absent leaves it; both absent reads (review S-8). */
+  'ask.pick': { model?: string | null; effort?: string | null }
   'ask.continue': Record<string, never>
   'discuss.open': Record<string, never>
 }

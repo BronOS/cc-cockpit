@@ -313,12 +313,17 @@ export class AskService implements AskApi {
     const { chat, person } = this.bind(caller, req)
     const r = (req ?? {}) as Record<string, unknown>
     if (r.model === undefined && r.effort === undefined) return pickState(this.pickOf(chat))
-    const checked = checkSessionOptions({ model: r.model, effort: r.effort })
+    // Per field (review S-8): a name sets it, null goes back to the default (the CLI's own), undefined leaves it.
+    const checked = checkSessionOptions({ model: r.model ?? undefined, effort: r.effort ?? undefined })
     if (!checked.ok) throw new Error('Ask: ' + checked.reason)
-    const pick: AskPick = cleanPick({ model: checked.model, effort: checked.effort })
+    const pick: AskPick = { ...this.pickOf(chat) }
+    for (const field of ['model', 'effort'] as const) {
+      if (r[field] === null) delete pick[field]
+      else if (checked[field] !== undefined) pick[field] = checked[field]
+    }
     delete chat.model
     delete chat.effort
-    Object.assign(chat, pick)
+    Object.assign(chat, cleanPick(pick))
     // Saved app-wide for the owner only (D3, S5); a guest's pick holds for its own chat.
     if (person === 'owner') {
       this.picks.set(pick)
