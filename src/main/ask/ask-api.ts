@@ -58,8 +58,12 @@ export interface AskApiDeps {
   loginEnv(): Promise<Record<string, string | undefined>>
   /** Who may Ask from a view now (owner, or a write guest's id), read live; a copy's history goes only to such a view. */
   askerOf(view: ViewId): AskPerson | undefined
-  /** Open a Claude tab in the project resuming `sessionId` (TabManager.create with resumeId); its tab id. Throws. */
-  openResumeTab(projectId: string, sessionId: string): string
+  /**
+   * Open a Claude tab in the project resuming `sessionId` (TabManager.create with resumeId) and take the person there:
+   * the overlay the Continue came from closes and the tab is selected in the view that clicked (`at`, main's own
+   * record of the caller). Opening it in the background read as "nothing happens" (0.28.0). Its tab id. Throws.
+   */
+  openResumeTab(projectId: string, sessionId: string, at: { view: ViewId; windowId: number; overlayId: string }): string
 }
 
 /** The Ask service. */

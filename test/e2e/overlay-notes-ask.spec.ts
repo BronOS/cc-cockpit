@@ -276,8 +276,16 @@ test('Ask after Esc shows the chat; Continue in a tab opens a Claude tab with --
 
     // Continue in a tab: a Claude tab (not a print run) resuming that session.
     const before = c.claudeRuns().length
+    const tabsBefore = await c.page.locator('.tab[data-tab-id]').evaluateAll((els) => els.map((e) => e.getAttribute('data-tab-id')))
     await doc.locator('#ask-continue').click()
-    await expect(doc.locator('#continue-result')).toHaveText(/^tab \S+/, { timeout: 20_000 })
+    // The person is taken there (0.28.0 opened it in the background): the window closes, the new tab is selected.
+    await expect(c.page.locator('.overlay')).toHaveCount(0, { timeout: 20_000 })
+    await expect
+      .poll(async () => {
+        const id = await c.page.locator('.tab.active[data-tab-id]').first().getAttribute('data-tab-id', { timeout: 1_000 }).catch(() => null)
+        return id !== null && !tabsBefore.includes(id)
+      }, { timeout: 20_000 })
+      .toBe(true)
     await expect.poll(() => c.claudeRuns().length, { timeout: 20_000 }).toBeGreaterThan(before)
     const tabRun = c.claudeRuns().slice(before).find((a) => a[0] !== '-p' && !a.includes('--help'))
     expect(tabRun, JSON.stringify(c.claudeRuns().slice(before))).toBeDefined()

@@ -1383,7 +1383,16 @@ function start(server: boolean): void {
       return access.kind === 'guest' && access.role === 'write' ? { guest: access.id } : undefined
     },
     // D14 Continue in a tab: a Claude tab resuming the Ask's session, in the project folder (where `-p` wrote it).
-    openResumeTab: (projectId, sessionId) => tabs.create(projectId, { kind: 'claude', resumeId: sessionId }).id
+    // The window closes and the tab is selected in the clicking view (announcePluginTab is defined further down;
+    // this runs on a click, long after start).
+    openResumeTab: (projectId, sessionId, at) => {
+      // A part's Ask (Jira beside a mail) closes the whole window: the part's parent, which holds it.
+      const part = overlays.infos(at.windowId).find((i) => i.id === at.overlayId)?.partOf
+      overlays.close(at.windowId, part ?? at.overlayId)
+      // Announced to its window and then selected in the clicking view, as a plugin's `focus: true` tab: a bare
+      // tabs.select sent before the page knew the tab was dropped by its reducer (an unknown id).
+      return announcePluginTab(projectId, at.windowId, true, undefined, () => tabs.create(projectId, { kind: 'claude', resumeId: sessionId }), at.view).id
+    }
   })
   // Ask Claude from a page tab (design-editor.md §4): the tab from main's own list, the context from
   // its plugin's instance in the asking view (`hosts`, defined below; this runs on a click).

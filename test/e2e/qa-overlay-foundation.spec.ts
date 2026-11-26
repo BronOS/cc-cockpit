@@ -229,12 +229,22 @@ test('D15: the owner Ask in a never-trusted folder runs isolated and says so; tr
     const id = second[second.indexOf('--resume') + 1] ?? ''
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
     const before = c.claudeRuns().length
+    const tabsBefore = await c.page.locator('.tab[data-tab-id]').evaluateAll((els) => els.map((e) => e.getAttribute('data-tab-id')))
     await doc.locator('#ask-continue').click()
-    await expect(doc.locator('#continue-result')).toHaveText(/^tab \S+/, { timeout: 20_000 })
+    // The person is taken there (0.28.0 opened it in the background): the window closes, the new tab is selected.
+    await expect(c.page.locator('.overlay')).toHaveCount(0, { timeout: 20_000 })
+    await expect
+      .poll(async () => {
+        const id = await c.page.locator('.tab.active[data-tab-id]').first().getAttribute('data-tab-id', { timeout: 1_000 }).catch(() => null)
+        return id !== null && !tabsBefore.includes(id)
+      }, { timeout: 20_000 })
+      .toBe(true)
     await expect.poll(() => c.claudeRuns().slice(before).some((a) => a[0] !== '-p' && !a.includes('--help')), { timeout: 20_000 }).toBe(true)
     const tabRun = c.claudeRuns().slice(before).find((a) => a[0] !== '-p' && !a.includes('--help'))!
     expect(tabRun[tabRun.indexOf('--resume') + 1]).toBe(id)
-    // The key's session moved to the tab: the next question in the window starts a fresh session.
+    // The key's session moved to the tab: the next question in the reopened window starts a fresh session.
+    await openDoc(c)
+    doc = await copyOf(c.page, 'notes ask discuss')
     await doc.locator('#question').fill('after continue')
     await doc.locator('#ask-send').click()
     await expect(doc.locator('#answer')).toContainText('FAKE-ANSWER', { timeout: 20_000 })

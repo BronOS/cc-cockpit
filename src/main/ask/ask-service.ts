@@ -347,7 +347,7 @@ export class AskService implements AskApi {
       // After the wait: the caller's copy and person (review N12), the chat still the live one, nothing started.
       this.recheck(caller, ref, chat)
       if (chat.sessionId !== sessionId || chat.run !== undefined || chat.starting) throw new Error('Ask: the chat changed meanwhile; try again')
-      const tabId = this.deps.openResumeTab(chat.projectId, sessionId)
+      const tabId = this.deps.openResumeTab(chat.projectId, sessionId, { view: caller.view, windowId: ref.windowId, overlayId: ref.overlayId })
       delete chat.sessionId
       chat.continuedIn = tabId
       this.save(chat)

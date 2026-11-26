@@ -192,7 +192,7 @@ behind it are in [design.md](design.md).
   rules; anything that would ask permission is denied (nothing can answer a prompt there yet). A write guest's Ask has no
   tools and none of your customizations (it answers from the document); a read-only guest has none. Claude starts on the
   first question; reopening the window (after Esc or a restart) shows the chat and the next question continues the same
-  session; **Continue in a tab** opens that session in a regular Claude tab. The model and effort pick is remembered.
+  session; **Continue in a tab** opens that session in a regular Claude tab and takes you there (the window closes; reopen it any time). The model and effort pick is remembered.
   Limits: one chat per window copy, 3 per plugin per window, 6 in the app; a question at most 10,000 characters, an
   answer cut at 100,000, a turn 5 minutes, a chat ended after 15 idle minutes (its history stays).
   In a project folder Claude Code has never trusted, your Ask answers from the document only (like a guest's) and says so:
