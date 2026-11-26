@@ -294,6 +294,37 @@ test('S-9: Ask waits while a turn runs: the running question keeps its answer, t
   ask.destroy()
 })
 
+test('S-10: a note being edited keeps what was typed when the notes change anywhere', async () => {
+  const doc = new FakeDocument()
+  const one = { id: 'n1', quote: 'the fox', anchor: { prefix: '', suffix: '', occurrence: 0, length: 7, at: 0 }, text: 'saved text', rev: 1, author: { access: 'owner' } }
+  const panel = fakePanel({ state: { global: '', notes: [one], rev: 1 } })
+  const root = doc.createElement('div')
+  doc.body.appendChild(root)
+  const notes = kit.mountNotes(root, { doc, panel, canWrite: true })
+  await flush()
+  button(notes.el, 'Edit').click()
+  const box = byTag(notes.el, 'textarea')[0]
+  assert.equal(box.value, 'saved text')
+  box.value = 'what the owner is typing'
+  box.dispatch('input')
+  // A write guest adds a note meanwhile: the list redraws.
+  const two = { ...one, id: 'n2', text: "the guest's note", author: { access: 'write', person: 'Ann' } }
+  panel.pushNotes({ global: '', notes: [one, two], rev: 2 })
+  await flush()
+  const after = byTag(notes.el, 'textarea')[0]
+  assert.equal(after.value, 'what the owner is typing')
+  assert.match(notes.el.textContent, /by guest Ann/)
+  button(notes.el, 'Save').click()
+  await flush()
+  assert.deepEqual(panel.calls.filter((c) => c[0] === 'notes.change'), [['notes.change', 'n1', { text: 'what the owner is typing' }]])
+  // The note gone elsewhere ends the edit.
+  button(notes.el, 'Edit').click()
+  panel.pushNotes({ global: '', notes: [two], rev: 3 })
+  await flush()
+  assert.equal(byTag(notes.el, 'textarea').length, 0)
+  notes.destroy()
+})
+
 test("mountAsk shows a state push's notice beside the phase, as text (D15)", async () => {
   const doc = new FakeDocument()
   const panel = fakePanel()
