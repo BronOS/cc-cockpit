@@ -40,8 +40,11 @@ import type { AskApi, AskApiDeps, AskCaller, AskPerson } from './ask-api'
 import { askArgv, flagsFor, isSessionUuid, missingFlags, type AskMode } from './ask-argv'
 import { cleanPick, pickState, AskPickStore, type AskPick } from './ask-pick'
 import { readHelp as realReadHelp, spawnAsk, type AskProcess, type AskSpawn, type ReadHelp } from './ask-runner'
-import { AskStore } from './ask-store'
+import { AskStore, capTurns } from './ask-store'
 import { folderTrusted } from './ask-trust'
+
+/** A guest's text when the opener's onAsk failed: fixed, never the plugin's words (D-33; the log has them). */
+export const GUEST_CONTEXT_FAILED = 'Ask: refused (this window could not give its document)'
 
 /** Deltas are sent at most this often per chat (one push per window of text). */
 export const DELTA_FLUSH_MS = 50
@@ -115,6 +118,13 @@ interface Chat {
   starting: boolean
   /** An overlay with no notes key: one chat per copy, never stored, gone with its copy (D14). */
   ephemeral: boolean
+  /**
+   * The last process ended whose exit is not confirmed yet (review S-1): a new one for the session, or Continue's tab,
+   * waits for it to be gone (one writer per session) and refuses when it outlives EXIT_WAIT_MS.
+   */
+  ending?: Run
+  /** Continue in a tab is under way: a question is refused meanwhile (review S-1). */
+  continuing: boolean
 }
 
 const BACKTICK = String.fromCharCode(96)
@@ -319,21 +329,40 @@ export class AskService implements AskApi {
 
   async continueInTab(caller: AskCaller, req: unknown): Promise<{ tabId: string }> {
     if (caller.person !== 'owner') throw new Error('Ask: only the owner continues a chat in a tab')
-    const { chat } = this.bind(caller, req)
+    const { chat, ref } = this.bind(caller, req)
     const sessionId = chat.sessionId
     if (sessionId === undefined) throw new Error('Ask: this chat has no session to continue yet')
-    if (chat.starting || chat.run?.busy === true) throw new Error('Ask: Claude is answering; continue once it has')
-    // One writer per session: the Ask process is gone before the tab's claude resumes it.
-    const run = chat.run
-    this.endRun(chat)
-    if (run && !(await this.waitGone(run))) throw new Error('Ask: the chat did not end in time; try again')
-    if (chat.sessionId !== sessionId || chat.run !== undefined) throw new Error('Ask: the chat changed meanwhile; try again')
-    const tabId = this.deps.openResumeTab(chat.projectId, sessionId)
-    delete chat.sessionId
-    chat.continuedIn = tabId
-    this.save(chat)
-    this.push(chat, { type: 'end', message: 'Continued in a Claude tab.', error: false })
-    return { tabId }
+    if (chat.starting || chat.continuing || chat.run?.busy === true) throw new Error('Ask: Claude is answering; continue once it has')
+    // One writer per session: the Ask process is gone before the tab's claude resumes it, and no question starts one
+    // meanwhile (review S-1: `continuing` refuses it; `starting` is checked again after the wait).
+    chat.continuing = true
+    try {
+      this.endRun(chat)
+      if (!(await this.settled(chat))) throw new Error('Ask: the chat did not end in time; try again')
+      // After the wait: the caller's copy and person (review N12), the chat still the live one, nothing started.
+      this.recheck(caller, ref, chat)
+      if (chat.sessionId !== sessionId || chat.run !== undefined || chat.starting) throw new Error('Ask: the chat changed meanwhile; try again')
+      const tabId = this.deps.openResumeTab(chat.projectId, sessionId)
+      delete chat.sessionId
+      chat.continuedIn = tabId
+      this.save(chat)
+      this.push(chat, { type: 'end', message: 'Continued in a Claude tab.', error: false })
+      return { tabId }
+    } finally {
+      chat.continuing = false
+    }
+  }
+
+  /**
+   * Whether the chat's last ended process is gone (at once when none is pending), waiting up to EXIT_WAIT_MS. A
+   * process that outlives the wait stays pending (review S-1): the next start or Continue waits for it again.
+   */
+  private async settled(chat: Chat): Promise<boolean> {
+    const run = chat.ending
+    if (run === undefined) return true
+    const gone = await this.waitGone(run)
+    if (gone && chat.ending === run) chat.ending = undefined
+    return gone
   }
 
   // ---- binding a call to its chat ----
@@ -354,6 +383,10 @@ export class AskService implements AskApi {
 
   /** The person's chat for a copy: the notes key's (shared, kept for the owner), or the copy's own when there is none. */
   private chatOfCopy(person: AskPerson, projectId: string, ref: CopyRef): Chat | undefined {
+    // A part has no Ask of its own (design-parts.md §2: its intro is ask: false; review N3): its text reaches the
+    // parent's chat through partsOf. An overlay main does not list is refused too (fail closed).
+    const info = this.deps.overlays.infos(ref.windowId).find((i) => i.id === ref.overlayId)
+    if (!info || info.partOf !== undefined) return undefined
     const notes = this.deps.overlays.notesOf(ref.windowId, ref.overlayId)
     if (notes) return this.chatFor(person, projectId, notes.pluginId, notes.key, false)
     const pluginId = this.deps.overlays.openerPluginOf(ref.windowId, ref.overlayId)
@@ -366,7 +399,7 @@ export class AskService implements AskApi {
     const id = JSON.stringify([ephemeral ? 'copy' : 'key', personKey(person), projectId, pluginId, key])
     let chat = this.chats.get(id)
     if (!chat) {
-      chat = { id, person, projectId, pluginId, key, turns: [], copies: new Map(), starting: false, ephemeral }
+      chat = { id, person, projectId, pluginId, key, turns: [], copies: new Map(), starting: false, ephemeral, continuing: false }
       const stored = person === 'owner' && !ephemeral ? this.store.get(projectId, pluginId, key) : undefined
       if (stored) {
         chat.turns = stored.turns
@@ -391,7 +424,7 @@ export class AskService implements AskApi {
     if (!isStart && chat.run === undefined && chat.sessionId === undefined && chat.turns.length === 0) {
       throw new Error('Ask: there is no chat yet; start one')
     }
-    if (chat.starting || chat.run?.busy === true) throw new Error('Ask: busy (Claude is answering)')
+    if (chat.starting || chat.continuing || chat.run?.busy === true) throw new Error('Ask: busy (Claude is answering)')
     chat.starting = true
     try {
       const pick = this.pickOf(chat)
@@ -402,17 +435,20 @@ export class AskService implements AskApi {
       // trust is read at a chat's start; an isolated one stays so until it ends).
       if (run && (run.model !== pick.model || run.effort !== pick.effort || (mode === 'guest' && run.mode !== 'guest'))) {
         this.endRun(chat)
-        await this.waitGone(run)
         run = undefined
       }
       if (!run) {
+        // One writer per session (review S-1): the process ended last (a pick change, Esc, idle) is gone first.
+        if (!(await this.settled(chat))) throw new Error('Ask: the earlier Claude process is still ending; try again')
         const resume = chat.sessionId
         let prompt: string
+        let partRefs: CopyRef[] = []
         if (resume === undefined) {
           const doc = await this.context(caller, ref)
           prompt = firstPrompt(doc.text, doc.parts, question, quote)
+          partRefs = doc.refs
         } else prompt = followUpPrompt(question, quote)
-        run = await this.startRun(chat, caller, ref, mode, pick, resume)
+        run = await this.startRun(chat, caller, ref, mode, pick, resume, partRefs)
         this.startTurn(chat, run, prompt, question, quote)
       } else this.startTurn(chat, run, followUpPrompt(question, quote), question, quote)
     } finally {
@@ -422,38 +458,56 @@ export class AskService implements AskApi {
   }
 
   /** After an await: the caller's copy is still its own and its person unchanged (a copy that went, a guest narrowed). */
-  private recheck(caller: AskCaller, ref: CopyRef): void {
+  private recheck(caller: AskCaller, ref: CopyRef, chat: Chat, parts: readonly CopyRef[] = []): void {
     const owner = this.deps.overlays.copyOwner(ref.windowId, ref.overlayId, ref.copy)
     if (owner === undefined || owner !== caller.view || caller.person === undefined || !samePerson(this.deps.askerOf(caller.view), caller.person)) {
       throw new Error('Ask: refused (the window or your access changed)')
     }
+    // The chat is still the live one (review S-2): a guest's dropped meanwhile (any access change) must not spawn
+    // into an orphan no kill path, cap or token lookup sees.
+    if (this.chats.get(chat.id) !== chat) throw new Error('Ask: refused (the window or your access changed)')
+    // Every part whose text went into the prompt is still live in this view (review S-2b: a part released or hidden
+    // for it meanwhile must not reach its prompt).
+    for (const p of parts) {
+      if (this.deps.overlays.copyOwner(p.windowId, p.overlayId, p.copy) !== caller.view) throw new Error('Ask: refused (the window or your access changed)')
+    }
   }
 
   /** The opener's onAsk text and each part's with a live copy in the asking view. Throws when the opener gives none. */
-  private async context(caller: AskCaller, ref: CopyRef): Promise<{ text: string; parts: { pluginId: string; text: string }[] }> {
+  private async context(caller: AskCaller, ref: CopyRef): Promise<{ text: string; parts: { pluginId: string; text: string }[]; refs: CopyRef[] }> {
     const ask = (overlayId: string, copy: string): Promise<unknown> =>
       within(this.deps.overlays.askContext(ref.windowId, overlayId, caller.view, copy), ASK_CONTEXT_MS, 'the document did not come within ' + ASK_CONTEXT_MS / 1000 + ' s')
     let answer: unknown
     try {
       answer = await ask(ref.overlayId, ref.copy)
     } catch (err) {
-      throw new Error('Ask: refused (' + errorText(err) + ')', { cause: err })
+      // The plugin's error is its own words (an ENOENT naming a host path): the owner reads it, a guest gets a fixed
+      // text and the log keeps the detail (D-33, review S-2c).
+      if (caller.person === 'owner') throw new Error('Ask: refused (' + errorText(err) + ')', { cause: err })
+      this.deps.log('ask: a guest question got no document: ' + errorText(err))
+      throw new Error(GUEST_CONTEXT_FAILED, { cause: err })
     }
     const text = contextText(answer)
     if (text === undefined) throw new Error('Ask: this window gives no document to ask about')
     const parts: { pluginId: string; text: string }[] = []
+    const refs: CopyRef[] = []
     for (const part of this.deps.overlays.partsOf(ref.windowId, ref.overlayId)) {
       const copy = this.deps.overlays.copiesOf(ref.windowId, part.overlayId).find((c) => c.view === caller.view)
       if (!copy) continue
       try {
         const t = contextText(await ask(part.overlayId, copy.copy))
+        // After the await: the part's copy is still live in the asking view (review S-2b), else its text is left out.
+        if (this.deps.overlays.copyOwner(ref.windowId, part.overlayId, copy.copy) !== caller.view) continue
         // A part's null, throw or timeout leaves it out; it never fails the question (design-parts.md §5).
-        if (t !== undefined && t !== '') parts.push({ pluginId: part.pluginId, text: cutDoc(t) })
+        if (t !== undefined && t !== '') {
+          parts.push({ pluginId: part.pluginId, text: cutDoc(t) })
+          refs.push({ windowId: ref.windowId, overlayId: part.overlayId, copy: copy.copy })
+        }
       } catch {
         // left out
       }
     }
-    return { text: cutDoc(text), parts }
+    return { text: cutDoc(text), parts, refs }
   }
 
   private helpText(env: Record<string, string>): Promise<string> {
@@ -482,7 +536,15 @@ export class AskService implements AskApi {
   }
 
   /** Caps, the help check and the spawn. Throws before anything is spawned when a cap or a flag refuses. */
-  private async startRun(chat: Chat, caller: AskCaller, ref: CopyRef, mode: AskMode, pick: AskPick, resume: string | undefined): Promise<Run> {
+  private async startRun(
+    chat: Chat,
+    caller: AskCaller,
+    ref: CopyRef,
+    mode: AskMode,
+    pick: AskPick,
+    resume: string | undefined,
+    partRefs: readonly CopyRef[] = []
+  ): Promise<Run> {
     this.capCheck(chat, caller.windowId)
     const cwd = this.deps.projectRoot(chat.projectId)
     if (cwd === undefined) throw new Error('Ask: the project is gone')
@@ -504,7 +566,7 @@ export class AskService implements AskApi {
     if (missing.length > 0) throw new Error('Ask: the installed Claude Code lacks ' + missing.join(', ') + '; update it (claude update)')
     const argv = askArgv({ bin: this.bin, ...options })
     // Again after the awaits: the copy may be gone, the access narrowed, other questions may have passed the caps.
-    this.recheck(caller, ref)
+    this.recheck(caller, ref, chat, partRefs)
     this.capCheck(chat, caller.windowId)
     this.starts.get(caller.windowId)?.push(this.now())
     const run: Run = {
@@ -570,9 +632,10 @@ export class AskService implements AskApi {
       run.resuming = false
       // D12, defence in depth for the guest's no-tools guarantee (task 01 proves the flags; this catches a CLI that
       // drifted, or managed settings that add tools or MCP servers).
+      // Fail closed (review S-4): a field that is not a list (renamed, missing) counts as offered.
       if (run.mode === 'guest') {
-        const tools = Array.isArray(ev.tools) ? ev.tools.length : 0
-        const servers = Array.isArray(ev.mcp_servers) ? ev.mcp_servers.length : 0
+        const tools = Array.isArray(ev.tools) ? ev.tools.length : 1
+        const servers = Array.isArray(ev.mcp_servers) ? ev.mcp_servers.length : 1
         if (tools > 0 || servers > 0) {
           this.deps.log('ask: a guest chat was offered ' + tools + ' tool(s) and ' + servers + ' MCP server(s); ended')
           this.endRun(chat, { message: 'This Claude Code offers tools to a guest chat (a setting or an update); the chat was ended.', error: true })
@@ -584,6 +647,18 @@ export class AskService implements AskApi {
         delete chat.continuedIn
         this.save(chat)
       }
+      return
+    }
+    // Isolated mode (a guest's chat, or the owner's in an untrusted folder): nothing of an answer before an init line
+    // the check above passed (review S-4: a CLI that renames or drops the init line must not skip it silently).
+    if (run.mode === 'guest' && !run.sawInit && (ev.type === 'stream_event' || ev.type === 'assistant' || ev.type === 'result')) {
+      this.deps.log('ask: an isolated chat answered before a valid init line; ended')
+      // A resume that never got to its init: its session is not trusted to exist (as onExit does).
+      if (run.resuming) {
+        delete chat.sessionId
+        this.save(chat)
+      }
+      this.endRun(chat, { message: 'This Claude Code did not report its tools before answering; the chat was ended.', error: true })
       return
     }
     if (ev.type === 'stream_event' && run.busy && typeof ev.event === 'object' && ev.event !== null) {
@@ -671,7 +746,9 @@ export class AskService implements AskApi {
     const turn: AskTurn = { question: run.question, answer }
     if (run.quote !== undefined) turn.quote = run.quote
     if (error !== undefined) turn.error = error
-    chat.turns.push(turn)
+    // Capped in memory as on disk (review S-3): the history push of a long chat stays under the page message cap, and a
+    // guest's in-memory chat cannot grow without bound. The oldest turns go first.
+    chat.turns = capTurns([...chat.turns, turn])
     this.save(chat)
   }
 
@@ -699,6 +776,11 @@ export class AskService implements AskApi {
     chat.run = undefined
     if (run.ended) return
     run.ended = true
+    // Its exit is not confirmed yet: a new process for the session, or Continue's tab, waits for it (review S-1).
+    chat.ending = run
+    void run.proc.exited.then(() => {
+      if (chat.ending === run) chat.ending = undefined
+    })
     clearTimeout(run.turnTimer)
     clearTimeout(run.idleTimer)
     clearTimeout(run.flushTimer)

@@ -52,6 +52,7 @@ describe("an Ask process's token", () => {
         copiesOf: () => [],
         notesOf: () => ({ pluginId: 'a.jira', key: 'k' }),
         openerPluginOf: () => 'a.jira',
+        infos: () => [{ id: 'o' }] as never,
         postEnvelope: () => true,
         onCopyReady: () => () => {},
         onCopyEnd: () => () => {},

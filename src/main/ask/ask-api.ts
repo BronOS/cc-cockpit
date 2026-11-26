@@ -49,7 +49,7 @@ export interface AskApi {
 export interface AskApiDeps {
   dataDir: string
   log: (message: string) => void
-  overlays: Pick<OverlayManager, 'copyOwner' | 'copiesOf' | 'notesOf' | 'postEnvelope' | 'onCopyReady' | 'onCopyEnd' | 'partsOf' | 'askContext' | 'openerPluginOf'>
+  overlays: Pick<OverlayManager, 'copyOwner' | 'copiesOf' | 'notesOf' | 'postEnvelope' | 'onCopyReady' | 'onCopyEnd' | 'partsOf' | 'askContext' | 'openerPluginOf' | 'infos'>
   /** The project's folder from main's record (Ask's cwd, never a payload's), or undefined for an unknown project. */
   projectRoot(projectId: string): string | undefined
   /** The project of an open window, or undefined. */
