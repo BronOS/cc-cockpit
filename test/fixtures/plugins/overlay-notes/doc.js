@@ -68,7 +68,10 @@ function setUpParts() {
     // Esc or a restart) is start, which resumes the stored chat.
     let live = false
     listenAsk((ev) => {
-      if (ev.type === 'history') {
+      if (ev.type === 'state') {
+        // D15: main's notice (the owner's chat isolated in a folder Claude Code has not trusted), as text.
+        $('ask-notice').textContent = typeof ev.notice === 'string' ? ev.notice : ''
+      } else if (ev.type === 'history') {
         $('history').replaceChildren(
           ...ev.turns.map((t) => {
             const li = document.createElement('li')
