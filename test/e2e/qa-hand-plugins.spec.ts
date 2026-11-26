@@ -37,6 +37,10 @@ test('qa hand plugins', async () => {
     await c.page.waitForTimeout(3_000)
     out.status = (await c.hook<HostStatus>('hostStatus', c.projectDir)).plugins.filter((p) => p.id.startsWith('bronos.'))
     out.notifications = await c.hook<string[]>('notifications')
+    // M1: which provider each user of a service gets, and any problem (the Plugins page's own view).
+    out.services = await c.page
+      .evaluate(async () => ((window as unknown as { cockpit: { invoke(c: string): Promise<unknown> } }).cockpit.invoke('settings.pluginServices')))
+      .catch((e: unknown) => `error: ${String(e)}`)
     await c.page.screenshot({ path: join(DIR, `plugins-${String(out.app)}.png`) })
   } finally {
     writeFileSync(join(DIR, `plugins-${String(out.app)}.json`), JSON.stringify(out, null, 2))

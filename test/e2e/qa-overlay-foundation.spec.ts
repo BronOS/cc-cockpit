@@ -334,9 +334,14 @@ test("a write guest: its Ask works, Continue is refused, a start naming another 
     // The owner's copy saw nothing of the guest's chat (events reach only the chat's own person).
     expect(await ownerDoc.locator('#answer').textContent()).toBe('')
 
-    // Continue in a tab is the owner's alone.
-    await wes.locator('#ask-continue').click()
-    await expect(wes.locator('#continue-result')).toContainText('refused', { timeout: 10_000 })
+    // Continue in a tab is the owner's alone: the guest's page is not offered it (S-6), and the call forged from its
+    // own shell page is refused by main.
+    const offered = await wes.locator('body').evaluate(() => typeof (window as unknown as { ccPanel: { ask: { continue?: unknown } } }).ccPanel.ask.continue)
+    if (offered === 'function') {
+      await wes.locator('#ask-continue').click()
+      await expect(wes.locator('#continue-result')).toContainText('refused', { timeout: 10_000 })
+    }
+    await expect(invokeIn(wesB.page, 'overlays.ask.continue', { overlayId: (await stack(c))[0]!.id, copy: 'mine?' })).rejects.toThrow()
 
     // A start forged from the guest's shell page naming a copy that is not its own: refused, nothing spawned.
     const overlayId = (await stack(c))[0]!.id
