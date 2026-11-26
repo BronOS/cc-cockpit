@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { makePage, urlsIn, CHUNK_CHARS, MESSAGE_CHARS } = require('../host/shared-page.js')
+const { makePage, urlsIn, CHUNK_CHARS, MESSAGE_CHARS, GUEST_LINKS, LINK_WINDOW_MS } = require('../host/shared-page.js')
 
 /** A perView overlay handle: connect/disconnect/message driven by the test, every post recorded per copy. */
 function fakeHandle() {
@@ -67,7 +67,8 @@ test('shared-page opens only http(s) URLs present in its document', async () => 
   handle.connect(OWNER)
   handle.connect(READER)
   await tick()
-  page.set({ html: 'x' }, { document: '<p><a href="https://jira.example/browse/A-1?x=1&amp;y=2">A-1</a> see https://docs.example/page). mailto:a@b.c javascript:alert(1)</p>' })
+  const doc = '<p><a href="https://jira.example/browse/A-1?x=1&amp;y=2">A-1</a> see https://docs.example/page). mailto:a@b.c javascript:alert(1)</p>'
+  page.set({ html: doc }, { document: doc })
   const click = (url, from = OWNER) => handle.message({ type: 'cc-kit.link', url }, from)
   click('https://jira.example/browse/A-1?x=1&y=2')
   click('https://docs.example/page', READER) // any access: the link is the document's own
@@ -91,6 +92,83 @@ test('shared-page opens only http(s) URLs present in its document', async () => 
   await tick()
   assert.deepEqual(ctx2.opened, [])
   assert.ok(urlsIn('a https://x.test/a&amp;b b').has('https://x.test/a&b'))
+})
+
+test('N5: a copy opens only links of what it was sent: a part projected away from a guest is not a link for it', async () => {
+  const handle = fakeHandle()
+  const ctx = fakeCtx()
+  const project = (state, from) => (from.access === 'owner' ? state : { ...state, aside: '' })
+  const page = makePage(handle, { ctx, project })
+  handle.connect(OWNER)
+  handle.connect(WRITER)
+  await tick()
+  const state = { html: '<a href="https://shown.example/a">a</a>', aside: '<a href="https://owner-only.example/b">b</a>' }
+  page.set(state, { document: `${state.html}\n${state.aside}` })
+  handle.message({ type: 'cc-kit.link', url: 'https://owner-only.example/b' }, WRITER) // not in its copy: refused
+  handle.message({ type: 'cc-kit.link', url: 'https://owner-only.example/b' }, OWNER)
+  await tick()
+  assert.deepEqual(ctx.opened, [['https://owner-only.example/b', { view: 'desktop:1' }]])
+  // Fail closed: a URL in the state but not in the named document opens for nobody.
+  page.set({ ...state, extra: 'https://not-in-doc.example/' }, { document: state.html })
+  handle.message({ type: 'cc-kit.link', url: 'https://not-in-doc.example/' }, OWNER)
+  await tick()
+  assert.equal(ctx.opened.length, 1)
+})
+
+test('N4: with no document named, an attribute URL of the state opens as written (no trailing slash from a JSON escape)', async () => {
+  const handle = fakeHandle()
+  const ctx = fakeCtx()
+  const page = makePage(handle, { ctx })
+  handle.connect(OWNER)
+  await tick()
+  page.set({ html: '<p><a href="https://a.example/x">x</a> and <a href="https://a.example/y?b=1&amp;c=2">y</a></p>' })
+  handle.message({ type: 'cc-kit.link', url: 'https://a.example/x' }, OWNER)
+  handle.message({ type: 'cc-kit.link', url: 'https://a.example/y?b=1&c=2' }, OWNER)
+  await tick()
+  assert.deepEqual(ctx.opened.map(([u]) => u), ['https://a.example/x', 'https://a.example/y?b=1&c=2'])
+})
+
+test("S-7: guests' link clicks share one small budget per plugin, so they never use up the owner's", async () => {
+  let t = 1000
+  const ctx = fakeCtx()
+  const doc = '<a href="https://a.example/">a</a>'
+  const pages = [fakeHandle(), fakeHandle()].map((handle) => {
+    const page = makePage(handle, { ctx, now: () => t })
+    handle.connect(OWNER)
+    handle.connect(WRITER)
+    handle.connect(READER)
+    return { handle, page }
+  })
+  await tick()
+  for (const { page } of pages) page.set({ html: doc }, { document: doc })
+  const click = (i, from) => pages[i].handle.message({ type: 'cc-kit.link', url: 'https://a.example/' }, from)
+  // Two guests in two windows of the same plugin, clicking in a loop: one open in the window, together.
+  for (let n = 0; n < 5; n++) {
+    click(0, WRITER)
+    click(1, READER)
+  }
+  await tick()
+  assert.equal(ctx.opened.filter(([, o]) => o.view !== 'desktop:1').length, GUEST_LINKS)
+  // The owner's clicks are not counted by the kit: main's 3 per 10 s are all left but GUEST_LINKS.
+  click(0, OWNER)
+  click(1, OWNER)
+  await tick()
+  assert.equal(ctx.opened.filter(([, o]) => o.view === 'desktop:1').length, 2)
+  // The window passes: a guest may open one again.
+  t += LINK_WINDOW_MS
+  click(1, READER)
+  click(0, WRITER)
+  await tick()
+  assert.equal(ctx.opened.filter(([, o]) => o.view !== 'desktop:1').length, GUEST_LINKS * 2)
+  // Another plugin (another ctx) has its own budget.
+  const other = fakeCtx()
+  const h3 = fakeHandle()
+  makePage(h3, { ctx: other, now: () => t }).set({ html: doc }, { document: doc })
+  h3.connect(WRITER)
+  await tick()
+  h3.message({ type: 'cc-kit.link', url: 'https://a.example/' }, WRITER)
+  await tick()
+  assert.equal(other.opened.length, 1)
 })
 
 test("shared-page replays each copy's state on connect, a guest's projected; replays chunked under the cap", async () => {
