@@ -23,7 +23,7 @@
 
 import { MAX_QUEUED_MESSAGES } from '../../sdk/panel-core'
 import type { IpcInvokeMap, OverlayCopyRefusal, OverlayInfo, OverlayReadyAnswer, PageHolder } from '../../shared/ipc'
-import { ENVELOPE_VERSION, OVERLAY_INTRO_MESSAGE, type EnvelopeAnswer, type OverlayIntro } from '../../shared/overlay-envelope'
+import { ENVELOPE_REQUEST_TIMEOUT_MS, ENVELOPE_VERSION, OVERLAY_INTRO_MESSAGE, type EnvelopeAnswer, type OverlayIntro } from '../../shared/overlay-envelope'
 import type { ViewAccess } from '../../shared/views'
 import { textHasEnvelopeKey, type PageEnvelope } from '../plugins/frame-messages'
 
@@ -110,16 +110,19 @@ export function htmlBodyOf(overlay: OverlayInfo, shell: HtmlBodyShell, refused?:
 /**
  * The intro a copy's frame gets before its port (shared/overlay-envelope.ts OverlayIntro, spec-review S1): which of
  * notes, Ask and page-started Discuss it has. `notes`: the overlay has a notes key. `ask`: the same, and this view may
- * Ask (never a read guest, D1). `discuss`: the toolbar shows Discuss here (`info.discuss` set and a view that may
- * write, as OverlayStack draws it). A part (design-parts.md §2) has none of them. A hint for the page's SDK only: main
- * refuses each call again by the view it bound.
+ * Ask (never a read guest, D1). `discuss`: a view that may write, whether or not the toolbar shows Discuss yet. The
+ * intro goes once, before the port, and a plugin may add `handle.onDiscuss` later (after an await, in `onConnect`):
+ * gating on `info.discuss` here left such a page without page-started Discuss for its life (review S-11). The
+ * page's request still goes through PageDiscussGate, which refuses it while the overlay has no Discuss
+ * (`no-discuss`). A part (design-parts.md §2) has none of them. A hint for the page's SDK only: main refuses each
+ * call again by the view it bound.
  */
-export function overlayIntroOf(overlay: Pick<OverlayInfo, 'notes' | 'discuss' | 'partOf'>, access: ViewAccess): OverlayIntro {
+export function overlayIntroOf(overlay: Pick<OverlayInfo, 'notes' | 'partOf'>, access: ViewAccess): OverlayIntro {
   const part = overlay.partOf !== undefined
   const notes = !part && overlay.notes === true
   return {
     type: OVERLAY_INTRO_MESSAGE,
-    overlay: { notes, ask: notes && access !== 'read', discuss: !part && overlay.discuss !== undefined && access !== 'read' }
+    overlay: { notes, ask: notes && access !== 'read', discuss: !part && access !== 'read' }
   }
 }
 
@@ -252,6 +255,8 @@ export interface CopyLineDeps {
   state(state: CopyLineState): void
   setTimer?(fn: () => void, ms: number): unknown
   clearTimer?(timer: unknown): void
+  /** The clock for how long a request waited (Date.now). */
+  now?(): number
   log?(message: string): void
 }
 
@@ -266,6 +271,14 @@ export interface CopyPagePort {
 }
 
 type Phase = 'idle' | 'asking' | 'waiting' | 'live' | 'refused'
+
+/**
+ * How long a page's request may wait for its copy (a `cap` backoff, a slow `ready`) and still be sent (review N7). The
+ * page gives up at ENVELOPE_REQUEST_TIMEOUT_MS from its send; a request sent to main later than this could be done
+ * after the page timed out and retried (`notes.add` twice), so it is answered `ok: false` instead, leaving main half
+ * the page's wait.
+ */
+export const HELD_ENVELOPE_MAX_MS = ENVELOPE_REQUEST_TIMEOUT_MS / 2
 
 /** One view's copy of one perView overlay, across the loads of its frame (see the header). */
 export class CopyLine {
@@ -286,7 +299,13 @@ export class CopyLine {
    * The page's posts before its copy is known (bounded like the page SDK's own queue): plain messages and envelope
    * requests in one queue, so they reach main in the order the page sent them.
    */
-  private held: Array<string | PageEnvelope> = []
+  private held: Array<string | { envelope: PageEnvelope; at: number }> = []
+  /**
+   * The page posted its result (HtmlOverlay's `answered`): the overlay is closing or hiding with it, so a later
+   * request is answered `ok: false` at once, never left to the page's 30 s timeout (review N7). Cleared when the
+   * result was refused and the page may answer again.
+   */
+  private resulted = false
   /** The page said it has drawn before its copy was known. */
   private drawn = false
   private attempt = 0
@@ -369,9 +388,10 @@ export class CopyLine {
    * request is answered on the port it came from, unless that load ended (its page is gone).
    */
   fromPageEnvelope(envelope: PageEnvelope): void {
+    if (this.resulted) return this.answer(envelope.id, { ok: false, error: 'the page has answered: the overlay is closing' })
     if (this.phase === 'live' && this.copy !== undefined) return this.dispatch(this.copy, envelope)
     if (this.phase === 'asking' || this.phase === 'waiting') {
-      if (this.held.length < MAX_QUEUED_MESSAGES) this.held.push(envelope)
+      if (this.held.length < MAX_QUEUED_MESSAGES) this.held.push({ envelope, at: this.now() })
       else this.answer(envelope.id, { ok: false, error: 'the page has no copy yet and the queue is full' })
       return
     }
@@ -421,7 +441,12 @@ export class CopyLine {
    * The page's `{ result }`, by this view's access (resultActionOf). `onRefused` lets the page answer again when
    * main refused the value (or there was no copy to answer for).
    */
-  pageResult(value: unknown, onRefused: () => void): void {
+  pageResult(value: unknown, givenOnRefused: () => void): void {
+    this.resulted = true
+    const onRefused = (): void => {
+      this.resulted = false
+      givenOnRefused()
+    }
     const action = resultActionOf(this.deps.access)
     if (action === 'hide') return this.deps.hide()
     if (action === 'close') return this.deps.close()
@@ -467,7 +492,7 @@ export class CopyLine {
       const reason: OverlayCopyRefusal = answer?.refused ?? 'not-per-view'
       if (reason === 'cap') return this.retry()
       // No copy will come for this load: each request the page is waiting on is answered, never left to time out.
-      for (const item of this.held) if (typeof item !== 'string') this.answer(item.id, { ok: false, error: `no copy of the overlay here (${reason})` })
+      for (const item of this.held) if (typeof item !== 'string') this.answer(item.envelope.id, { ok: false, error: `no copy of the overlay here (${reason})` })
       this.clearBuffers()
       this.phase = 'refused'
       this.report({ loading: false, refused: reason })
@@ -490,9 +515,12 @@ export class CopyLine {
       if (envelope) this.port?.post(text, envelope)
       else this.port?.post(text)
     }
+    const now = this.now()
     for (const item of held) {
       if (typeof item === 'string') this.deps.message(copy, item)
-      else this.dispatch(copy, item)
+      // Waited too long: the page may have given up and retried; answered, never sent (HELD_ENVELOPE_MAX_MS).
+      else if (now - item.at > HELD_ENVELOPE_MAX_MS) this.answer(item.envelope.id, { ok: false, error: 'the request waited too long for its copy; not sent' })
+      else this.dispatch(copy, item.envelope)
     }
     if (drawn) this.deps.loaded(copy)
     this.report({ loading: answer.loaded !== true && !drawn })
@@ -538,6 +566,10 @@ export class CopyLine {
     this.earlyReload.clear()
     this.held = []
     this.drawn = false
+  }
+
+  private now(): number {
+    return this.deps.now ? this.deps.now() : Date.now()
   }
 
   private report(next: CopyLineState): void {

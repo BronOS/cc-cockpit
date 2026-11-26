@@ -68,7 +68,9 @@ export interface PanelAskApi {
 export interface PanelOverlayApi {
   /**
    * Open the app's own Discuss with Claude popover (new session or an open tab) from the page's own button; the app
-   * arms its Send after a moment and sends nothing by itself. Present only when the overlay shows Discuss.
+   * arms its Send after a moment and sends nothing by itself. Present in a view that may write (never
+   * a read guest's), also before the overlay has Discuss: the call rejects while it has none (the plugin adds
+   * `handle.onDiscuss` when it likes, and the page is told once, before its port).
    */
   readonly discuss?: () => Promise<null>
 }

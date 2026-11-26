@@ -364,7 +364,7 @@ export interface PanelApi {
   readonly notes: PanelNotesApi | undefined
   /** Ask Claude about the overlay's document: as `notes`, and never for a read-only guest. */
   readonly ask: PanelAskApi | undefined
-  /** In an overlay copy: `discuss()` opens the app's Discuss popover (when the overlay shows Discuss). */
+  /** In an overlay copy: `discuss()` opens the app's Discuss popover (rejected while the overlay has no Discuss). */
   readonly overlay: PanelOverlayApi | undefined
 }
 

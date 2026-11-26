@@ -228,8 +228,9 @@ function CopyOverlay(props: {
       connect={(deliver) => {
         const ch = new MessageChannel()
         ch.port1.onmessage = (event: MessageEvent<unknown>) => {
-          if (answered.current) return
-          // An envelope (`$cc`) first: routed to its channel with the copy id, never relayed as overlays.message.
+          // An envelope (`$cc`) first: routed to its channel with the copy id, never relayed as overlays.message. Also
+          // after the page answered: CopyLine refuses it at once then, where dropping it here left the page waiting
+          // its 30 s for each request (review N7).
           const envelope = pageEnvelopeOf(event.data)
           if (envelope !== undefined) {
             if (isPageEnvelope(envelope)) line.current?.fromPageEnvelope(envelope)
@@ -240,6 +241,8 @@ function CopyOverlay(props: {
             }
             return
           }
+          // Nothing more once the page answered: the overlay is closing with that answer.
+          if (answered.current) return
           const answer = overlayResultOf(event.data)
           if (answer) {
             if (!line.current) return
