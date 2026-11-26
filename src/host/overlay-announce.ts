@@ -98,7 +98,8 @@ export class OverlayAnnouncements {
 
   /**
    * ctx.overlay.onAnnounce(kind, listener) of `pluginId`: from now on it hears every announcement of `kind`, and
-   * first the live ones (each in its own turn, as below). Returns the disposer.
+   * the live ones, each in its own turn after this call returns (so a listener may call the disposer it was
+   * returned: `const off = onAnnounce(k, () => off())`). Returns the disposer.
    */
   listen(pluginId: string, kind: unknown, listener: unknown): () => void {
     if (!isAnnounceKind(kind)) throw new TypeError('overlay.onAnnounce: kind must be 1 to 40 characters of a-z, 0-9, . and -')
@@ -107,7 +108,12 @@ export class OverlayAnnouncements {
     const entry: Entry = { pluginId, kind, listener: (a) => (listener as AnnounceListener)(a) }
     this.entries.add(entry)
     for (const a of [...this.live.values()]) {
-      if (a.kind === kind && this.entries.has(entry)) this.run(entry, a)
+      if (a.kind !== kind) continue
+      // Skipped when the listener was removed meanwhile, or the announcement ended or was replaced (a newer one of
+      // that overlay reached the listener live).
+      queueMicrotask(() => {
+        if (this.entries.has(entry) && this.live.get(a.overlay.id) === a) this.run(entry, a)
+      })
     }
     return () => {
       this.entries.delete(entry)
