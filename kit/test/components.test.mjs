@@ -82,7 +82,7 @@ test('no component sends, posts or opens without a click', async () => {
     m.tabs.select('ask')
     await flush()
     await flush()
-    const sends = ['post', 'ask.start', 'ask.say', 'ask.close', 'ask.continueInTab', 'overlay.discuss', 'notes.add', 'notes.change', 'notes.remove']
+    const sends = ['post', 'ask.start', 'ask.say', 'ask.close', 'ask.continue', 'overlay.discuss', 'notes.add', 'notes.change', 'notes.remove']
     const made = m.panel.calls.map((c) => c[0])
     for (const s of sends) assert.ok(!made.includes(s), `${s} without a click: ${JSON.stringify(m.panel.calls)}`)
     // What did happen: reads, and the note for Claude saved as typed (a write, not a send).
@@ -102,7 +102,7 @@ test('no component sends, posts or opens without a click', async () => {
     button(m.ask.el, 'Close chat').click()
     assert.equal(count('ask.close'), 1)
     button(m.ask.el, 'Continue in a tab').click()
-    assert.equal(count('ask.continueInTab'), 1)
+    assert.equal(count('ask.continue'), 1)
     m.discuss.el.click()
     assert.equal(count('overlay.discuss'), 1)
     button(m.tabs.el, 'Ask').click()
@@ -207,4 +207,31 @@ test('postLink posts http(s) only', () => {
   assert.equal(kit.postLink('mailto:a@b.c', panel), false)
   assert.equal(kit.postLink('https://x.test', panel), true)
   assert.deepEqual(panel.calls, [['post', { type: 'cc-kit.link', url: 'https://x.test/' }]])
+})
+
+test('Continue in a tab calls ccPanel.ask.continue(); a throw or a refusal shows its error, never silent', async () => {
+  for (const fail of ['throws', 'rejects']) {
+    const doc = new FakeDocument()
+    const panel = fakePanel()
+    const root = doc.createElement('div')
+    doc.body.appendChild(root)
+    const ask = kit.mountAsk(root, { doc, panel, canContinue: true })
+    await flush()
+    button(ask.el, 'Continue in a tab').click()
+    await flush()
+    assert.deepEqual(panel.calls.filter((c) => c[0] === 'ask.continue'), [['ask.continue']])
+    const alert = [...all(ask.el)].find((e) => e.getAttribute && e.getAttribute('role') === 'alert')
+    assert.equal(alert.hidden, true, 'no error when it went')
+    panel.ask.continue =
+      fail === 'throws'
+        ? () => {
+            throw new TypeError('ask.continue is not available')
+          }
+        : () => Promise.reject(new Error('only the owner may continue'))
+    button(ask.el, 'Continue in a tab').click()
+    await flush()
+    assert.equal(alert.hidden, false, fail)
+    assert.match(alert.textContent, fail === 'throws' ? /not available/ : /only the owner/)
+    ask.destroy()
+  }
 })

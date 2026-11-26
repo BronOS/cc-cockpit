@@ -203,10 +203,10 @@ so when your script runs they are still undefined on every app:
   `onChange(fn)` gets that state after every write in any view. `anchor` is yours (where the note sits, at most
   2,048 characters of JSON). A read guest's writes reject. The note for Claude is `global`.
 - `ccPanel.ask`: `{ start({ question, quote? }), say({ question, quote? }), close(), pick({ model?, effort? }),
-  continueInTab(), on(type, fn) }`, a chat with Claude about the document your host's `handle.onAsk` gives.
+  continue(), on(type, fn) }`, a chat with Claude about the document your host's `handle.onAsk` gives.
   `on(type, fn)` hears one kind of push, `type` one of `history` (the stored turns, on connect), `state`, `delta`
   (answer text as it comes, `{ text }`), `tool`, `answer` (`{ text }`) and `end`; another type throws. `pick` with nothing reads the model and effort lists and the pick; the owner's pick is remembered.
-  `continueInTab()` (the owner's) opens the same session in a Claude tab. Undefined for a read guest. Render answers
+  `continue()` (the owner's) opens the same session in a Claude tab. Undefined for a read guest. Render answers
   as text or sanitized Markdown, never as raw HTML, and never post or send an answer without the person's click.
 - `ccPanel.overlay.discuss()`: open the toolbar's Discuss with Claude popover from your own button (New session, or
   a Claude tab); the person sends from there. Nothing is sent by the call itself.

@@ -270,7 +270,7 @@ export function fakePanel({ notes = true, ask = true, discuss = true, state = { 
       say: rec('ask.say', null),
       close: rec('ask.close', null),
       pick: rec('ask.pick', { models: ['sonnet', 'opus'], efforts: ['low', 'high'] }),
-      continueInTab: rec('ask.continueInTab', { tabId: 't1' }),
+      continue: rec('ask.continue', { tabId: 't1' }),
       on: sub(listeners.ask),
     }
   }

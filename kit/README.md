@@ -33,7 +33,7 @@ A plugin's `test/kit-pin.test.js` hashes its copy against its `SHA256SUMS`. The 
 - No `innerHTML` with document, answer or note text: text goes in with `createTextNode` or `textContent`, and a
   document's HTML goes through `sanitizeTree` and `render`.
 - Nothing is sent, posted or opened without a person's click (or Enter in a field). That covers `ccPanel.post`,
-  `ccPanel.ask.start`, `.say` and `.continueInTab`, `ccPanel.overlay.discuss`, and `window.open`.
+  `ccPanel.ask.start`, `.say` and `.continue`, `ccPanel.overlay.discuss`, and `window.open`.
   Note writes are not sends. A note's Save is a click, and the note for Claude saves as it is typed, so Esc loses
   nothing.
 - Links: the kit posts `{ type: 'cc-kit.link', url }` on a click. The host's `makePage` opens only an http(s) URL
