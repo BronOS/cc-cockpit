@@ -10,13 +10,14 @@ const keyOf = (part: OverlayInfo): string => part.pluginId ?? part.id
 
 /**
  * An html overlay's body with its parts (shared/design-parts.md §4): the opener's page, then up to 2 parts in attach
- * order, each under a core strip naming its plugin with a ✕. Side by side when the body is wide, stacked below that,
- * one frame behind a switch when narrow (part-split.ts).
+ * order, each under a core strip naming its plugin with a ✕. Side by side when the window is wide, stacked below that,
+ * one frame behind a switch when narrow (part-split.ts, by the window's width).
  *
  * The opener's frame is always this element's first child, with or without parts and in every mode: a part that
  * attaches or detaches, or a resize that changes the mode, never moves or remounts it (moving an iframe in the DOM
  * reloads its page). The switch comes last in the DOM and is put first by CSS `order`; a frame not shown behind the
- * switch is `display: none`, which keeps its page running.
+ * switch is `data-shown="false"` (`display: none`), which keeps its page running. The look is styles.css's
+ * `.overlay-parts` rules; only the computed shares are inline.
  *
  * Nothing here decides what a part may do: main lists a part only to a view that may see it (visibleTo), its frame is
  * its own plugin's sandboxed page with its own port, and the ✕ is OverlayStack's close (`overlays.close`, a read
@@ -48,14 +49,13 @@ export function OverlayParts(props: {
   /** Behind the switch: the frame shown (the opener's id or a part's). */
   const [selected, setSelected] = useState(parent.id)
 
+  // The window's width, not the body's (design-parts.md §4: the thresholds are window widths). A default overlay is
+  // 75% of the window, so the body's own width would put a 1440 px laptop's parts behind the stacked layout.
   useLayoutEffect(() => {
-    const node = el.current
-    if (!node) return
-    const measure = (): void => setWidth(node.getBoundingClientRect().width)
+    const measure = (): void => setWidth(window.innerWidth)
     measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(node)
-    return () => observer.disconnect()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
   }, [])
 
   // A part that went while it was the one shown: back to the opener's page.
@@ -94,16 +94,13 @@ export function OverlayParts(props: {
   }
 
   return (
-    <div
-      ref={el}
-      className="overlay-parts"
-      data-mode={mode}
-      style={{ position: 'relative', flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: mode === 'side' ? 'row' : 'column' }}
-    >
+    <div ref={el} className="overlay-parts" data-mode={mode}>
       <div
         key="opener"
         className="overlay-part-opener"
-        style={{ position: 'relative', flex: flexOf(parts.length === 0 ? 1 : openerShare), minHeight: 0, minWidth: 0, display: shown(parent.id) ? 'flex' : 'none', flexDirection: 'column' }}
+        data-shown={shown(parent.id)}
+        // The share is computed (part-split.ts); the rest is styles.css's `.overlay-part-opener`.
+        style={{ flex: flexOf(parts.length === 0 ? 1 : openerShare) }}
       >
         {props.children}
       </div>
@@ -118,12 +115,6 @@ export function OverlayParts(props: {
               aria-orientation={mode === 'side' ? 'vertical' : 'horizontal'}
               aria-label={`Resize ${name}`}
               onPointerDown={(e) => startDrag(i, e)}
-              style={{
-                flex: '0 0 6px',
-                cursor: mode === 'side' ? 'col-resize' : 'row-resize',
-                background: 'var(--cc-border, rgba(127, 127, 127, 0.3))',
-                touchAction: 'none'
-              }}
             />
           ),
           <section
@@ -131,33 +122,29 @@ export function OverlayParts(props: {
             className="overlay-part"
             aria-label={name}
             data-part-plugin={part.pluginId}
-            style={{ position: 'relative', flex: flexOf(shares[i] ?? 0), minHeight: 0, minWidth: 0, display: shown(part.id) ? 'flex' : 'none', flexDirection: 'column' }}
+            data-shown={shown(part.id)}
+            style={{ flex: flexOf(shares[i] ?? 0) }}
           >
-            <div
-              className="overlay-part-strip"
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 8px', fontSize: 12, borderBottom: '1px solid var(--cc-border, rgba(127, 127, 127, 0.3))' }}
-            >
-              <span style={{ flex: 1, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+            <div className="overlay-part-strip">
+              <span className="overlay-part-name">{name}</span>
               <button type="button" className="overlay-part-close" aria-label={`Close ${name}`} title={`Close ${name}`} onClick={() => props.onClosePart(part)}>
                 ✕
               </button>
             </div>
-            <div className="overlay-part-body" style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <div className="overlay-part-body">
               {props.renderPart(part)}
             </div>
           </section>
         ]
       })}
       {mode === 'switch' && (
-        <div key="switch" className="overlay-parts-switch" role="tablist" aria-label="Shown here" style={{ order: -1, display: 'flex', gap: 4, padding: 4 }}>
+        <div key="switch" className="overlay-parts-switch" role="tablist" aria-label="Shown here">
           {[parent, ...parts].map((o) => (
             <button
               key={o.id}
               type="button"
               role="tab"
               aria-selected={shownId === o.id}
-              // Shape as well as colour: the shown one is bold and underlined.
-              style={{ fontWeight: shownId === o.id ? 700 : 400, textDecoration: shownId === o.id ? 'underline' : 'none' }}
               onClick={() => setSelected(o.id)}
             >
               {o === parent ? parent.title : (o.pluginTitle ?? o.title)}

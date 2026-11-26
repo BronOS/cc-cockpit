@@ -1,5 +1,5 @@
 // Parts' layout in their window (shared/design-parts.md §4), pure: OverlayParts.tsx draws it. The parent's body is a row
-// (side by side, wide), a column (stacked) or one frame at a time behind a switch (narrow). Each part's share is
+// (side by side, a wide window), a column (stacked) or one frame at a time behind a switch (narrow). Each part's share is
 // remembered per (opener plugin, part plugin) per device in the browser's own storage, as a remote view keeps its
 // zone sizes (zones/view-geometry.ts): never in main, and storage that is missing or throws gives the default.
 
@@ -10,13 +10,16 @@ export const PART_MAX = 0.6
 /** The opener keeps at least this share, however many parts there are. */
 export const OPENER_MIN = 0.25
 
-/** Side by side from this body width (px); stacked below it; one frame behind a switch below SWITCH_BELOW. */
+/**
+ * Side by side from this window width (px); stacked below it; one frame behind a switch below SWITCH_BELOW. The window's,
+ * not the overlay body's (design-parts.md §4): a default overlay is 75% of the window.
+ */
 export const SIDE_BY_SIDE_FROM = 1280
 export const SWITCH_BELOW = 700
 
 export type PartSplitMode = 'side' | 'stacked' | 'switch'
 
-/** The layout for a body `width` px wide (a width not measured yet counts as wide: it is measured on mount). */
+/** The layout in a window `width` px wide (a width not measured yet counts as wide: it is measured on mount). */
 export function partSplitMode(width: number): PartSplitMode {
   if (!Number.isFinite(width) || width >= SIDE_BY_SIDE_FROM) return 'side'
   return width >= SWITCH_BELOW ? 'stacked' : 'switch'
