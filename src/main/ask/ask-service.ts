@@ -41,6 +41,7 @@ import { askArgv, flagsFor, isSessionUuid, missingFlags, type AskMode } from './
 import { cleanPick, pickState, AskPickStore, type AskPick } from './ask-pick'
 import { readHelp as realReadHelp, spawnAsk, type AskProcess, type AskSpawn, type ReadHelp } from './ask-runner'
 import { AskStore } from './ask-store'
+import { folderTrusted } from './ask-trust'
 
 /** Deltas are sent at most this often per chat (one push per window of text). */
 export const DELTA_FLUSH_MS = 50
@@ -61,6 +62,8 @@ export interface AskServiceDeps extends AskApiDeps {
   bin?: string
   /** A new Ask token (64 hex characters, the tabs' format). */
   newToken?: () => string
+  /** D15: whether Claude Code trusted the folder (ask-trust.ts; a test seam, the real reader by default). */
+  folderTrusted?: (folder: string, env: Record<string, string | undefined>) => Promise<boolean>
 }
 
 interface CopyRef {
@@ -72,6 +75,8 @@ interface CopyRef {
 interface Run {
   proc: AskProcess
   mode: AskMode
+  /** D15: the owner's chat in a folder Claude Code has not trusted, run with the guest isolation. */
+  untrusted: boolean
   model?: string
   effort?: string
   token: string
@@ -217,6 +222,7 @@ export class AskService implements AskApi {
   private readonly now: () => number
   private readonly bin: string
   private readonly newToken: () => string
+  private readonly folderTrusted: (folder: string, env: Record<string, string | undefined>) => Promise<boolean>
   /** claude --help per executable, kept only when it ran (an update is seen at the next spawn after a failure). */
   private readonly helps = new Map<string, Promise<string>>()
 
@@ -228,6 +234,7 @@ export class AskService implements AskApi {
     this.now = deps.now ?? Date.now
     this.bin = deps.bin ?? 'claude'
     this.newToken = deps.newToken ?? (() => randomBytes(32).toString('hex'))
+    this.folderTrusted = deps.folderTrusted ?? folderTrusted
     deps.overlays.onCopyReady((ev) => this.copyReady(ev))
     deps.overlays.onCopyEnd((ev) => this.copyEnd(ev))
   }
@@ -390,8 +397,10 @@ export class AskService implements AskApi {
       const pick = this.pickOf(chat)
       const mode: AskMode = person === 'owner' ? 'owner' : 'guest'
       let run = chat.run
-      // A pick changed since the process started: a new one resumes the session with it (quick-chat's switch).
-      if (run && (run.model !== pick.model || run.effort !== pick.effort || run.mode !== mode)) {
+      // A pick changed since the process started: a new one resumes the session with it (quick-chat's switch). A
+      // guest's question never rides an owner-mode process. An owner's process keeps the mode it started with (D15:
+      // trust is read at a chat's start; an isolated one stays so until it ends).
+      if (run && (run.model !== pick.model || run.effort !== pick.effort || (mode === 'guest' && run.mode !== 'guest'))) {
         this.endRun(chat)
         await this.waitGone(run)
         run = undefined
@@ -478,7 +487,12 @@ export class AskService implements AskApi {
     const cwd = this.deps.projectRoot(chat.projectId)
     if (cwd === undefined) throw new Error('Ask: the project is gone')
     const token = this.newToken()
-    const env = buildPtyEnv(await this.deps.loginEnv(), { binDir: dataPaths(this.deps.dataDir).binDir, tab: { token } })
+    const login = await this.deps.loginEnv()
+    // D15: the owner's Ask in a folder Claude Code never trusted runs isolated (no tools, none of the folder's
+    // settings or hooks: `-p` shows no trust dialog). Read now, at every chat start, from the env claude runs with.
+    const untrusted = mode === 'owner' && !(await this.folderTrusted(cwd, login))
+    if (untrusted) mode = 'guest'
+    const env = buildPtyEnv(login, { binDir: dataPaths(this.deps.dataDir).binDir, tab: { token } })
     let help: string
     try {
       help = await this.helpText(env)
@@ -496,6 +510,7 @@ export class AskService implements AskApi {
     const run: Run = {
       proc: { write: () => {}, kill: () => {}, exited: Promise.resolve() },
       mode,
+      untrusted,
       ...pick,
       token,
       windowId: caller.windowId,
@@ -512,7 +527,7 @@ export class AskService implements AskApi {
     }
     chat.run = run
     run.proc = this.spawn(argv, { cwd, env }, { line: (text) => this.onLine(chat, run, text), exit: (info) => this.onExit(chat, run, info) })
-    this.push(chat, { type: 'state', phase: 'starting', ...pick })
+    this.push(chat, { type: 'state', phase: 'starting', ...pick, ...noticeOf(run) })
     return run
   }
 
@@ -532,7 +547,7 @@ export class AskService implements AskApi {
       this.endRun(chat, { message: 'Claude did not finish within ' + Math.round(ASK_TURN_MS / 60_000) + ' minutes; the chat ended.', error: true })
     }, ASK_TURN_MS)
     run.turnTimer.unref?.()
-    this.push(chat, { type: 'state', phase: 'thinking', ...this.pickOf(chat) })
+    this.push(chat, { type: 'state', phase: 'thinking', ...this.pickOf(chat), ...noticeOf(run) })
     run.proc.write(userLine(prompt))
   }
 
@@ -644,7 +659,7 @@ export class AskService implements AskApi {
     }
     this.recordTurn(chat, run, text, error)
     this.push(chat, { type: 'answer', text, ...(error !== undefined ? { error } : {}) })
-    this.push(chat, { type: 'state', phase: 'ready', ...this.pickOf(chat) })
+    this.push(chat, { type: 'state', phase: 'ready', ...this.pickOf(chat), ...noticeOf(run) })
     if (run.ended) return
     run.idleTimer = setTimeout(() => {
       this.endRun(chat, { message: 'The chat rested after ' + Math.round(ASK_IDLE_MS / 60_000) + ' idle minutes; ask again to go on.', error: false })
@@ -785,6 +800,11 @@ export class AskService implements AskApi {
     }
   }
 }
+
+/** D15's notice, on every state push of an owner's chat that runs isolated in a folder Claude Code has not trusted. */
+export const UNTRUSTED_NOTICE =
+  'Answering from the document only: Claude Code has not trusted this folder yet. Open a Claude tab in it once and accept its question, then ask again.'
+const noticeOf = (run: Run): { notice?: string } => (run.untrusted ? { notice: UNTRUSTED_NOTICE } : {})
 
 /** The document cut to its cap, with main's note. */
 function cutDoc(text: string, cut = false): string {
