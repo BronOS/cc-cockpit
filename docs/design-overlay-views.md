@@ -5,6 +5,11 @@ still open and 6 new, then 1 blocker on main-routed file opens; all taken, D-4 s
 page in one view, Take over) and design-guests.md §9 and §16.3 (the `overlays.*` row: "a guest never holds an html
 overlay"), which this reverses for `perView` overlays; design-guests.md gets a pointer here.
 
+Built on since (0.28.0): overlay notes kept by main, Ask, page-started Discuss, the `$cc` envelope on a copy's port
+and parts (another plugin's page beside an announced overlay, with its own copies, never through `via`) are in
+`docs/design.md` §4 ("Overlay notes" to "Mail-frame links"). They reuse this document's copies, `from` and guest rules
+unchanged: pushes ride `overlays.message` per copy, so `mayConnectCopy`, `via` and `ownCopyEvent` apply to them.
+
 ## 1. Problem
 
 A guest who may see a plugin (Settings › Plugins, shown to guests) gets nothing from its html overlays: the Reviewer's
