@@ -324,6 +324,13 @@ describe('the context', () => {
     p.emit({ type: 'result', subtype: 'success', result: '' })
     const done = pushesTo('c1').find((d) => d.type === 'answer') as { text: string }
     expect(done.text).toBe('a'.repeat(ASK_MAX_ANSWER) + '\n\n(the answer was cut here)')
+    // The host cut it already (onAsk's cut: true, task 05): main still adds the note, once.
+    s.close(owner(), q(OWNER_VIEW))
+    onAsk = () => Promise.resolve({ text: 'short head', cut: true })
+    vi.useRealTimers()
+    await s.start(owner(), { overlayId: 'o2', copy: 'c1', question: 'q' })
+    expect(sent(procs[1]!)).toContain('short head\n\n(the document was cut here)\n')
+    expect(sent(procs[1]!).split('(the document was cut here)')).toHaveLength(2)
   })
 })
 

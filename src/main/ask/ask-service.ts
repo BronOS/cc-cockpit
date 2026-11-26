@@ -176,11 +176,15 @@ function questionOf(req: unknown): { question: string; quote?: string } {
   return { question: r.question, ...(typeof r.quote === 'string' && r.quote !== '' ? { quote: r.quote } : {}) }
 }
 
-/** An onAsk answer's text, or undefined (null, another shape). */
+/**
+ * An onAsk answer's text, or undefined (null, another shape). The host cuts a text over the cap and says so with
+ * `cut: true` (task 05); main adds the note either way (S5), so the cut text gets it as an over-long one does.
+ */
 function contextText(answer: unknown): string | undefined {
   if (typeof answer !== 'object' || answer === null) return undefined
-  const text = (answer as { text?: unknown }).text
-  return typeof text === 'string' ? text : undefined
+  const { text, cut } = answer as { text?: unknown; cut?: unknown }
+  if (typeof text !== 'string') return undefined
+  return cut === true ? cutDoc(text, true) : text
 }
 
 function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
@@ -783,8 +787,10 @@ export class AskService implements AskApi {
 }
 
 /** The document cut to its cap, with main's note. */
-function cutDoc(text: string): string {
-  return text.length > ASK_MAX_DOCUMENT ? text.slice(0, ASK_MAX_DOCUMENT) + DOCUMENT_CUT_NOTE : text
+function cutDoc(text: string, cut = false): string {
+  if (text.length > ASK_MAX_DOCUMENT) return text.slice(0, ASK_MAX_DOCUMENT) + DOCUMENT_CUT_NOTE
+  if (cut && !text.endsWith(DOCUMENT_CUT_NOTE)) return text + DOCUMENT_CUT_NOTE
+  return text
 }
 
 /** A tool call's short detail: a path, a pattern or a command, one line. Never its output. */
