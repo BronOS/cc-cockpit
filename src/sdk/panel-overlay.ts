@@ -91,6 +91,11 @@ export class OverlayCopyClient {
   /** The highest notes `seq` seen from a list: a push at or below it is older than what the page holds. */
   private notesSeq = -1
   private askSeq = -1
+  /**
+   * The last Ask `history` and `state` pushes (main sends history once, when the copy is ready): replayed to an `ask.on`
+   * listener added after them, so a page or a kit that subscribes late still shows the chat (dev-frank's B2).
+   */
+  private readonly lastAsk = new Map<AskEventType, unknown>()
   private readonly notesListeners = new Set<(state: NotesState) => void>()
   private readonly askListeners = new Map<AskEventType, Set<(data: unknown) => void>>()
   private readonly notesApi: PanelNotesApi
@@ -150,6 +155,15 @@ export class OverlayCopyClient {
         const entry = (data: unknown): void => listener(data as never)
         set.add(entry)
         this.askListeners.set(type, set)
+        // Late to a history or state push: that push, once, after this call returns. Not when a newer one came
+        // meanwhile (the listener heard it live) or the listener was removed.
+        const stored = this.lastAsk.get(type)
+        if (stored !== undefined) {
+          queueMicrotask(() => {
+            if (!set.has(entry) || this.lastAsk.get(type) !== stored) return
+            this.safely(() => entry(structuredClone(stored)), `an ask.on("${type}") listener`)
+          })
+        }
         return () => {
           set.delete(entry)
         }
@@ -223,6 +237,7 @@ export class OverlayCopyClient {
       }
       if (seq <= this.askSeq) return
       this.askSeq = seq
+      if (type === 'history' || type === 'state') this.lastAsk.set(type, structuredClone(data))
       for (const listener of [...(this.askListeners.get(type as AskEventType) ?? [])]) {
         this.safely(() => listener(structuredClone(data)), `an ask.on("${type}") listener`)
       }
