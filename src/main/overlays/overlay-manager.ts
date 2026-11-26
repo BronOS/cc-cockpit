@@ -359,7 +359,13 @@ export interface DiscussSessions {
    * Throws when refused. Discuss passes `core`: the person clicked Send, so their typing in the
    * tab neither refuses the text nor drops it from the queue (send-gate.ts takenOver).
    */
-  send(tabId: string, text: string, origin: SendOrigin, guestId?: string): { delivered: boolean }
+  send(tabId: string, text: string, origin: SendOrigin, guestId?: string): { id: string; delivered: boolean }
+  /**
+   * The queued item `itemId` (a `send` that was not `delivered`) settled: typed into the tab (`delivered`) or
+   * dropped from the queue (the tab ended, the person took it over, a guest's access ended). Discuss removes the notes
+   * it sent only on `delivered` (shared/design.md §3, task 03; spec-review S12). Absent: the notes are kept.
+   */
+  onSettled?(itemId: string, fn: (how: 'delivered' | 'dropped') => void): void
   /**
    * Open a Claude tab in the window's project folder with `prompt` as its first prompt (main's own
    * open path, the ctx.sessions.open argument rule) and tell the window. Throws when refused.

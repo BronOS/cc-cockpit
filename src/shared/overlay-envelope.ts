@@ -216,3 +216,34 @@ export function isEnvelope(value: unknown): value is { $cc: typeof ENVELOPE_VERS
 export function hasEnvelopeKey(value: unknown): boolean {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.hasOwn(value, ENVELOPE_KEY)
 }
+
+// ---- Host RPC of parts and announcements (design-parts.md; spec-review S12) ------------------------------------
+// Names and payloads only, frozen here for tasks 05 (host) and 14 (main); nothing sends them in this build. The host
+// never knows an overlay's id for its own handle, so it names the handle; main resolves it to the overlay.
+
+/** host → main call: `handle.announce({ kind, refs })`. */
+export const HOST_OVERLAY_ANNOUNCE = 'overlay.announce'
+/** main → host event: an overlay of the window announced (to every plugin with an `onAnnounce` of the kind). */
+export const HOST_OVERLAY_ANNOUNCED = 'overlay.announced'
+/** main → host event: an announced overlay closed, or announced something else (its last announcement is void). */
+export const HOST_OVERLAY_UNANNOUNCED = 'overlay.unannounced'
+
+/** The `overlay.announce` call's params (host → main). */
+export interface OverlayAnnounceCall {
+  pluginId: string
+  handle: string
+  kind: string
+  refs: string[]
+}
+
+/** The `overlay.announced` event's params (main → host): main's own record of the overlay, never the opener's. */
+export interface OverlayAnnouncedEvent {
+  overlay: { id: string; opener: string; title: string; type?: { name: string; data: unknown } }
+  kind: string
+  refs: string[]
+}
+
+/** The `overlay.unannounced` event's params (main → host). */
+export interface OverlayUnannouncedEvent {
+  id: string
+}

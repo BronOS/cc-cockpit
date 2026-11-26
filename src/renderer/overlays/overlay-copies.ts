@@ -152,7 +152,12 @@ export interface CopyLineDeps {
 
 /** Where a page's messages go: its port (the shell's end). */
 export interface CopyPagePort {
-  post(text: string): void
+  /**
+   * `envelope`: main marked the text as its own (`overlays.message` `envelope: true`: a notes or Ask push,
+   * shared/overlay-envelope.ts), never the opener's post. The mark is main's word only: the port must keep it apart
+   * from the opener's messages (task 04), so a plugin's text that merely has a `$cc` key never passes for main's.
+   */
+  post(text: string, envelope?: true): void
 }
 
 type Phase = 'idle' | 'asking' | 'waiting' | 'live' | 'refused'
@@ -164,8 +169,11 @@ export class CopyLine {
   private phase: Phase = 'idle'
   private port: CopyPagePort | undefined
   private copy: string | undefined
-  /** main's events for copies not named yet (an answer in flight), by copy id; bounded together. */
-  private early = new Map<string, string[]>()
+  /**
+   * main's events for copies not named yet (an answer in flight), by copy id; bounded together. Main's envelope
+   * pushes keep their mark (main sends one only to a ready copy, but its event can overtake the `ready` answer).
+   */
+  private early = new Map<string, Array<{ text: string; envelope?: true }>>()
   private earlyCount = 0
   private earlyHide = new Set<string>()
   private earlyReload = new Set<string>()
@@ -192,10 +200,14 @@ export class CopyLine {
     }
   }
 
-  /** `overlays.message` for this overlay: to the page when it names the live copy, buffered while one is asked for. */
-  fromMain(copy: string, text: string): void {
+  /**
+   * `overlays.message` for this overlay: to the page when it names the live copy, buffered while one is asked for.
+   * `envelope`: the event's `envelope: true` (main's notes and Ask pushes), carried to the port as it is.
+   */
+  fromMain(copy: string, text: string, envelope?: true): void {
     if (this.phase === 'live' && copy === this.copy) {
-      this.port?.post(text)
+      if (envelope) this.port?.post(text, envelope)
+      else this.port?.post(text)
       return
     }
     if (this.phase !== 'asking') return
@@ -204,7 +216,7 @@ export class CopyLine {
       return
     }
     const list = this.early.get(copy) ?? []
-    list.push(text)
+    list.push(envelope ? { text, envelope } : { text })
     this.early.set(copy, list)
     this.earlyCount++
   }
@@ -319,7 +331,10 @@ export class CopyLine {
     // main took this copy back before its answer arrived: nothing goes to the page or main.
     if (hide) return this.mainHide(copy)
     if (reload) return this.mainReload(copy)
-    for (const text of early) this.port?.post(text)
+    for (const { text, envelope } of early) {
+      if (envelope) this.port?.post(text, envelope)
+      else this.port?.post(text)
+    }
     for (const text of held) this.deps.message(copy, text)
     if (drawn) this.deps.loaded(copy)
     this.report({ loading: answer.loaded !== true && !drawn })

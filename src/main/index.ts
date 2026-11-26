@@ -1235,6 +1235,12 @@ function start(server: boolean): void {
     // Discuss names its origin (`core`, overlay-manager.ts, page-tab-discuss.ts): passed through, not chosen here.
     // A guest's text carries its id, so the registry checks its access again when the gate dequeues it (03e A).
     send: (tabId, text, origin, guestId) => (guestId === undefined ? sessions.send(tabId, text, origin) : sessions.send(tabId, text, origin, guestId)),
+    // A queued Discuss text settled (spec-review S12): the registry's onSettled, which task 03 adds. Read through a
+    // structural type until then (absent: Discuss keeps the notes); 03 replaces this with the direct call.
+    onSettled: (itemId, fn) => {
+      const registry = sessions as { onSettled?: (itemId: string, fn: (how: 'delivered' | 'dropped') => void) => void }
+      registry.onSettled?.(itemId, fn)
+    },
     openSession: async (windowId, prompt, guestId) => {
       const projectId = projectOfWindow(windowId)
       if (projectId === undefined) throw new Error('the window is gone')

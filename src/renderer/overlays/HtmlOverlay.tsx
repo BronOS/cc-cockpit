@@ -154,9 +154,11 @@ function CopyOverlay(props: {
     })
     line.current = current
     // main's events for this overlay, routed by copy (a replaced copy's late ones reach nobody).
-    const offMessage = window.cockpit.on('overlays.message', ({ overlayId: id, message, copy }) => {
+    const offMessage = window.cockpit.on('overlays.message', ({ overlayId: id, message, copy, envelope }) => {
       if (id !== overlayId || typeof message !== 'string' || typeof copy !== 'string') return
-      current.fromMain(copy, message)
+      // `envelope`: main's own push (notes, Ask), kept apart from the opener's posts down to the port (00 contract).
+      if (envelope === true) current.fromMain(copy, message, true)
+      else current.fromMain(copy, message)
     })
     const offHide = window.cockpit.on('overlays.hide', ({ overlayId: id, copy }) => {
       if (id === overlayId && typeof copy === 'string') current.mainHide(copy)
@@ -206,7 +208,13 @@ function CopyOverlay(props: {
         }
         deliver(ch.port2)
         // Asks main for this load's copy; the returned end lets it go (a plain release) when the load ends.
-        const end = line.current?.attach({ post: (text) => ch.port1.postMessage(text) })
+        // An envelope (main's notes or Ask push) is held back until the page side can tell it from the opener's
+        // posts (task 04): posted as plain text it would reach the plugin's ccPanel.onMessage as the plugin's own.
+        const end = line.current?.attach({
+          post: (text, envelope) => {
+            if (envelope !== true) ch.port1.postMessage(text)
+          }
+        })
         return () => {
           end?.()
           ch.port1.close()

@@ -2157,7 +2157,7 @@ describe('Discuss with Claude (design-next §3.5)', () => {
         s.sent.push({ tabId, text })
         s.origins.push(origin)
         s.guestIds.push(guestId)
-        return { delivered: s.delivered }
+        return { id: `item-${s.sent.length}`, delivered: s.delivered }
       },
       openSession: (windowId, prompt) => {
         if (s.openError) return Promise.reject(s.openError)

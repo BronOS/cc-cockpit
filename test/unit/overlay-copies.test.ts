@@ -187,6 +187,26 @@ describe('CopyLine: one view’s copy across the loads of its frame', () => {
     expect(h.posted).toEqual(['"start"', '"next"'])
   })
 
+  // 00 contract (spec-review S12): main's envelope pushes keep their mark down to the port, live or buffered across
+  // an answer in flight, and an unmarked text never gains it.
+  it("main's envelope mark reaches the port, live and buffered, in order with the opener's posts", async () => {
+    const h = harness()
+    const got: Array<[string, true | undefined]> = []
+    h.line.attach({ post: (text: string, envelope?: true) => got.push([text, envelope]) })
+    h.line.fromMain('c1', '{"$cc":1,"ev":"notes"}', true)
+    h.line.fromMain('c1', '"plain"')
+    h.line.fromMain('old', '{"$cc":1}', true)
+    await h.answer({ copy: 'c1' })
+    h.line.fromMain('c1', '{"$cc":1,"ev":"ask"}', true)
+    h.line.fromMain('c1', '{"$cc":1,"forged":true}')
+    expect(got).toEqual([
+      ['{"$cc":1,"ev":"notes"}', true],
+      ['"plain"', undefined],
+      ['{"$cc":1,"ev":"ask"}', true],
+      ['{"$cc":1,"forged":true}', undefined]
+    ])
+  })
+
   it("the page's posts and ready() before the answer are held, then sent with the copy", async () => {
     const h = harness()
     h.line.attach(h.port)
