@@ -469,7 +469,10 @@ export interface OverlayAnnouncement {
 export interface OverlayPartSpec {
   /** Plugin-relative path, as an html overlay's `file`. */
   file: string
-  /** Shown in the part's strip. Default: your plugin's name. */
+  /**
+   * The part's own title (its frame's accessible name). The part's strip always shows your plugin's name, never this.
+   * Default: your plugin's name.
+   */
   title?: string
   ready?: 'load' | 'manual'
 }
