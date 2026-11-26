@@ -456,6 +456,26 @@ describe('the pick', () => {
     await s.start(guest(), q(GUEST_VIEW))
     expect(procs[1]!.argv).toContain('fable')
   })
+
+  it('S-8: null goes back to the default per field, undefined leaves the field, {} reads; saved and used by the next chat', async () => {
+    const at = { overlayId: 'o1', copy: 'c1' }
+    const s = service()
+    s.pick(owner(), { ...at, model: 'opus', effort: 'high' })
+    expect(s.pick(owner(), { ...at, model: null })).toMatchObject({ effort: 'high' })
+    expect(s.pick(owner(), at)).not.toHaveProperty('model')
+    expect(JSON.parse(readFileSync(join(dir, 'ask.json'), 'utf8'))).toEqual({ schemaVersion: 1, effort: 'high' })
+    // A name with the other field absent keeps that field.
+    expect(s.pick(owner(), { ...at, model: 'haiku' })).toMatchObject({ model: 'haiku', effort: 'high' })
+    const both = s.pick(owner(), { ...at, model: null, effort: null })
+    expect(both).not.toHaveProperty('model')
+    expect(both).not.toHaveProperty('effort')
+    expect(JSON.parse(readFileSync(join(dir, 'ask.json'), 'utf8'))).toEqual({ schemaVersion: 1 })
+    // The next chat runs with the CLI's own default: no --model, no --effort.
+    await s.start(owner(), { overlayId: 'o2', copy: 'c1', question: 'q' })
+    expect(procs[0]!.argv).not.toContain('--model')
+    expect(procs[0]!.argv).not.toContain('--effort')
+    expect(() => s.pick(owner(), { ...at, model: 'nope', effort: null })).toThrow(/model must be one of/)
+  })
 })
 
 describe('ends', () => {

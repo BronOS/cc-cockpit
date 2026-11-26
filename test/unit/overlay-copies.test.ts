@@ -592,5 +592,10 @@ describe('envelopeCallOf: the invoke a page request becomes', () => {
     expect(envelopeCallOf('o1', 'c1', { op: 'notes.setGlobal', args: {} })).toHaveProperty('error')
     expect(envelopeCallOf('o1', 'c1', { op: 'ask.start', args: { question: 'q', quote: 5 } })).toHaveProperty('error')
     expect(envelopeCallOf('o1', 'c1', { op: 'ask.pick', args: { model: 1 } })).toHaveProperty('error')
+    // S-8: null passes as null (back to the default); main checks names.
+    expect(envelopeCallOf('o1', 'c1', { op: 'ask.pick', args: { model: null, effort: 'high' } })).toEqual({
+      channel: 'overlays.ask.pick',
+      req: { overlayId: 'o1', copy: 'c1', model: null, effort: 'high' }
+    })
   })
 })

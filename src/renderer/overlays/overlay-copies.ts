@@ -184,9 +184,10 @@ export function envelopeCallOf(overlayId: string, copy: string, envelope: Pick<P
     case 'ask.close':
       return { channel: 'overlays.ask.close', req: at }
     case 'ask.pick': {
-      const model = optStr('model')
-      const effort = optStr('effort')
-      if (model === false || effort === false) return bad('model and effort must be strings')
+      // null passes as null: that field back to the default (review S-8); main checks the names.
+      const model = a.model === null ? null : optStr('model')
+      const effort = a.effort === null ? null : optStr('effort')
+      if (model === false || effort === false) return bad('model and effort must be strings or null')
       return { channel: 'overlays.ask.pick', req: { ...at, ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}) } }
     }
     case 'ask.continue':

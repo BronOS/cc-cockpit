@@ -187,6 +187,10 @@ describe('ccPanel.ask and overlay.discuss', () => {
     ])
     port.answer(reqs[3]!.id, { model: 'sonnet', models: ['sonnet'], efforts: [] })
     await expect(picked).resolves.toMatchObject({ model: 'sonnet' })
+    // S-8: null goes up as null (back to the default); a non-string, non-null value is still refused.
+    void ask.pick({ model: null, effort: 'high' })
+    expect(port.requests().at(-1)).toMatchObject({ op: 'ask.pick', args: { model: null, effort: 'high' } })
+    await expect(ask.pick({ model: 1 as never })).rejects.toThrow(TypeError)
     const deltas: string[] = []
     const ends: unknown[] = []
     ask.on('delta', (d) => void deltas.push(d.text))
