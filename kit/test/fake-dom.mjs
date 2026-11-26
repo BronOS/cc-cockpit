@@ -233,7 +233,17 @@ export function fakePanel({ notes = true, ask = true, discuss = true, state = { 
     calls.push([name, ...args])
     return Promise.resolve(typeof value === 'function' ? value(...args) : value)
   }
-  const listeners = { message: new Set(), notes: new Set(), ask: new Set() }
+  const listeners = { message: new Set(), notes: new Set(), ask: new Map() }
+  // As the SDK's ask.on(type, fn) (panel-overlay.ts): one push type per listener, anything else throws.
+  const ASK_TYPES = ['history', 'state', 'delta', 'tool', 'answer', 'end']
+  const askOn = (type, fn) => {
+    if (!ASK_TYPES.includes(type)) throw new TypeError(`ask.on: type must be one of ${ASK_TYPES.join(', ')}`)
+    if (typeof fn !== 'function') throw new TypeError('ask.on needs a function')
+    const set = listeners.ask.get(type) ?? new Set()
+    set.add(fn)
+    listeners.ask.set(type, set)
+    return () => set.delete(fn)
+  }
   const sub = (set) => (fn) => {
     set.add(fn)
     return () => set.delete(fn)
@@ -251,8 +261,9 @@ export function fakePanel({ notes = true, ask = true, discuss = true, state = { 
       for (const fn of [...listeners.notes]) fn(s)
     },
     pushAsk: (ev) => {
-      for (const fn of [...listeners.ask]) fn(ev)
+      for (const fn of [...(listeners.ask.get(ev && ev.type) ?? [])]) fn(ev)
     },
+    askListening: () => [...listeners.ask].filter(([, set]) => set.size).map(([type]) => type),
   }
   if (notes) {
     panel.notes = {
@@ -271,7 +282,7 @@ export function fakePanel({ notes = true, ask = true, discuss = true, state = { 
       close: rec('ask.close', null),
       pick: rec('ask.pick', { models: ['sonnet', 'opus'], efforts: ['low', 'high'] }),
       continue: rec('ask.continue', { tabId: 't1' }),
-      on: sub(listeners.ask),
+      on: askOn,
     }
   }
   if (discuss) panel.overlay = { discuss: rec('overlay.discuss', null) }

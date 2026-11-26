@@ -235,3 +235,22 @@ test('Continue in a tab calls ccPanel.ask.continue(); a throw or a refusal shows
     ask.destroy()
   }
 })
+
+test('mountAsk hears the app with ccPanel.ask.on(type, fn), one listener per push type', async () => {
+  const doc = new FakeDocument()
+  const panel = fakePanel()
+  const root = doc.createElement('div')
+  doc.body.appendChild(root)
+  const ask = kit.mountAsk(root, { doc, panel, canContinue: true })
+  await flush()
+  assert.deepEqual(panel.askListening().sort(), ['answer', 'delta', 'end', 'history', 'state', 'tool'])
+  panel.pushAsk({ type: 'history', turns: [{ question: 'first?', answer: 'one' }], pick: { models: [], efforts: [] } })
+  panel.pushAsk({ type: 'state', phase: 'thinking' })
+  panel.pushAsk({ type: 'delta', text: 'streamed ' })
+  panel.pushAsk({ type: 'answer', text: 'streamed answer' })
+  await flush()
+  assert.match(ask.el.textContent, /first\?/)
+  assert.match(ask.el.textContent, /streamed answer/)
+  ask.destroy()
+  assert.deepEqual(panel.askListening(), [], 'destroy unsubscribes every type')
+})

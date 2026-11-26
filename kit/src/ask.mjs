@@ -45,6 +45,9 @@ const PHASES = { starting: 'Starting…', thinking: 'Thinking…', ready: 'Ready
  * `fn()` as a promise: a synchronous throw (an SDK member missing or refusing its arguments) becomes a rejection, so
  * every click's error reaches the same catch and shows, never escaping the handler silently.
  */
+/** The Ask push types (shared/overlay-envelope.ts AskPush), each heard with ccPanel.ask.on(type, fn). */
+const ASK_PUSHES = ['history', 'state', 'delta', 'tool', 'answer', 'end']
+
 function attempt(fn) {
   try {
     return Promise.resolve(fn())
@@ -226,8 +229,12 @@ export function mountAsk(container, opts = {}) {
       default:
     }
   }
-  const off = api.on(onEvent)
-  if (typeof off === 'function') offs.push(off)
+  // One listener per push type: the SDK's ccPanel.ask.on(type, fn) (it throws on any other form). Each push carries
+  // its type, so onEvent stays one switch.
+  for (const type of ASK_PUSHES) {
+    const off = api.on(type, onEvent)
+    if (typeof off === 'function') offs.push(off)
+  }
   // Reads the lists and the remembered pick; picks nothing.
   Promise.resolve()
     .then(() => api.pick({}))

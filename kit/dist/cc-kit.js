@@ -6409,6 +6409,7 @@ var ccKit = (() => {
     return frag;
   }
   var PHASES = { starting: "Starting…", thinking: "Thinking…", ready: "Ready" };
+  var ASK_PUSHES = ["history", "state", "delta", "tool", "answer", "end"];
   function attempt(fn) {
     try {
       return Promise.resolve(fn());
@@ -6586,8 +6587,10 @@ var ccKit = (() => {
         default:
       }
     };
-    const off = api.on(onEvent);
-    if (typeof off === "function") offs.push(off);
+    for (const type of ASK_PUSHES) {
+      const off = api.on(type, onEvent);
+      if (typeof off === "function") offs.push(off);
+    }
     Promise.resolve().then(() => api.pick({})).then(applyPick, () => {
     });
     function setQuote(text2) {
