@@ -70,6 +70,13 @@ export function connect(handlers = {}, opts = {}) {
     }
   }
   const off = panel.onMessage(onMessage)
+  // Hello on every load: an app before overlays.perView has no connect event, so the host greets the page when it
+  // hears this (shared-page.js holder mode); a perView host ignores it (main's connect greeted this copy).
+  try {
+    panel.post({ type: 'cc-kit.hello' })
+  } catch {
+    // a page with no host to hear it
+  }
   return typeof off === 'function' ? off : () => {}
 }
 

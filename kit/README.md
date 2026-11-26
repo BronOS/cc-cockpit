@@ -212,6 +212,7 @@ makePage(handle: OverlayHandle, opts: {
                                       // Called per copy on every set() and connect: drop what a guest may not see.
   guestError?: string                 // a guest's text for a failure (default 'This could not be loaded.'); the owner gets the message
   tabs?: { ids: string[]; first?: string }   // the page's side tabs (default ['details', 'ask'], first 'ask')
+  holderAccess?: 'owner' | 'write' | 'read'  // holder mode only (below): the one page's access (default 'read')
 }): SharedPage
 
 interface SharedPage {
@@ -235,11 +236,19 @@ Messages on the copy's port (the kit handles them, never yours):
 - host → page: `{ type: 'cc-kit.init', access, tab }`, `{ type: 'cc-kit.state', state }`,
   `{ type: 'cc-kit.chunk', id, i, n, text }` (a state over `CHUNK_CHARS`, joined by `connect`), `{ type: 'cc-kit.loading' }`,
   `{ type: 'cc-kit.failed', message, retry }`.
-- page → host: `{ type: 'cc-kit.link', url }`, `{ type: 'cc-kit.tab', tab }`, `{ type: 'cc-kit.retry' }`.
+- page → host: `{ type: 'cc-kit.link', url }`, `{ type: 'cc-kit.tab', tab }`, `{ type: 'cc-kit.retry' }`,
+  `{ type: 'cc-kit.hello' }` (sent by `connect` on every load; only holder mode answers it).
 
 `makePage` hears copies only through `onConnect` / `onDisconnect` (`from` filled by main) and acts by
 `from.access`: it opens a link for any access (the link is the document's own), writes the last used tab only for
 the owner, and runs `retry` only for the owner. Your `onAsk`, `onDiscuss` and writes stay yours.
+
+Holder mode (kit 0.1.1): on an app before `overlays.perView` the handle has no `onConnect`, and `makePage` does not
+throw: the overlay has one page (its holder) and one state. The copy is `'holder'` (`copies()`, `post('holder', m)`),
+greeted when its page says hello (so a reload is greeted again), and its posts carry no copy. Its access is
+`opts.holderAccess`, default `'read'` (such an app does not say who is looking, so fail closed: `project()` gets a
+read `from`, no Try again, no tab written); a message whose `from` carries an access main filled counts as that
+access. A plugin that knows its older app shows the overlay only to the owner may pass `holderAccess: 'owner'`.
 
 Last used tab (D7): the owner starts on the tab last chosen on any owner view (`ctx.appStorage` key `cc-kit.tab`),
 else `tabs.first`. A write guest starts on `ask`, a read guest on `details` (when those are in `tabs.ids`).

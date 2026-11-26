@@ -195,3 +195,94 @@ test("Try again runs for the owner only, and the page's own messages reach onMes
   handle.message({ type: 'reply' }, OWNER)
   assert.equal(heard.length, 1)
 })
+
+/** An overlay handle of an app before overlays.perView: no onConnect / onDisconnect, posts carry no copy. */
+function holderHandle() {
+  const h = fakeHandle()
+  delete h.onConnect
+  delete h.onDisconnect
+  delete h.connect
+  delete h.disconnect
+  const post = h.post
+  h.post = function (message, opts) {
+    if (opts !== undefined) throw new Error('an older app takes no options')
+    post(message)
+  }
+  return h
+}
+
+test('without handle.onConnect (an older app): holder mode, one state greeted on hello, read access unless the plugin says', async () => {
+  const handle = holderHandle()
+  const ctx = fakeCtx({ 'cc-kit.tab': 'reply' })
+  const seen = []
+  const page = makePage(handle, { ctx, tabs: { ids: ['ask', 'reply'], first: 'ask' }, project: (s, from) => ({ ...s, who: from.access, copy: from.copy }) })
+  page.set({ html: '<p>x https://jira.example/a</p>' }, { document: 'https://jira.example/a' })
+  await tick()
+  assert.deepEqual(handle.posts, [], 'nothing before the page says hello')
+  handle.message({ type: 'cc-kit.hello' }) // no from: the app does not say who
+  await tick()
+  const sent = () => handle.posts.map((p) => p.message)
+  assert.deepEqual(sent(), [
+    { type: 'cc-kit.init', access: 'read', tab: 'ask' },
+    { type: 'cc-kit.state', state: { html: '<p>x https://jira.example/a</p>', who: 'read', copy: 'holder' } },
+  ])
+  assert.ok(handle.posts.every((p) => p.copy === undefined), 'posts carry no copy')
+  // One state for the one page: set() and fail() reach it; a reload's hello greets it again.
+  page.set({ html: 'y' }, { document: '' })
+  assert.deepEqual(sent().at(-1), { type: 'cc-kit.state', state: { html: 'y', who: 'read', copy: 'holder' } })
+  let retried = 0
+  page.fail('Jira said no', { retry: () => retried++ })
+  assert.deepEqual(sent().at(-1), { type: 'cc-kit.failed', message: 'This could not be loaded.', retry: false })
+  handle.message({ type: 'cc-kit.hello' })
+  await tick()
+  assert.deepEqual(sent().slice(-2), [{ type: 'cc-kit.init', access: 'read', tab: 'ask' }, { type: 'cc-kit.failed', message: 'This could not be loaded.', retry: false }])
+  // Read access: no Try again, no tab written; the page's own messages reach onMessage as the holder.
+  page.onMessage((m, from) => seen.push([m, from]))
+  handle.message({ type: 'cc-kit.retry' })
+  handle.message({ type: 'cc-kit.tab', tab: 'reply' })
+  handle.message({ type: 'mine' })
+  await tick()
+  assert.equal(retried, 0)
+  assert.deepEqual(ctx.writes, [])
+  assert.deepEqual(seen, [[{ type: 'mine' }, { view: '', access: 'read', copy: 'holder' }]])
+  assert.deepEqual(page.copies(), [{ copy: 'holder', from: { view: '', access: 'read', copy: 'holder' } }])
+  assert.equal(page.post('holder', { type: 'x' }), true)
+  assert.equal(page.post('c-owner', { type: 'x' }), false)
+  // An app that fills from.access on a holder's message: that access counts (main's, not the page's).
+  handle.message({ type: 'cc-kit.retry' }, { view: 'desktop:1', access: 'owner' })
+  assert.equal(retried, 1)
+  page.dispose()
+})
+
+test("holder mode with holderAccess 'owner' (a plugin that knows its older app has no guests)", async () => {
+  const handle = holderHandle()
+  const ctx = fakeCtx({ 'cc-kit.tab': 'reply' })
+  const page = makePage(handle, { ctx, holderAccess: 'owner', tabs: { ids: ['ask', 'reply'], first: 'ask' } })
+  handle.message({ type: 'cc-kit.hello' })
+  await tick()
+  assert.deepEqual(handle.posts[0].message, { type: 'cc-kit.init', access: 'owner', tab: 'reply' })
+  let retried = 0
+  page.fail('Jira said no', { retry: () => retried++ })
+  assert.deepEqual(handle.posts.at(-1).message, { type: 'cc-kit.failed', message: 'Jira said no', retry: true })
+  handle.message({ type: 'cc-kit.retry' })
+  assert.equal(retried, 1)
+  // A value that is not an access is not one: read.
+  const h2 = holderHandle()
+  makePage(h2, { ctx: fakeCtx(), holderAccess: 'admin' })
+  h2.message({ type: 'cc-kit.hello' })
+  await tick()
+  assert.equal(h2.posts[0].message.access, 'read')
+  // Not an html overlay handle at all: still a TypeError.
+  assert.throws(() => makePage({ onMessage() {} }, { ctx }), TypeError)
+})
+
+test('perView mode ignores hello: a copy is greeted on its connect only', async () => {
+  const handle = fakeHandle()
+  makePage(handle, { ctx: fakeCtx() })
+  handle.message({ type: 'cc-kit.hello' }, OWNER) // a copy main never announced
+  handle.connect(OWNER)
+  await tick()
+  handle.message({ type: 'cc-kit.hello' }, OWNER)
+  await tick()
+  assert.equal(handle.sent('c-owner').filter((m) => m.type === 'cc-kit.init').length, 1)
+})

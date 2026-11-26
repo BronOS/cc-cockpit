@@ -8,10 +8,18 @@
 // itself): a link opens only when it is an http(s) URL of the document it holds, with that view's `from.view`;
 // the last used tab is written for the owner only; Try again runs for the owner only. Plain CommonJS, no
 // dependencies: copied into a plugin as it is (SHA256SUMS).
+//
+// Holder mode (an app before overlays.perView: the handle has no onConnect): one page, the overlay's holder, with
+// one state. Its copy id is 'holder' and its access is `opts.holderAccess` (default 'read': such an app does not
+// say who looks, so nothing is shown or allowed that a read guest could not have; a plugin that wants more says
+// so), or the access main put in a message's `from` when an app fills it. The page is greeted when it says hello
+// (connect() sends it on every load, so a reload is greeted again); posts go without a copy.
 
 const ACCESS = ['owner', 'write', 'read']
 const TAB_ID = /^[a-z][a-z0-9-]{0,39}$/
 const TAB_KEY = 'cc-kit.tab'
+/** The one copy of holder mode (no onConnect on the handle). */
+const HOLDER = 'holder'
 const GUEST_ERROR = 'This could not be loaded.'
 /** A message's JSON past this (under the app's 1,040,384-char page message cap) goes in chunks. */
 const MESSAGE_CHARS = 1000000
@@ -64,9 +72,12 @@ function urlsIn(document) {
 function makePage(handle, opts = {}) {
   const ctx = opts.ctx
   if (!ctx || typeof ctx !== 'object') throw new TypeError('makePage: opts.ctx is required')
-  if (!handle || typeof handle.onConnect !== 'function' || typeof handle.onMessage !== 'function') {
-    throw new TypeError('makePage: needs an overlay handle with onConnect (an app with overlays.perView)')
+  if (!handle || typeof handle.onMessage !== 'function' || typeof handle.post !== 'function') {
+    throw new TypeError('makePage: needs an html overlay handle (post, onMessage)')
   }
+  // Fail closed: an older app with no onConnect is holder mode, never an owner default.
+  const perView = typeof handle.onConnect === 'function'
+  const holderAccess = ACCESS.includes(opts.holderAccess) ? opts.holderAccess : 'read'
   const log =
     typeof opts.log === 'function'
       ? opts.log
@@ -105,7 +116,8 @@ function makePage(handle, opts = {}) {
 
   const send = (c, message) => {
     try {
-      handle.post(message, { copy: c.copy })
+      if (perView) handle.post(message, { copy: c.copy })
+      else handle.post(message)
       return true
     } catch (e) {
       log(`kit: post to a copy: ${e && e.message}`)
@@ -193,16 +205,27 @@ function makePage(handle, opts = {}) {
     const off = fn()
     if (typeof off === 'function') offs.push(off)
   }
-  on(() =>
-    handle.onConnect((from) => {
-      const v = viewerOf(from)
-      if (!v || copies.has(v.copy)) return
-      const c = { copy: v.copy, from: v, greeted: false }
-      copies.set(c.copy, c)
-      greet(c)
-    })
-  )
-  if (typeof handle.onDisconnect === 'function') {
+  // Holder mode: who posted, as far as the app says (its `from.access` when it fills one), else the holder's access.
+  const holder = perView ? null : { copy: HOLDER, from: { view: '', access: holderAccess, copy: HOLDER }, greeted: false }
+  const holderFrom = (from) => ({
+    view: from && typeof from === 'object' && typeof from.view === 'string' ? from.view : '',
+    access: from && typeof from === 'object' && ACCESS.includes(from.access) ? from.access : holderAccess,
+    copy: HOLDER,
+  })
+  if (holder) copies.set(HOLDER, holder)
+
+  if (perView) {
+    on(() =>
+      handle.onConnect((from) => {
+        const v = viewerOf(from)
+        if (!v || copies.has(v.copy)) return
+        const c = { copy: v.copy, from: v, greeted: false }
+        copies.set(c.copy, c)
+        greet(c)
+      })
+    )
+  }
+  if (perView && typeof handle.onDisconnect === 'function') {
     on(() =>
       handle.onDisconnect((from) => {
         if (from && typeof from.copy === 'string') copies.delete(from.copy)
@@ -211,8 +234,13 @@ function makePage(handle, opts = {}) {
   }
   on(() =>
     handle.onMessage((m, from) => {
-      const v = viewerOf(from)
+      const v = perView ? viewerOf(from) : holderFrom(from)
       if (!v || !copies.has(v.copy)) return
+      if (m && typeof m === 'object' && m.type === 'cc-kit.hello') {
+        // The page loaded (or reloaded): holder mode greets it now; a perView copy was greeted on its connect.
+        if (holder) greet(holder)
+        return
+      }
       if (m && typeof m === 'object' && typeof m.type === 'string' && m.type.startsWith('cc-kit.')) {
         kitMessage(m, v)
         return
@@ -275,4 +303,4 @@ function makePage(handle, opts = {}) {
   }
 }
 
-module.exports = { makePage, urlsIn, CHUNK_CHARS, MESSAGE_CHARS, MAX_CHUNKS }
+module.exports = { makePage, urlsIn, CHUNK_CHARS, MESSAGE_CHARS, MAX_CHUNKS, HOLDER }
