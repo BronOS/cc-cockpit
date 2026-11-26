@@ -14,7 +14,7 @@ exports.activate = (ctx) => {
         try {
           doc.post(msg, { copy: from.copy })
           ctx.notify(`spoof accepted ${msg.ev || 're'}`)
-        } catch (err) {
+        } catch {
           ctx.notify(`spoof refused ${msg.ev || 're'}`)
         }
       }
