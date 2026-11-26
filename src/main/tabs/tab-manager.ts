@@ -30,6 +30,7 @@ import type { TokenOwner } from '../socket/socket-server'
 import { isRemoteViewId, type ViewId } from '../../shared/views'
 import { RECONNECT_GRACE_MS, TerminalSizes } from './terminal-sizes'
 import { claudeArgv, commandArgv, loginShellOf, shellArgv } from './claude-argv'
+import { SESSION_UUID } from '../ask/ask-argv'
 import { warnLog } from '../warn-log'
 
 /**
@@ -315,6 +316,12 @@ export interface CreateTabOptions {
   openedByGuest?: string
   /** A shell tab opened in the Terminal panel (`tabs.create` with `dock`, the person's own act). */
   dock?: TabDock
+  /**
+   * A new Claude tab that resumes this session (D14 Continue in a tab: main's own Ask record, never a payload's). A
+   * UUID only, the form a stream's init line gives; never with a prompt, a model or an effort (a resume keeps the
+   * session's own, session-options.ts).
+   */
+  resumeId?: string
 }
 
 /** A command tab's own copy of its new-tab menu entry (TabCommandsService.resolve). */
@@ -654,7 +661,7 @@ export class TabManager {
   }
 
   /** Start a tab. Throws (and creates nothing) for an unknown project, a bad cwd or a failed spawn. */
-  create(projectId: string, { kind, cwd, prompt, model, effort, env, openedByGuest, dock }: CreateTabOptions): TabInfo {
+  create(projectId: string, { kind, cwd, prompt, model, effort, env, openedByGuest, dock, resumeId }: CreateTabOptions): TabInfo {
     // Checked at run time as well: a command tab must come through createCommand, whose caller
     // looked the command up in main's settings, never through a kind someone passed along.
     if (kind !== 'claude' && kind !== 'shell') throw new Error('unknown tab kind')
@@ -664,6 +671,11 @@ export class TabManager {
     }
     if (env !== undefined && kind !== 'claude') throw new Error('only a Claude tab takes an env')
     if (dock !== undefined && (kind !== 'shell' || dock !== 'panel')) throw new Error('only a shell or command tab opens in the Terminal panel')
+    if (resumeId !== undefined) {
+      if (kind !== 'claude') throw new Error('only a Claude tab resumes')
+      if (typeof resumeId !== 'string' || !SESSION_UUID.test(resumeId)) throw new Error('invalid Claude session id')
+      if (prompt !== undefined || model !== undefined || effort !== undefined) throw new Error('a resumed tab takes no prompt, model or effort')
+    }
     // All or nothing, as host-api: a new tab is never started with part of what was asked.
     const checkedEnv = checkSessionEnv(env)
     if (!checkedEnv.ok) throw new Error(checkedEnv.reason)
@@ -673,7 +685,8 @@ export class TabManager {
       ...(effort === undefined ? {} : { effort }),
       ...(checkedEnv.env === undefined || Object.keys(checkedEnv.env).length === 0 ? {} : { env: checkedEnv.env }),
       ...guestTag(openedByGuest),
-      ...(dock === undefined ? {} : { dock })
+      ...(dock === undefined ? {} : { dock }),
+      ...(resumeId === undefined ? {} : { resumeId })
     })
     this.changed(projectId)
     return out

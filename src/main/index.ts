@@ -1373,7 +1373,17 @@ function start(server: boolean): void {
     loginEnv: async () => {
       await loginEnvReady
       return loginEnv
-    }
+    },
+    // D1: the owner, or a guest whose live access is write; a read guest, a revoked one or an unknown view may not Ask.
+    askerOf: (view) => {
+      const who = views.whoOf(view)
+      if (who === 'owner') return 'owner'
+      if (who === undefined) return undefined
+      const access = guestStore.access(who)
+      return access.kind === 'guest' && access.role === 'write' ? { guest: access.id } : undefined
+    },
+    // D14 Continue in a tab: a Claude tab resuming the Ask's session, in the project folder (where `-p` wrote it).
+    openResumeTab: (projectId, sessionId) => tabs.create(projectId, { kind: 'claude', resumeId: sessionId }).id
   })
   // Ask Claude from a page tab (design-editor.md §4): the tab from main's own list, the context from
   // its plugin's instance in the asking view (`hosts`, defined below; this runs on a click).
