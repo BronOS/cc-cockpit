@@ -86,14 +86,17 @@ describe('ccPanel overlay copy: the intro', () => {
     expect(typeof copy().c.api.overlay?.discuss).toBe('function')
   })
 
-  it('a copy that is not an overlay copy keeps a $cc message as the plugin message it always was', () => {
-    const { c } = client()
+  it('a $cc message never reaches onMessage, on any port: a page that is not an overlay copy drops it with a warning', () => {
+    const { c, warnings } = client()
     const got: unknown[] = []
     c.api.onMessage((m) => void got.push(m))
     const port = new FakePort()
     c.receive({ type: PORT_MESSAGE }, [port])
     port.deliver(JSON.stringify({ $cc: 1, ev: 'notes', seq: 1, data: {} }))
-    expect(got).toHaveLength(1)
+    port.deliver(JSON.stringify({ $cc: 'odd' }))
+    port.deliver(JSON.stringify({ plain: { $cc: 1 } }))
+    expect(got).toEqual([{ plain: { $cc: 1 } }])
+    expect(warnings.filter((w) => w.includes('$cc'))).toHaveLength(2)
   })
 })
 

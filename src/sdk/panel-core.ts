@@ -807,10 +807,12 @@ export class PanelClient {
       this.warn('dropped a message that is not JSON')
       return
     }
-    // An overlay copy's port: an envelope is the app's answer or push (the shell refuses one a page posts, the host
-    // and main one a plugin posts), never the plugin's message.
-    if (this.overlayCopy.isCopy && isEnvelope(parsed)) {
-      this.overlayCopy.receive(parsed as unknown as Record<string, unknown>)
+    // A top-level `$cc` is the app's, on any port (the shell refuses one a page posts, the host and main one a plugin
+    // posts): an overlay copy's envelope handler takes it, and it never reaches onMessage. Elsewhere, or malformed,
+    // it is dropped with a warning.
+    if (hasEnvelopeKey(parsed)) {
+      if (this.overlayCopy.isCopy && isEnvelope(parsed)) this.overlayCopy.receive(parsed as unknown as Record<string, unknown>)
+      else this.warn('dropped a message with the reserved "$cc" key')
       return
     }
     for (const listener of [...this.listeners]) {
