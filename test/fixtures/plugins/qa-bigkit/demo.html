@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Kit demo</title>
+    <link rel="stylesheet" href="kit/dist/cc-kit.css" />
+    <script src="/__sdk/panel.js"></script>
+    <script src="kit/dist/cc-kit.js"></script>
+    <script src="demo.js" defer></script>
+    <style>
+      body { margin: 0; display: flex; height: 100vh; font-family: var(--cc-font-ui, sans-serif); background: var(--cc-bg); color: var(--cc-fg); }
+      #main { flex: 1; min-width: 0; overflow-y: auto; padding: 12px 16px; }
+      #side { width: 320px; flex: none; border-left: 1px solid var(--cc-border); display: flex; flex-direction: column; }
+      @media (max-width: 700px) { body { flex-direction: column; } #side { width: auto; border-left: none; } }
+    </style>
+  </head>
+  <body>
+    <div id="main"><p id="loading">Loading…</p></div>
+    <div id="side"></div>
+  </body>
+</html>

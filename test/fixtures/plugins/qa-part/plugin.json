@@ -1,0 +1,13 @@
+{
+  "id": "test.qapart",
+  "name": "QA part",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "overlays": {
+    "perView": true
+  },
+  "guests": {
+    "aware": true
+  }
+}
