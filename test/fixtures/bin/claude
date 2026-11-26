@@ -81,6 +81,54 @@ const SUBCOMMANDS = new Set([
   'ultrareview', 'update', 'upgrade'
 ])
 
+// Ask (task 02, src/main/ask): `claude --help` lists the flags Ask's help check demands; `-p` with stream-json input runs
+// a print session: one JSON user message per stdin line, answered with the init line (a UUID session_id, the --resume
+// value when given; tools and mcp_servers empty under `--tools ""`, as the real 2.1.332 prints them), a message_start, one
+// text delta `FAKE-ANSWER <the message's first 80 characters>` and a success result. $FAKE_CLAUDE_ASK_TOOLS=1 lists a tool
+// even under `--tools ""` (a CLI that drifted); $FAKE_CLAUDE_ASK_NO_SESSION=1 makes a --resume fail before the init line,
+// as the real CLI does for a session it cannot find. argv goes to $FAKE_CLAUDE_LOG first, as for a tab.
+{
+  const raw = process.argv.slice(2)
+  if (raw.includes('--help')) {
+    if (process.env.FAKE_CLAUDE_LOG) require('node:fs').appendFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify(raw) + '\n')
+    console.log('Usage: claude [options] [command] [prompt]')
+    for (const f of ['-p, --print', '--restricted', '--safe-mode', '--strict-mcp-config', '--tools <tools...>', '--permission-prompts <mode>',
+      '--input-format <format>', '--output-format <format>', '--verbose', '--include-partial-messages', '--model <model>',
+      '--effort <level>', '-r, --resume [value]', '--settings <file-or-json>', '--plugin-dir <path>']) console.log('  ' + f)
+    process.exit(0)
+  }
+  if (raw[0] === '-p' || raw[0] === '--print') {
+    if (process.env.FAKE_CLAUDE_LOG) require('node:fs').appendFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify(raw) + '\n')
+    const at = raw.indexOf('--resume')
+    const resumed = at >= 0 ? raw[at + 1] : undefined
+    if (resumed !== undefined && process.env.FAKE_CLAUDE_ASK_NO_SESSION === '1') {
+      process.stderr.write('No conversation found with session ID: ' + resumed + '\n')
+      process.exit(1)
+    }
+    const toolsAt = raw.indexOf('--tools')
+    const noTools = toolsAt >= 0 && raw[toolsAt + 1] === '' && process.env.FAKE_CLAUDE_ASK_TOOLS !== '1'
+    const session = resumed ?? require('node:crypto').randomUUID()
+    const out = (ev) => process.stdout.write(JSON.stringify(ev) + '\n')
+    const rl = require('node:readline').createInterface({ input: process.stdin })
+    rl.on('line', (line) => {
+      let content = ''
+      try {
+        const m = JSON.parse(line).message
+        content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+      } catch {
+        return
+      }
+      out({ type: 'system', subtype: 'init', session_id: session, tools: noTools ? [] : ['Bash', 'Read'], mcp_servers: [] })
+      out({ type: 'stream_event', session_id: session, event: { type: 'message_start' } })
+      const text = 'FAKE-ANSWER ' + content.slice(0, 80)
+      out({ type: 'stream_event', session_id: session, event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+      out({ type: 'result', subtype: 'success', is_error: false, session_id: session, result: text })
+    })
+    rl.on('close', () => process.exit(0))
+    return
+  }
+}
+
 const argv = process.argv.slice(2)
 
 // Option parsing just deep enough for what the app passes: `--settings <v>`, `--plugin-dir <v>`,

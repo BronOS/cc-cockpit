@@ -1762,6 +1762,21 @@ export class OverlayManager {
     return { pluginId: overlay.pluginId, key: overlay.notesKey }
   }
 
+  /**
+   * Ask (shared/design.md §5, task 02): the opener's `onAsk` answer about the asking copy (`{ text }` or null, the
+   * host's first-text rule), or undefined when the overlay is gone, of another window or not perView, the copy is not
+   * live in `view`, or the opener set no handler. A part is asked the same way on its own overlay id. The caller bounds
+   * the wait (ASK_CONTEXT_MS); a rejection is the handler's.
+   */
+  askContext(windowId: number, overlayId: string, view: ViewId, copy: string): Promise<unknown> {
+    const overlay = this.find(windowId, overlayId)
+    const c = typeof copy === 'string' ? overlay?.perView?.copies.get(copy) : undefined
+    const onAsk = overlay?.channel?.onAsk
+    if (!overlay?.channel || !onAsk || c?.live !== true || c.view !== view) return Promise.resolve(undefined)
+    const channel = overlay.channel
+    return Promise.resolve().then(() => onAsk.call(channel, view, copy))
+  }
+
   /** A copy's port came up (`copyReady`), after the opener's queued posts went out. Returns the disposer. */
   onCopyReady(listener: (event: CopyEvent) => void): () => void {
     this.copyReadyListeners.add(listener)

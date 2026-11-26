@@ -1,42 +1,59 @@
-// 00 contract: the Ask channels are registered and refuse every call until their task fills them (S2: no service
-// means refused, never a silent success), for the owner's desktop page as for anyone.
+// Task 02 (ask-handlers.ts): who may Ask, as the router bound the caller. "The person" is isOwner(view), never
+// view.remote; a guest Asks only with write access bound to the call; continue is the owner's alone.
 import { describe, expect, it } from 'vitest'
-import { IpcRouter, type IpcEventLike, type IpcMainLike } from '../../src/main/ipc/router'
-import { ASK_CHANNELS, registerAskHandlers } from '../../src/main/ipc/ask-handlers'
-import type { SenderContext } from '../../src/main/windows/window-manager'
+import { ASK_CHANNELS, askPersonOf, registerAskHandlers } from '../../src/main/ipc/ask-handlers'
+import type { AskApi, AskCaller } from '../../src/main/ask/ask-api'
+import type { CallView, IpcRouter } from '../../src/main/ipc/router'
 
-const APP_PAGE = 'file:///opt/cc-cockpit/out/renderer/index.html'
-type Listener = (event: IpcEventLike, ...args: unknown[]) => unknown
+const ctx = { windowId: 1, projectId: 'aaaaaaaaaaaaaaaa' }
+const ownerView = { viewId: 'desktop:1', who: 'owner', remote: false } as unknown as CallView
+const ownerBrowser = { viewId: 'remote:o', who: 'owner', remote: true } as unknown as CallView
+const writeGuest = { viewId: 'remote:w', who: { guest: 'g1' }, remote: true, access: { kind: 'guest', id: 'g1', role: 'write' } } as unknown as CallView
+const readGuest = { viewId: 'remote:r', who: { guest: 'g2' }, remote: true, access: { kind: 'guest', id: 'g2', role: 'read' } } as unknown as CallView
+const unbound = { viewId: 'remote:u', who: { guest: 'g3' }, remote: true } as unknown as CallView
+const noWho = { viewId: 'remote:n', remote: true } as unknown as CallView
 
-class FakeIpcMain implements IpcMainLike {
-  readonly handlers = new Map<string, Listener>()
-  handle(channel: string, listener: Listener): void {
-    this.handlers.set(channel, listener)
+function wired(asks?: Partial<AskApi>): { handlers: Map<string, (c: typeof ctx, p: unknown, v: CallView) => unknown>; calls: { method: string; who: AskCaller }[] } {
+  const handlers = new Map<string, (c: typeof ctx, p: unknown, v: CallView) => unknown>()
+  const calls: { method: string; who: AskCaller }[] = []
+  const router = { handleProject: (channel: string, fn: never) => handlers.set(channel, fn) } as unknown as IpcRouter
+  const record = (method: string) => (who: AskCaller) => {
+    calls.push({ method, who })
+    return method === 'pick' ? { models: [], efforts: [] } : method === 'continueInTab' ? Promise.resolve({ tabId: 't' }) : method === 'close' ? null : Promise.resolve(null)
   }
-  invoke(channel: string, senderId: number, payload: unknown): Promise<unknown> {
-    const listener = this.handlers.get(channel)
-    if (!listener) return Promise.reject(new Error(`no handler for ${channel}`))
-    return Promise.resolve().then(() => listener({ sender: { id: senderId }, senderFrame: { parent: null, url: APP_PAGE } }, payload))
-  }
+  const api = asks === undefined ? undefined : ({ start: record('start'), say: record('say'), close: record('close'), pick: record('pick'), continueInTab: record('continueInTab'), ...asks } as unknown as AskApi)
+  registerAskHandlers(router, { asks: api })
+  return { handlers, calls }
 }
 
-describe('Ask handlers (00 contract stub)', () => {
-  it('the stub refuses every call', async () => {
-    const ipc = new FakeIpcMain()
-    const senders = new Map<number, SenderContext>([[11, { kind: 'project', windowId: 1, projectId: 'aaaaaaaaaaaaaaaa' }]])
-    const router = new IpcRouter(ipc, (id) => senders.get(id), (url) => url === APP_PAGE, () => undefined, () => true)
-    const overlays = { copyOwner: () => 'desktop:1', notesOf: () => ({ pluginId: 'a.one', key: 'k' }) }
-    registerAskHandlers(router, { overlays } as never)
-    const payloads: Record<string, unknown> = {
-      'overlays.ask.start': { overlayId: 'o1', copy: 'c1', question: 'why?' },
-      'overlays.ask.say': { overlayId: 'o1', copy: 'c1', question: 'and?' },
-      'overlays.ask.close': { overlayId: 'o1', copy: 'c1' },
-      'overlays.ask.pick': { overlayId: 'o1', copy: 'c1' },
-      'overlays.ask.continue': { overlayId: 'o1', copy: 'c1' }
-    }
+describe('Ask handlers', () => {
+  it('anything not isOwner(view) gets the guest argv: an owner browser is the owner, a write guest a guest (the argv itself: ask-service.test.ts)', () => {
+    expect(askPersonOf(ownerView, 'c')).toBe('owner')
+    expect(askPersonOf(ownerBrowser, 'c')).toBe('owner')
+    expect(askPersonOf(writeGuest, 'c')).toEqual({ guest: 'g1' })
+  })
+
+  it("a read guest's start is refused; a view with no who or no bound access is refused (fail closed)", async () => {
+    expect(askPersonOf(readGuest, 'c')).toBeUndefined()
+    expect(() => askPersonOf(unbound, 'c')).toThrow(/refused/)
+    expect(() => askPersonOf(noWho, 'c')).toThrow(/refused/)
+    const { handlers, calls } = wired({})
+    const start = handlers.get('overlays.ask.start')!
+    await expect(Promise.resolve().then(() => start(ctx, {}, readGuest))).rejects.toThrow(/refused/)
+    await expect(Promise.resolve().then(() => start(ctx, {}, noWho))).rejects.toThrow(/refused/)
+    expect(calls).toEqual([])
+    await start(ctx, { overlayId: 'o', copy: 'c', question: 'q' }, writeGuest)
+    expect(calls).toEqual([{ method: 'start', who: { windowId: 1, projectId: ctx.projectId, view: 'remote:w', person: { guest: 'g1' } } }])
+  })
+
+  it('continue is the owner alone; every channel is refused with no service', async () => {
+    const { handlers, calls } = wired({})
+    await expect(Promise.resolve().then(() => handlers.get('overlays.ask.continue')!(ctx, {}, writeGuest))).rejects.toThrow(/refused/)
+    expect(calls).toEqual([])
+    expect(await handlers.get('overlays.ask.continue')!(ctx, {}, ownerBrowser)).toEqual({ tabId: 't' })
+    const none = wired(undefined)
     for (const channel of ASK_CHANNELS) {
-      expect(ipc.handlers.has(channel), channel).toBe(true)
-      await expect(ipc.invoke(channel, 11, payloads[channel]), channel).rejects.toThrow(/refused \(Ask is not available/)
+      await expect(Promise.resolve().then(() => none.handlers.get(channel)!(ctx, {}, ownerView)), channel).rejects.toThrow(/not available/)
     }
   })
 })

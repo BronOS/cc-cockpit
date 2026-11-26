@@ -1880,3 +1880,24 @@ describe('room membership', () => {
     expect(started.at(-1)).toMatchObject({ room, typed: true })
   })
 })
+
+
+describe('create with resumeId (D14 Continue in a tab)', () => {
+  const SESSION = '11111111-2222-3333-4444-555555555555'
+  it('resumes the session in a new Claude tab in the project folder', () => {
+    const tabs = manager()
+    const tab = tabs.create(A, { kind: 'claude', resumeId: SESSION })
+    expect(tab).toMatchObject({ kind: 'claude', cwd: projA })
+    expect(backend.last.argv).toEqual(['claude', '--settings', '/data/hooks.json', '--resume', SESSION])
+  })
+
+  it('create refuses a non-UUID resumeId or a kind that is not claude', () => {
+    const tabs = manager()
+    expect(() => tabs.create(A, { kind: 'claude', resumeId: 'abc' })).toThrow(/session id/)
+    expect(() => tabs.create(A, { kind: 'claude', resumeId: '--settings=/tmp/x' })).toThrow(/session id/)
+    expect(() => tabs.create(A, { kind: 'shell', resumeId: SESSION })).toThrow(/only a Claude tab resumes/)
+    expect(() => tabs.create(A, { kind: 'claude', resumeId: SESSION, prompt: 'hi' })).toThrow(/no prompt/)
+    expect(() => tabs.create(A, { kind: 'claude', resumeId: SESSION, model: 'opus' })).toThrow(/no prompt, model or effort/)
+    expect(tabs.list(A)).toEqual([])
+  })
+})
