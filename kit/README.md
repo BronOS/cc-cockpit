@@ -160,7 +160,9 @@ ccKit.mountAsk(container: HTMLElement, opts: {
   focus(): void
 }
   // Shows the pushed history, the answer as it streams (Markdown, no raw HTML), tool lines and errors; the model and
-  // effort picks (ask.pick on change); Ask (click or Enter): ask.start when no chat runs, else ask.say; Close (ask.close).
+  // effort picks (ask.pick on change, both fields, null for a select on default: back to default needs an app with
+  // the null pick, kit 0.1.4); Ask (click or Enter): ask.start when no chat runs, else ask.say, and off while a turn
+  // runs (the question typed meanwhile waits in the box); Close (ask.close).
 
 ccKit.renderMarkdown(text: string, doc?: Document): DocumentFragment   // an answer: allow-listed tags, text nodes only
 ccKit.markdownTree(text: string): MarkdownNode                         // the editor's chat-markdown.mjs

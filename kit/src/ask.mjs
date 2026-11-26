@@ -178,9 +178,10 @@ export function mountAsk(container, opts = {}) {
     show(picks, true)
   }
   const pick = () => {
-    const choice = {}
-    if (model.value) choice.model = model.value
-    if (effort.value) choice.effort = effort.value
+    // Both fields, always: a select on default sends null, which clears that field (the S-8 contract: null clears,
+    // undefined keeps, {} is only a read). Sending {} for "both on default" read the saved pick back, so the
+    // selects snapped back to it and the default could never be picked again (review S-8).
+    const choice = { model: model.value || null, effort: effort.value || null }
     attempt(() => api.pick(choice)).then(applyPick, (err) => {
       setText(error, errorText(err, 'Not changed.'))
       show(error, true)

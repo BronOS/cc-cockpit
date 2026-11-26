@@ -337,6 +337,49 @@ test('N9: a document\'s span[data-action] stays a plain span: no button the kit 
   assert.equal(span.getAttribute('data-action'), null)
 })
 
+test('S-8: the model and effort picks go back to default: a select on default sends null (null clears, {} only reads)', async () => {
+  const doc = new FakeDocument()
+  const panel = fakePanel()
+  // The app's contract (ask-service pick): null clears a field, undefined keeps it, {} reads the saved pick.
+  let saved = { model: 'opus' }
+  const LISTS = { models: ['sonnet', 'opus'], efforts: ['low', 'high'] }
+  panel.ask.pick = (choice) => {
+    panel.calls.push(['ask.pick', choice])
+    if (Object.keys(choice).length) {
+      for (const k of ['model', 'effort']) {
+        if (choice[k] === null) delete saved[k]
+        else if (choice[k] !== undefined) saved[k] = choice[k]
+      }
+    }
+    return Promise.resolve({ ...LISTS, ...saved })
+  }
+  const root = doc.createElement('div')
+  doc.body.appendChild(root)
+  const ask = kit.mountAsk(root, { doc, panel })
+  await flush()
+  const [model, effort] = byTag(ask.el, 'select')
+  assert.equal(model.value, 'opus', 'the saved pick shows')
+  effort.value = 'high'
+  effort.dispatch('change')
+  await flush()
+  assert.deepEqual(saved, { model: 'opus', effort: 'high' })
+  model.value = ''
+  model.dispatch('change')
+  await flush()
+  effort.value = ''
+  effort.dispatch('change')
+  await flush()
+  assert.deepEqual(panel.calls.filter((c) => c[0] === 'ask.pick').slice(1).map((c) => c[1]), [
+    { model: 'opus', effort: 'high' },
+    { model: null, effort: 'high' },
+    { model: null, effort: null },
+  ])
+  assert.deepEqual(saved, {}, 'both back to default')
+  assert.equal(model.value, '')
+  assert.equal(effort.value, '')
+  ask.destroy()
+})
+
 test("mountAsk shows a state push's notice beside the phase, as text (D15)", async () => {
   const doc = new FakeDocument()
   const panel = fakePanel()
