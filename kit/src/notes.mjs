@@ -25,7 +25,12 @@ export function mountNotes(container, opts = {}) {
   const canWrite = opts.canWrite === true
   const offs = []
   let state = null
-  let editing = null // note id being edited
+  /**
+   * The note being edited: its id and its one textarea, kept across draws. Every notes change anywhere redraws the
+   * list, and the box used to be made again from the saved text, so a write guest's new note wiped what the owner was
+   * typing (review S-10; drafts survive, design §6). The same element goes back in, with its text, caret and focus.
+   */
+  let editing = null // { id, input }
   let draft = null // the selection a new note is for
 
   const head = h(doc, 'h3', { class: 'cc-kit-notes-head' }, 'Notes')
@@ -81,6 +86,8 @@ export function mountNotes(container, opts = {}) {
   }
 
   const draw = () => {
+    const active = editing && doc.activeElement === editing.input
+    const caret = active ? [editing.input.selectionStart, editing.input.selectionEnd] : null
     clear(list)
     const notes = state ? state.notes : []
     setText(head, notes.length ? `Notes ${notes.length}` : 'Notes')
@@ -91,9 +98,8 @@ export function mountNotes(container, opts = {}) {
       }, { class: 'cc-kit-quote-link' })
       const by = authorLabel(note.author)
       const li = h(doc, 'li', { class: 'cc-kit-note', 'data-note': note.id }, h(doc, 'span', { class: 'cc-kit-note-n' }, `${i + 1}.`), quote)
-      if (editing === note.id && canWrite) {
-        const input = h(doc, 'textarea', { class: 'cc-kit-input', rows: '3', 'aria-label': 'Note' })
-        input.value = note.text
+      if (editing && editing.id === note.id && canWrite) {
+        const input = editing.input
         li.appendChild(input)
         li.appendChild(
           h(
@@ -126,8 +132,11 @@ export function mountNotes(container, opts = {}) {
               'div',
               { class: 'cc-kit-row' },
               button('Edit', () => {
-                editing = note.id
+                const input = h(doc, 'textarea', { class: 'cc-kit-input', rows: '3', 'aria-label': 'Note' })
+                input.value = note.text
+                editing = { id: note.id, input }
                 draw()
+                if (typeof input.focus === 'function') input.focus()
               }),
               button('✕', () => run(api.remove(note.id)), { 'aria-label': 'Remove note', title: 'Remove note' })
             )
@@ -137,12 +146,22 @@ export function mountNotes(container, opts = {}) {
       list.appendChild(li)
     })
     if (opts.rendered) markNotes(opts.rendered, notes)
+    if (active && editing && editing.input.parentNode && typeof editing.input.focus === 'function') {
+      editing.input.focus()
+      if (caret && typeof editing.input.setSelectionRange === 'function' && caret[0] !== null) {
+        try {
+          editing.input.setSelectionRange(caret[0], caret[1])
+        } catch {
+          // a box that takes no selection
+        }
+      }
+    }
   }
 
   const apply = (s) => {
     if (!s || typeof s !== 'object' || !Array.isArray(s.notes)) return
     state = s
-    if (editing && !s.notes.some((n) => n.id === editing)) editing = null
+    if (editing && !s.notes.some((n) => n.id === editing.id)) editing = null
     draw()
   }
   const off = api.onChange(apply)

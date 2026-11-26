@@ -124,7 +124,6 @@
   background: var(--cc-surface-1); color: var(--cc-fg-muted); font-size: 12px; line-height: 1.45;
 }
 .cc-kit-doc.mail .mail-images-text { flex: 1 1 260px; min-width: 0; }
-.cc-kit-doc.mail .mail-images-bar button.doc-action { font-size: 12px; }
 .cc-kit-doc.mail .mail-note { color: var(--cc-fg-muted); font-size: 13px; }
 .cc-kit-doc.mail .asset-box.failed:has(> img.mail-remote), .cc-kit-doc.mail .asset-box.pending:has(> img.mail-remote) {
   display: inline-flex; align-items: center; min-width: 0; min-height: 0; padding: 0 7px; vertical-align: 1px;
@@ -136,7 +135,6 @@
 .cc-kit-doc.mail details.mail-footer { margin-top: 22px; padding: 10px 0 0; border: none; border-top: 1px solid var(--cc-border); border-radius: 0; color: var(--cc-fg-subtle); font-size: 12.5px; }
 .cc-kit-doc.mail details.mail-footer > summary { font-weight: 500; color: var(--cc-fg-muted); }
 .cc-kit-doc.mail details.mail-footer a { color: var(--cc-fg-muted); border-bottom-color: color-mix(in srgb, var(--cc-fg-muted) 35%, transparent); }
-.cc-kit-doc button.doc-action.busy { opacity: .6; cursor: progress; }
 .cc-kit-doc [data-part][hidden] { display: none !important; }
 .cc-kit-doc mark.cc-kit-note { background: var(--cc-accent-soft, color-mix(in srgb, var(--cc-accent) 22%, transparent)); color: inherit; border-bottom: 2px solid var(--cc-accent); }
 .cc-kit-doc mark.cc-kit-note.cc-kit-flash { outline: 2px solid var(--cc-accent); }
