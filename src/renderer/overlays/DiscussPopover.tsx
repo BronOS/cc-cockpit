@@ -152,6 +152,8 @@ export function DiscussButton(props: {
             if (e.key === 'ArrowDown' && e.altKey && !none) {
               e.preventDefault()
               setError(null)
+              // The person's own open: the ▾'s menu, never the page mode a page request left set.
+              setMode('menu')
               setOpen(true)
             }
           }}
