@@ -41,6 +41,21 @@ export function renderMarkdown(text, doc = globalThis.document) {
 
 const PHASES = { starting: 'Starting…', thinking: 'Thinking…', ready: 'Ready' }
 
+/**
+ * `fn()` as a promise: a synchronous throw (an SDK member missing or refusing its arguments) becomes a rejection, so
+ * every click's error reaches the same catch and shows, never escaping the handler silently.
+ */
+/** The Ask push types (shared/overlay-envelope.ts AskPush), each heard with ccPanel.ask.on(type, fn). */
+const ASK_PUSHES = ['history', 'state', 'delta', 'tool', 'answer', 'end']
+
+function attempt(fn) {
+  try {
+    return Promise.resolve(fn())
+  } catch (err) {
+    return Promise.reject(err)
+  }
+}
+
 export function mountAsk(container, opts = {}) {
   const { doc, panel } = env(opts)
   const api = panel && panel.ask
@@ -77,8 +92,7 @@ export function mountAsk(container, opts = {}) {
     setQuote(null)
     show(error, false)
     draw()
-    const call = running && phase === 'ready' ? api.say(q) : api.start(q)
-    Promise.resolve(call).catch((err) => {
+    attempt(() => (running && phase === 'ready' ? api.say(q) : api.start(q))).catch((err) => {
       if (open) {
         open.error = errorText(err, 'Not asked.')
         turns.push(open)
@@ -100,9 +114,10 @@ export function mountAsk(container, opts = {}) {
     },
     offs
   )
-  const close = button('Close chat', () => Promise.resolve(api.close()).catch(() => {}))
+  const close = button('Close chat', () => attempt(() => api.close()).catch(() => {}))
   const cont = button('Continue in a tab', () => {
-    Promise.resolve(api.continueInTab()).catch((err) => {
+    // The SDK's name (ccPanel.ask.continue, the owner's; the app refuses anyone else).
+    attempt(() => api.continue()).catch((err) => {
       setText(error, errorText(err, 'Not continued.'))
       show(error, true)
     })
@@ -155,7 +170,7 @@ export function mountAsk(container, opts = {}) {
     const choice = {}
     if (model.value) choice.model = model.value
     if (effort.value) choice.effort = effort.value
-    Promise.resolve(api.pick(choice)).then(applyPick, (err) => {
+    attempt(() => api.pick(choice)).then(applyPick, (err) => {
       setText(error, errorText(err, 'Not changed.'))
       show(error, true)
     })
@@ -214,8 +229,12 @@ export function mountAsk(container, opts = {}) {
       default:
     }
   }
-  const off = api.on(onEvent)
-  if (typeof off === 'function') offs.push(off)
+  // One listener per push type: the SDK's ccPanel.ask.on(type, fn) (it throws on any other form). Each push carries
+  // its type, so onEvent stays one switch.
+  for (const type of ASK_PUSHES) {
+    const off = api.on(type, onEvent)
+    if (typeof off === 'function') offs.push(off)
+  }
   // Reads the lists and the remembered pick; picks nothing.
   Promise.resolve()
     .then(() => api.pick({}))

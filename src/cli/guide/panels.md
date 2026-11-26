@@ -194,22 +194,33 @@ Cmd+Shift+W) closes the overlay as `{ kind: 'dismissed' }` without asking the pa
 draft should post it as it changes, so nothing is lost when the user presses Esc.
 
 An overlay opened with `notes: { key }` (a `perView` plugin, `api` topic) gives its page more, on each view's copy;
-each is undefined on an older app, in a panel, slot or page tab, and on an overlay without `notes`, so check first:
+each is undefined on an older app, in a panel, slot or page tab, and on an overlay without `notes`, so check first.
+Check in `ccPanel.onConnect(fn)`, not at script start: the app tells a copy what it has just before the page connects,
+so when your script runs they are still undefined on every app:
 
 - `ccPanel.notes`: `{ list(), add({ quote, anchor?, text }), change(id, { text }), remove(id), setGlobal(text),
   onChange(fn) }`, the same notes as the host's `ctx.notes(key)`. `list()` resolves `{ global, notes, rev }`;
   `onChange(fn)` gets that state after every write in any view. `anchor` is yours (where the note sits, at most
   2,048 characters of JSON). A read guest's writes reject. The note for Claude is `global`.
 - `ccPanel.ask`: `{ start({ question, quote? }), say({ question, quote? }), close(), pick({ model?, effort? }),
-  continueInTab(), on(fn) }`, a chat with Claude about the document your host's `handle.onAsk` gives. `on(fn)` hears
-  `history` (the stored turns, on connect), `state`, `delta` (answer text as it comes), `tool`, `answer` and
-  `end`. `pick` with nothing reads the model and effort lists and the pick; the owner's pick is remembered.
-  `continueInTab()` (the owner's) opens the same session in a Claude tab. Undefined for a read guest. Render answers
+  continue(), on(type, fn) }`, a chat with Claude about the document your host's `handle.onAsk` gives.
+  `on(type, fn)` hears one kind of push, `type` one of `history` (the stored turns, on connect), `state`, `delta`
+  (answer text as it comes, `{ text }`), `tool`, `answer` (`{ text }`) and `end`; another type throws. `pick` with nothing reads the model and effort lists and the pick; the owner's pick is remembered.
+  `continue()` (the owner's) opens the same session in a Claude tab. Undefined for a read guest. Render answers
   as text or sanitized Markdown, never as raw HTML, and never post or send an answer without the person's click.
 - `ccPanel.overlay.discuss()`: open the toolbar's Discuss with Claude popover from your own button (New session, or
   a Claude tab); the person sends from there. Nothing is sent by the call itself.
 
 Each call rejects after 30 s without an answer and past 50 outstanding.
+
+```js
+// page: set up once connected (each member undefined where the app or the overlay lacks it)
+ccPanel.onConnect(() => {
+  if (ccPanel.notes) ccPanel.notes.onChange(drawNotes)
+  if (ccPanel.ask) ccPanel.ask.on('delta', (d) => (answer.textContent += d.text))
+  if (ccPanel.overlay && ccPanel.overlay.discuss) discussButton.hidden = false
+})
+```
 
 ```js
 // host
