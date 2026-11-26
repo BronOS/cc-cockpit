@@ -1513,7 +1513,7 @@ export class OverlayManager {
     if (!this.ownerView(viewId)) {
       // A guest that hid it never gets it back (also in the wiring's rule; checked here so no wiring can skip it).
       const guest = this.options.guestOf?.(viewId)
-      if (guest !== undefined && overlay.perView.hiddenFrom.has(guest)) return { ok: false, reason: 'not-allowed' }
+      if (guest !== undefined && this.guestHidden(overlay, guest)) return { ok: false, reason: 'not-allowed' }
       if (this.options.mayConnectCopy?.(windowId, overlay.id, viewId) !== true) return { ok: false, reason: 'not-allowed' }
     }
     if (!this.withinCopyCap(overlay, overlay.perView, viewId)) return { ok: false, reason: 'cap' }
@@ -1736,7 +1736,18 @@ export class OverlayManager {
    * snapshot, events and connects all drop the overlay alike. False for an unknown overlay or one not perView.
    */
   hiddenFrom(windowId: number, overlayId: unknown, guestId: string): boolean {
-    return this.find(windowId, overlayId)?.perView?.hiddenFrom.has(guestId) === true
+    const overlay = this.find(windowId, overlayId)
+    return overlay !== undefined && this.guestHidden(overlay, guestId)
+  }
+
+  /**
+   * The guest hid the overlay, or (a part, design-parts.md §3) its parent: a part is seen only with its parent, so a
+   * read guest's ✕ on the parent takes its parts off that guest's list and connects too (review N11).
+   */
+  private guestHidden(overlay: Overlay, guestId: string): boolean {
+    if (overlay.perView?.hiddenFrom.has(guestId) === true) return true
+    if (overlay.parentId === undefined) return false
+    return this.byId.get(overlay.parentId)?.perView?.hiddenFrom.has(guestId) === true
   }
 
   /**
@@ -1791,7 +1802,7 @@ export class OverlayManager {
     if (!overlay || !perView || !c?.live) return false
     if (!this.ownerView(c.view)) {
       const guest = this.options.guestOf?.(c.view)
-      if (guest !== undefined && perView.hiddenFrom.has(guest)) return false
+      if (guest !== undefined && this.guestHidden(overlay, guest)) return false
       let admitted = false
       try {
         admitted = this.options.mayConnectCopy?.(windowId, overlay.id, c.view) === true
@@ -1978,6 +1989,11 @@ export class OverlayManager {
     if (!perView || guest === undefined || perView.hiddenFrom.has(guest)) return
     perView.hiddenFrom.add(guest)
     for (const other of [...perView.copies.values()]) if (this.options.guestOf?.(other.view) === guest) this.hideCopyRecord(overlay, other)
+    // Its parts go with it for that guest (guestHidden): their copies of that guest released the same way.
+    for (const partId of overlay.parts ?? []) {
+      const part = this.byId.get(partId)
+      for (const other of [...(part?.perView?.copies.values() ?? [])]) if (part && this.options.guestOf?.(other.view) === guest) this.hideCopyRecord(part, other)
+    }
     this.changed(overlay.windowId)
   }
 
