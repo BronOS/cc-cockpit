@@ -773,3 +773,98 @@ describe('setUsage (the status line: SessionInfo.costUsd / contextPercent)', () 
     expect(sent.at(-1)?.own[0]).not.toHaveProperty('costUsd')
   })
 })
+
+describe('onSettled (task 03: Discuss removes its notes only once delivered)', () => {
+  /** A Claude tab in a turn: a send queues, the next Stop delivers. */
+  const working = (tabId: string): void => {
+    start(tabId)
+    reg.applyHook(tabId, 'SessionStart', { session_id: `s-${tabId}` })
+    reg.applyHook(tabId, 'UserPromptSubmit', { prompt: 'go' })
+  }
+
+  it('a queued item settles delivered when the gate types it in, once', () => {
+    working('a')
+    const { id, delivered } = reg.send('a', 'later', 'core')
+    expect(delivered).toBe(false)
+    const heard: string[] = []
+    reg.onSettled(id, (how) => heard.push(how))
+    reg.applyHook('a', 'Stop', {})
+    expect(reg.get('a')?.queue).toEqual([])
+    expect(heard).toEqual(['delivered'])
+    reg.applyHook('a', 'UserPromptSubmit', { prompt: 'later' })
+    reg.applyHook('a', 'Stop', {})
+    expect(heard).toEqual(['delivered'])
+  })
+
+  it('dropped when the tab closes, the session ends or the item is cancelled', () => {
+    working('a')
+    working('b')
+    working('c')
+    const heard: Array<[string, string]> = []
+    for (const tab of ['a', 'b', 'c']) {
+      const { id } = reg.send(tab, `to ${tab}`, 'core')
+      reg.onSettled(id, (how) => heard.push([tab, how]))
+      if (tab === 'c') expect(reg.cancelQueued('c', id)).toBe(true)
+    }
+    reg.tabClosed('a')
+    reg.tabExited('b', 0)
+    expect(heard).toEqual([
+      ['c', 'dropped'],
+      ['a', 'dropped'],
+      ['b', 'dropped']
+    ])
+  })
+
+  it("a guest's text refused at delivery settles dropped", () => {
+    let allowed = true
+    const r = new SessionRegistry({ projectName: () => 'p', broadcast: () => {}, write: () => {}, guestMayDeliver: () => allowed, log: () => {} })
+    r.tabStarted({ tabId: 'g', projectId: P1, kind: 'claude', cwd: '/proj' })
+    r.applyHook('g', 'SessionStart', { session_id: 's' })
+    r.applyHook('g', 'UserPromptSubmit', { prompt: 'go' })
+    const { id } = r.send('g', 'from a guest', 'core', 'guest-1')
+    const heard: string[] = []
+    r.onSettled(id, (how) => heard.push(how))
+    allowed = false
+    r.applyHook('g', 'Stop', {})
+    expect(heard).toEqual(['dropped'])
+    r.dispose()
+  })
+
+  it('a failed write is not a settle: the item goes back and the next delivery settles it', () => {
+    let fail = true
+    const r = new SessionRegistry({
+      projectName: () => 'p',
+      broadcast: () => {},
+      write: () => {
+        if (fail) throw new Error('pty gone')
+      },
+      log: () => {}
+    })
+    r.tabStarted({ tabId: 'w', projectId: P1, kind: 'claude', cwd: '/proj' })
+    r.applyHook('w', 'SessionStart', { session_id: 's' })
+    r.applyHook('w', 'UserPromptSubmit', { prompt: 'go' })
+    const { id } = r.send('w', 'text', 'core')
+    const heard: string[] = []
+    r.onSettled(id, (how) => heard.push(how))
+    r.applyHook('w', 'Stop', {})
+    expect(heard).toEqual([])
+    expect(r.get('w')?.queue.map((q) => q.id)).toEqual([id])
+    fail = false
+    r.applyHook('w', 'UserPromptSubmit', { prompt: 'again' })
+    r.applyHook('w', 'Stop', {})
+    expect(heard).toEqual(['delivered'])
+    r.dispose()
+  })
+
+  it('the person typing drops no core text, so nothing settles; a listener that throws is logged', () => {
+    working('a')
+    const { id } = reg.send('a', 'discuss text', 'core')
+    reg.onSettled(id, () => {
+      throw new Error('boom')
+    })
+    reg.userInput(P1, 'a', 'h')
+    expect(reg.get('a')?.queue.map((q) => q.id)).toEqual([id])
+    reg.applyHook('a', 'Stop', {})
+    expect(logs.some((l) => l.includes('a settle listener threw'))).toBe(true)
+  })
+})

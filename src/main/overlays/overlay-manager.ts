@@ -90,10 +90,12 @@ import {
   discussContextOf,
   discussTargetProblem,
   DiscussSessionBudget,
+  DiscussTooLong,
   GUEST_DISCUSS_CONTEXT_FAILED,
   GUEST_DISCUSS_REFUSED,
   GuestDiscussLost,
-  type DiscussGuest
+  type DiscussGuest,
+  type DiscussNotes
 } from './discuss'
 import { PtyService } from '../pty/pty-service'
 import { CONNECT_WINDOW_MS, MAX_CONNECTS_PER_PANEL } from '../plugins/panel-ports'
@@ -102,7 +104,8 @@ import type { SendOrigin } from '../sessions/status-reducer'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
 import { ViewSizes } from '../views/view-sizes'
 import { warnLog } from '../warn-log'
-import type { NotesApi } from '../notes/notes-api'
+import type { NotesApi, SentNotes } from '../notes/notes-api'
+import type { NotesSnapshot } from '../../shared/overlay-envelope'
 
 /** `type`, `buttons`, `ready` and `discuss` of every kind (shared/overlay-buttons.ts). */
 type OverlayBase = { title?: string; size?: OverlaySize } & CleanOverlayExtras
@@ -264,10 +267,11 @@ export interface OverlayManagerOptions {
    */
   reloadCopy?(viewId: ViewId, windowId: number, overlayId: string, copy: string): void
   /**
-   * The Notes service (shared/design.md §3), read at each use (it is made after the manager): Discuss sends an
-   * overlay's notes as their own part (task 03, `discuss()`). Absent or undefined: no notes part.
+   * The Notes service (shared/design.md §3) and the window's project, read at each use (the service is made after the
+   * manager): Discuss sends an overlay's notes as their own part and removes them once delivered (task 03, `discuss()`).
+   * Absent or undefined: no notes part.
    */
-  notes?(): NotesApi | undefined
+  notes?(windowId: number): { api: NotesApi; projectId: string } | undefined
 }
 
 /** What `start` / `open` know about the opener beyond the spec (main's own, never the spec's). */
@@ -2119,10 +2123,17 @@ export class OverlayManager {
     if (overlay.discussing) return { ok: false, error: 'Already sending' }
     overlay.discussing = true
     try {
+      const caller = viewId ?? guest?.viewId
+      const view = caller !== undefined && isRemoteViewId(caller) ? caller : undefined
+      // The view whose Send it is (the desktop's when the router named none): a part's text is asked only when this
+      // view holds a live copy of the part (design-parts.md §5), so nothing reaches Claude that this view is not shown.
+      const acting = caller ?? desktopViewId(windowId)
+      // Started together with the opener's ask, awaited after it: the notes (task 03) and the parts' texts.
+      // Only awaited when there is something to read, so an overlay with neither keeps the steps it always had.
+      const notesRead = this.notesOf(windowId, overlay.id) && this.options.notes?.(windowId) ? this.readDiscussNotes(windowId, overlay) : undefined
+      const partsRead = this.partsOf(windowId, overlay.id).length > 0 ? this.askParts(windowId, overlay, acting, view) : undefined
       let context: string | undefined
       if (overlay.discussHandler && overlay.channel?.onDiscuss) {
-        const caller = viewId ?? guest?.viewId
-        const view = caller !== undefined && isRemoteViewId(caller) ? caller : undefined
         const onDiscuss = overlay.channel.onDiscuss.bind(overlay.channel)
         const ask = (): Promise<unknown> => onDiscuss(view)
         let answer: unknown
@@ -2151,11 +2162,38 @@ export class OverlayManager {
         }
         context = parsed.context
       }
+      const notesGot = notesRead === undefined ? undefined : await notesRead
+      const parts = partsRead === undefined ? [] : await partsRead
       // The overlay may have closed while the opener was asked: nothing to discuss any more.
       if (this.byId.get(overlay.id) !== overlay) return { ok: false, error: 'The overlay closed' }
       // A guest's right to the overlay, again after the opener's await (its context may be a hidden plugin's now).
       if (!guestSees()) return { ok: false, error: GUEST_DISCUSS_REFUSED }
-      const text = composeDiscuss({ title: overlay.info.title, type: overlay.type, context, prompt: sessions.prompt?.(windowId) })
+      // Notes that could not be read refuse the send: going without them would drop the person's notes silently.
+      if (notesGot === 'failed') return { ok: false, error: 'Not sent: the notes could not be read' }
+      // A part whose copy left this view while it was asked is left out (its text is no longer shown here).
+      const shown = parts.filter((p) => this.copiesOf(windowId, p.overlayId).some((c) => c.view === acting))
+      let text: string
+      try {
+        text = composeDiscuss({
+          title: overlay.info.title,
+          type: overlay.type,
+          context,
+          prompt: sessions.prompt?.(windowId),
+          ...(notesGot ? { notes: notesGot.notes } : {}),
+          ...(shown.length > 0 ? { parts: shown.map((p) => ({ name: p.name, text: p.text })) } : {})
+        })
+      } catch (err) {
+        if (err instanceof DiscussTooLong) return { ok: false, error: err.message }
+        throw err
+      }
+      // Removes the notes this text carries, once it is delivered (S3): only those still at their sent rev.
+      const removeSent = (): void => {
+        if (!notesGot || !notesGot.carries) return
+        const { store, pluginId, key, sent } = notesGot
+        void store.api.removeSent?.(store.projectId, pluginId, key, sent).catch((err: unknown) => {
+          this.log(`overlay ${overlay.id}: removing the sent notes failed: ${String(err)}`)
+        })
+      }
       const late = discussTargetProblem(sessions, windowId, target)
       if (late) return { ok: false, error: late }
       // And in the same synchronous step as the send: deliverDiscuss asks `allowed` right before it sends or opens.
@@ -2186,7 +2224,12 @@ export class OverlayManager {
                   close
                 )
             }
-      const sent = await deliverDiscuss(sessions, this.discussSessions, windowId, target, text, checked)
+      // A queued text: the notes go when the gate types it in, and stay when it is dropped (S3). No settle signal wired:
+      // they stay (fail closed).
+      const onQueued = (itemId: string): void => {
+        if (notesGot && notesGot.carries) sessions.onSettled?.(itemId, (how) => (how === 'delivered' ? removeSent() : undefined))
+      }
+      const sent = await deliverDiscuss(sessions, this.discussSessions, windowId, target, text, checked, onQueued)
       if (!sent.ok) return sent
       const { tabId, queued } = sent
       // Again once a guest's new session is open, before the overlay closes as discussed and the tab is selected: one
@@ -2201,6 +2244,8 @@ export class OverlayManager {
         }
         return { ok: false, error: GUEST_DISCUSS_REFUSED }
       }
+      // Typed in now (a waiting tab) or the new session's first prompt (it opened with the text): the notes go now.
+      if (target.kind === 'new' || !queued) removeSent()
       // The person may dismiss the overlay while a new session opens. The session already has the
       // text and cannot be taken back, so it is still selected and the answer is still ok, but the
       // opener has heard `dismissed` (finish below is a no-op): a reviewer-style opener keeps a draft
@@ -2219,6 +2264,77 @@ export class OverlayManager {
     } finally {
       overlay.discussing = false
     }
+  }
+
+  /**
+   * Discuss's notes part (task 03): the overlay's notes as they are now, the ones that go into the text, and what to
+   * remove once it is delivered. Undefined: the overlay has no notes key or there is no service (no part). 'failed':
+   * the read threw, and the send is refused.
+   */
+  private async readDiscussNotes(
+    windowId: number,
+    overlay: Overlay
+  ): Promise<
+    | undefined
+    | 'failed'
+    | { store: { api: NotesApi; projectId: string }; pluginId: string; key: string; notes: DiscussNotes; sent: SentNotes; carries: boolean }
+  > {
+    const of = this.notesOf(windowId, overlay.id)
+    if (!of) return undefined
+    const store = this.options.notes?.(windowId)
+    if (!store) return undefined
+    let snapshot: NotesSnapshot
+    try {
+      snapshot = await store.api.list(store.projectId, of.pluginId, of.key)
+    } catch (err) {
+      this.log(`overlay ${overlay.id}: reading its notes for Discuss failed: ${String(err)}`)
+      return 'failed'
+    }
+    // The notes the text prints (discuss.ts notesPart leaves out one with neither quote nor text), and only those are
+    // removed after delivery.
+    const notes = snapshot.notes.filter((note) => note.quote.trim() !== '' || note.text.trim() !== '')
+    const global = snapshot.global.trim() !== '' ? snapshot.global : ''
+    return {
+      store,
+      pluginId: of.pluginId,
+      key: of.key,
+      notes: { notes: notes.map((note) => ({ quote: note.quote, text: note.text, author: note.author })), global, pluginName: this.openerName(overlay) },
+      sent: { global, notes: notes.map((note) => ({ id: note.id, rev: note.rev })) },
+      carries: notes.length > 0 || global !== ''
+    }
+  }
+
+  /**
+   * The parts' Discuss texts (design-parts.md §5): each part of the overlay that has a live copy in `acting` and an
+   * `onDiscuss`, asked with the same view and deadline as the opener. A null, a throw, a timeout or another shape
+   * leaves that part out; it never fails the send.
+   */
+  private async askParts(
+    windowId: number,
+    overlay: Overlay,
+    acting: ViewId,
+    view: ViewId | undefined
+  ): Promise<{ overlayId: string; name: string; text: string }[]> {
+    const asks = this.partsOf(windowId, overlay.id).map(async (ref) => {
+      const part = this.find(windowId, ref.overlayId)
+      if (!part || !part.discussHandler || !part.channel?.onDiscuss) return undefined
+      if (!this.copiesOf(windowId, ref.overlayId).some((c) => c.view === acting)) return undefined
+      const onDiscuss = part.channel.onDiscuss.bind(part.channel)
+      try {
+        const answer = await within(
+          Promise.resolve().then(() => onDiscuss(view)),
+          DISCUSS_ASK_MS,
+          `onDiscuss took longer than ${DISCUSS_ASK_MS / 1000} s`
+        )
+        const parsed = discussContextOf(answer)
+        if (!parsed || parsed.context === undefined) return undefined
+        return { overlayId: ref.overlayId, name: this.openerName(part), text: parsed.context }
+      } catch (err) {
+        this.log(`overlay ${overlay.id}: part ${ref.overlayId} gave no Discuss text: ${toError(err).message}`)
+        return undefined
+      }
+    })
+    return (await Promise.all(asks)).filter((p): p is { overlayId: string; name: string; text: string } => p !== undefined)
   }
 
   /** The window closed: every overlay it had is dismissed. */

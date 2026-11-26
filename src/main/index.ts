@@ -1235,12 +1235,8 @@ function start(server: boolean): void {
     // Discuss names its origin (`core`, overlay-manager.ts, page-tab-discuss.ts): passed through, not chosen here.
     // A guest's text carries its id, so the registry checks its access again when the gate dequeues it (03e A).
     send: (tabId, text, origin, guestId) => (guestId === undefined ? sessions.send(tabId, text, origin) : sessions.send(tabId, text, origin, guestId)),
-    // A queued Discuss text settled (spec-review S12): the registry's onSettled, which task 03 adds. Read through a
-    // structural type until then (absent: Discuss keeps the notes); 03 replaces this with the direct call.
-    onSettled: (itemId, fn) => {
-      const registry = sessions as { onSettled?: (itemId: string, fn: (how: 'delivered' | 'dropped') => void) => void }
-      registry.onSettled?.(itemId, fn)
-    },
+    // A queued Discuss text settled (spec-review S12): Discuss removes the notes it sent only once it was typed in.
+    onSettled: (itemId, fn) => sessions.onSettled(itemId, fn),
     openSession: async (windowId, prompt, guestId) => {
       const projectId = projectOfWindow(windowId)
       if (projectId === undefined) throw new Error('the window is gone')
@@ -1353,8 +1349,12 @@ function start(server: boolean): void {
     reloadCopy: (viewId, _windowId, overlayId, copy) => {
       views.toView(viewId, 'overlays.reload', { overlayId, copy })
     },
-    // Discuss sends an overlay's notes as their own part (task 03); read at each Send.
-    notes: () => notesRef.current
+    // Discuss sends an overlay's notes as their own part (task 03); read at each Send, with the window's project.
+    notes: (windowId) => {
+      const api = notesRef.current
+      const projectId = projectOfWindow(windowId)
+      return api && projectId !== undefined ? { api, projectId } : undefined
+    }
   })
   // Notes and Ask in main (shared/design.md §3, §5; 00 contract: the services are tasks 03 and 02). Main's own tables
   // only: a project's window and folder, never a payload's.
