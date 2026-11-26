@@ -76,6 +76,7 @@ import {
   type CleanOverlayButton,
   type CleanOverlayExtras,
   type CleanOverlayType,
+  type OverlayExtrasContext,
   type CleanTypeButton
 } from '../../shared/overlay-buttons'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
@@ -101,6 +102,7 @@ import type { SendOrigin } from '../sessions/status-reducer'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
 import { ViewSizes } from '../views/view-sizes'
 import { warnLog } from '../warn-log'
+import type { NotesApi } from '../notes/notes-api'
 
 /** `type`, `buttons`, `ready` and `discuss` of every kind (shared/overlay-buttons.ts). */
 type OverlayBase = { title?: string; size?: OverlaySize } & CleanOverlayExtras
@@ -261,6 +263,11 @@ export interface OverlayManagerOptions {
    * and the view's page stays as it is until it reconnects by itself.
    */
   reloadCopy?(viewId: ViewId, windowId: number, overlayId: string, copy: string): void
+  /**
+   * The Notes service (shared/design.md §3), read at each use (it is made after the manager): Discuss sends an
+   * overlay's notes as their own part (task 03, `discuss()`). Absent or undefined: no notes part.
+   */
+  notes?(): NotesApi | undefined
 }
 
 /** What `start` / `open` know about the opener beyond the spec (main's own, never the spec's). */
@@ -472,6 +479,32 @@ export interface OverlayChannel {
    * desktop's, so the opener knows who asked (docs/design-overlay-views.md §3).
    */
   onDiscuss?(view?: ViewId): Promise<unknown>
+  /**
+   * Ask (shared/design.md §5, spec-review S5): the opener's `onAsk` handlers for the document a chat is about
+   * (`{ text }` or null; the first text wins, all null refuses, a throw refuses), within ASK_CONTEXT_MS
+   * (shared/ask.ts). `view` and `copy`: the asking copy (main's own record), so a host answers about what that copy
+   * shows. Absent: no Ask for this overlay.
+   */
+  onAsk?(view: ViewId, copy: string): Promise<unknown>
+}
+
+/**
+ * A perView copy's life event, for main's Notes and Ask services (00 contract): `onCopyReady` when its port is up,
+ * `onCopyEnd` when it is gone. `view` is main's own record of the copy's view.
+ */
+export interface CopyEvent {
+  windowId: number
+  overlayId: string
+  copy: string
+  view: ViewId
+  /** The opener (main's record): a copy's notes and Ask are that plugin's. */
+  pluginId?: string
+}
+
+/** A part drawn in a window (design-parts.md §2); 00 freezes the shape, task 14 fills it. */
+export interface OverlayPartRef {
+  overlayId: string
+  pluginId: string
 }
 
 /** Re-exported: a dismissed terminal overlay's program gets SIGKILL after this (PtyService.terminate). */
@@ -589,6 +622,12 @@ interface Overlay {
   discussing: boolean
   /** Set for a `perView` html overlay (OverlayStartOptions): its copies replace holder, pageReady and outbox. */
   perView?: PerViewState
+  /**
+   * The spec's `notes.key` as the opener gave it (shared/design.md §3): only on a perView html overlay of a plugin
+   * page (parseOverlayExtras refuses the rest). The store namespaces it with `pluginId`; `info.notes` says only that
+   * there is one.
+   */
+  notesKey?: string
 }
 
 /** One view's copy of a `perView` overlay's page (CopyState, plus its queue). */
@@ -647,6 +686,9 @@ function clickKey(click: OverlayButtonClick): string {
 export class OverlayManager {
   /** windowId -> its overlays, bottom first. */
   private readonly stacks = new Map<number, Overlay[]>()
+  /** onCopyReady / onCopyEnd listeners (Notes and Ask services in main). */
+  private readonly copyReadyListeners = new Set<(event: CopyEvent) => void>()
+  private readonly copyEndListeners = new Set<(event: CopyEvent) => void>()
   private readonly byId = new Map<string, Overlay>()
   /** The top overlay each window had after its last change, to move focus only on a change. */
   private readonly lastTop = new Map<number, Overlay | undefined>()
@@ -749,7 +791,9 @@ export class OverlayManager {
     origin?: OverlayOrigin,
     options?: OverlayStartOptions
   ): Promise<OverlayResult> {
-    const parsed = parseOverlaySpec(spec)
+    // The opener's perView is main's word (host-api's manifest read): a spec with `notes` from a plugin that is not
+    // perView, or from the CLI or core, is refused here, before anything exists.
+    const parsed = parseOverlaySpec(spec, { perView: options?.perView === true })
     // By main's own flag, before anything is created (whoever opens it: the CLI, a plugin, a menu).
     if (parsed.kind === 'url' && this.options.server === true) throw new Error(URL_OVERLAY_SERVER_REFUSAL)
     // Before anything is created: no program, no view, no stack for a window that is gone.
@@ -807,8 +851,13 @@ export class OverlayManager {
       // No holder: each view's copy has its own loader (copyState), so the window-wide one never shows,
       // and nothing here may stamp `heldBy` or `waiting` (no view is "the" page's, D-1).
       overlay.perView = { copies: new Map(), connects: new Map(), staleLogged: false, hiddenFrom: new Set(), ownerHidden: new Set(), retired: new Map() }
-      const info = { ...overlay.info, perView: true as const }
+      const info: OverlayInfo = { ...overlay.info, perView: true as const }
       delete info.loading
+      // Notes (and Ask on them) need a plugin's page with copies; parseOverlaySpec refused every other case already.
+      if (parsed.notes !== undefined && pluginId !== undefined) {
+        overlay.notesKey = parsed.notes.key
+        info.notes = true
+      }
       overlay.info = info
     } else if (parsed.kind === 'html') {
       const origin =
@@ -1457,6 +1506,8 @@ export class OverlayManager {
     c.ready = true
     // deliverToCopy sends now (ready); one that fails drops the copy and the rest finds it dead.
     for (const message of c.outbox.drain()) this.deliverToCopy(overlay, c, message)
+    // After the opener's queued starting state: Ask's history push (D14) lands behind it, on a port that is up.
+    if (c.live) this.emitCopy(this.copyReadyListeners, overlay, c)
     return true
   }
 
@@ -1639,6 +1690,152 @@ export class OverlayManager {
     return perView.copies.get(copy)?.view ?? perView.retired.get(copy)
   }
 
+  // ---- Notes, Ask and parts (00 contract: shared/design.md §3-§5, design-parts.md; the services live elsewhere) ----
+
+  /**
+   * Main's own push (a notes or Ask envelope, shared/overlay-envelope.ts) to one live copy: `overlays.message` with
+   * `envelope: true`, to that copy's view only. Fail closed: false, nothing sent, for an overlay that is gone, of
+   * another window or not perView, a copy that is not live (released, replaced or retired), a copy whose port is not
+   * up, or a guest's copy that the wiring's rule (`mayConnectCopy`: the opener and every `via` plugin visible, not
+   * hidden by that guest) no longer admits, read now. Never sets `joined` (that is the opener's first addressed post,
+   * which orders its broadcasts, see `post`), and shares the copy's queue rules: a failed send drops the copy.
+   * Throws a RangeError for a text over MAX_OVERLAY_MESSAGE_LENGTH, as `post` does.
+   */
+  postEnvelope(windowId: number, overlayId: string, copy: string, text: string): boolean {
+    if (typeof text !== 'string' || text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
+      throw new RangeError(`overlay envelope: message exceeds ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
+    }
+    const overlay = this.find(windowId, overlayId)
+    const perView = overlay?.perView
+    const c = typeof copy === 'string' ? perView?.copies.get(copy) : undefined
+    if (!overlay || !perView || !c?.live) return false
+    if (!this.ownerView(c.view)) {
+      const guest = this.options.guestOf?.(c.view)
+      if (guest !== undefined && perView.hiddenFrom.has(guest)) return false
+      let admitted = false
+      try {
+        admitted = this.options.mayConnectCopy?.(windowId, overlay.id, c.view) === true
+      } catch (err) {
+        this.log(`overlay ${overlay.id}: the copy rule threw for an envelope: ${String(err)}; dropped`)
+      }
+      if (!admitted) return false
+    }
+    return this.deliverToCopy(overlay, c, text, true)
+  }
+
+  /**
+   * The view a LIVE copy of this perView overlay belongs to, or undefined (gone, another window's overlay, not
+   * perView, a released or replaced copy). Unlike `copyViewOf`, never a retired copy's view: Notes and Ask act for
+   * the caller only while its copy is live.
+   */
+  copyOwner(windowId: number, overlayId: unknown, copy: unknown): ViewId | undefined {
+    if (typeof copy !== 'string') return undefined
+    const c = this.find(windowId, overlayId)?.perView?.copies.get(copy)
+    return c?.live === true ? c.view : undefined
+  }
+
+  /** The live copies of this perView overlay and their views (none for an unknown, other-window or holder overlay). */
+  copiesOf(windowId: number, overlayId: unknown): { copy: string; view: ViewId }[] {
+    const perView = this.find(windowId, overlayId)?.perView
+    if (!perView) return []
+    return [...perView.copies.values()].filter((c) => c.live).map((c) => ({ copy: c.id, view: c.view }))
+  }
+
+  /**
+   * The open overlays of `windowId` that `pluginId` opened with notes key `key` (a store change goes to each one's
+   * copies). Matched on the opener (main's record) AND the key: two plugins with one key never share notes.
+   */
+  overlaysWithNotes(windowId: number, pluginId: string, key: string): string[] {
+    return (this.stacks.get(windowId) ?? []).filter((o) => o.notesKey === key && o.pluginId === pluginId).map((o) => o.id)
+  }
+
+  /** The overlay's notes key and its opener, when it has one (the handlers' lookup; never from a payload). */
+  notesOf(windowId: number, overlayId: unknown): { pluginId: string; key: string } | undefined {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay?.perView || overlay.notesKey === undefined || overlay.pluginId === undefined) return undefined
+    return { pluginId: overlay.pluginId, key: overlay.notesKey }
+  }
+
+  /** A copy's port came up (`copyReady`), after the opener's queued posts went out. Returns the disposer. */
+  onCopyReady(listener: (event: CopyEvent) => void): () => void {
+    this.copyReadyListeners.add(listener)
+    return () => this.copyReadyListeners.delete(listener)
+  }
+
+  /**
+   * A copy is gone: released, replaced by its view's next connect, its view gone, hidden, no longer admitted, dropped
+   * for an overflow (all through `dropCopy`), or the overlay closed (`finish`). Returns the disposer.
+   */
+  onCopyEnd(listener: (event: CopyEvent) => void): () => void {
+    this.copyEndListeners.add(listener)
+    return () => this.copyEndListeners.delete(listener)
+  }
+
+  private emitCopy(listeners: Set<(event: CopyEvent) => void>, overlay: Overlay, copy: OverlayCopy): void {
+    const event: CopyEvent = { windowId: overlay.windowId, overlayId: overlay.id, copy: copy.id, view: copy.view }
+    if (overlay.pluginId !== undefined) event.pluginId = overlay.pluginId
+    for (const listener of [...listeners]) {
+      try {
+        listener(event)
+      } catch (err) {
+        this.log(`overlay ${overlay.id}: a copy listener failed: ${String(err)}`)
+      }
+    }
+  }
+
+  /**
+   * Whether `url` is the page of an open html overlay a plugin opened in `windowId` (its `cc-plugin://` `info.src`;
+   * the mail-frame link rule, spec-review S9). Compared by scheme, host and path (a page may set its own hash or
+   * query). False for a closed overlay, another window's, an inline (`cc-overlay://`) page, a terminal or url
+   * overlay, an unparsable URL, or anything that throws.
+   */
+  isOverlayPage(windowId: number, url: unknown): boolean {
+    try {
+      if (typeof url !== 'string' || url.length > MAX_URL_LENGTH) return false
+      const target = new URL(url)
+      if (target.protocol !== `${PLUGIN_SCHEME}:`) return false
+      for (const overlay of this.byId.values()) {
+        if (overlay.windowId !== windowId || overlay.info.kind !== 'html' || overlay.pluginId === undefined) continue
+        const src = new URL(overlay.info.src)
+        if (src.protocol === target.protocol && src.host === target.host && src.pathname === target.pathname) return true
+      }
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Parts (design-parts.md §1-§2), stubs until task 14: the opener announced what this overlay shows (`handle.announce`,
+   * its consent to parts). Not recorded yet: false.
+   */
+  markAnnounced(windowId: number, overlayId: string): boolean {
+    void [windowId, overlayId]
+    return false
+  }
+
+  /**
+   * Parts: open `pluginId`'s part (an ordinary perView html overlay with a parent) in overlay `parentId`. Stub until
+   * task 14: always refused.
+   */
+  attachPart(
+    windowId: number,
+    parentId: string,
+    pluginId: string,
+    spec: unknown,
+    channel: OverlayChannel,
+    options: OverlayStartOptions
+  ): Promise<OverlayResult> {
+    void [windowId, parentId, pluginId, spec, channel, options]
+    return Promise.reject(new Error('overlay: parts are not available in this build'))
+  }
+
+  /** Parts: the parts drawn in overlay `overlayId`, in attach order. Stub until task 14: none. */
+  partsOf(windowId: number, overlayId: string): OverlayPartRef[] {
+    void [windowId, overlayId]
+    return []
+  }
+
   /**
    * A guest hid the overlay from `viewId`: recorded under the guest (not the view, which a reconnect replaces),
    * that guest's other copies released with `overlays.hide` to their views, and the list sent again, which the
@@ -1696,6 +1893,9 @@ export class OverlayManager {
     } catch (err) {
       this.log(`overlay ${overlay.id}: the opener's onDisconnect failed: ${String(err)}`)
     }
+    // Every way a copy ends but the overlay's own end comes through here (release, replace, view gone, hide, the
+    // admission re-check, overflow); finish() reports the rest.
+    this.emitCopy(this.copyEndListeners, overlay, copy)
   }
 
   /**
@@ -1708,8 +1908,11 @@ export class OverlayManager {
    * sockets return true or close the socket; the desktop's send throws once its page is destroyed), so a
    * reload over the same sink could never arrive; the view's next connect is a new copy.
    */
-  private deliverToCopy(overlay: Overlay, copy: OverlayCopy, text: string): boolean {
+  private deliverToCopy(overlay: Overlay, copy: OverlayCopy, text: string, envelope = false): boolean {
     if (!copy.live) return false
+    // Main's own pushes never wait in a copy's outbox (it holds plain texts, no mark): a copy is made ready in the same
+    // step it connects (connectReady), its page lists its notes on start, and Ask's history goes at onCopyReady.
+    if (envelope && !copy.ready) return false
     if (!copy.ready) {
       try {
         copy.outbox.push(text)
@@ -1725,7 +1928,9 @@ export class OverlayManager {
         return false
       }
     }
-    const payload = { overlayId: overlay.id, message: text, copy: copy.id }
+    const payload: IpcEventMap['overlays.message'] = envelope
+      ? { overlayId: overlay.id, message: text, copy: copy.id, envelope: true }
+      : { overlayId: overlay.id, message: text, copy: copy.id }
     if (this.options.emitToView) {
       if (this.options.emitToView(copy.view, 'overlays.message', payload)) return true
       this.dropCopy(overlay, copy)
@@ -2118,12 +2323,15 @@ export class OverlayManager {
     overlay.outbox.drain()
     // Its copies end with it, with no disconnects: the opener's handle ends here and hears the result.
     if (overlay.perView) {
-      for (const copy of overlay.perView.copies.values()) {
+      const ended = [...overlay.perView.copies.values()]
+      for (const copy of ended) {
         copy.live = false
         copy.outbox.drain()
       }
       overlay.perView.copies.clear()
       overlay.perView.connects.clear()
+      // No opener disconnects here, but main's own services (an Ask chat of the copy) must hear each copy end.
+      for (const copy of ended) this.emitCopy(this.copyEndListeners, overlay, copy)
     }
     overlay.channel = undefined
     // The host forgets the type buttons' runs (a click still running there finds the overlay gone).
@@ -2263,7 +2471,7 @@ function clip(text: string): string {
  * Check a spec from an untrusted caller and return a clean copy (only the known fields). Throws
  * with the reason for anything else.
  */
-export function parseOverlaySpec(spec: unknown): OverlaySpec {
+export function parseOverlaySpec(spec: unknown, context: OverlayExtrasContext = {}): OverlaySpec {
   if (typeof spec !== 'object' || spec === null) throw new Error('overlay: spec must be an object')
   const s = spec as Record<string, unknown>
   const title = s.title
@@ -2275,7 +2483,7 @@ export function parseOverlaySpec(spec: unknown): OverlaySpec {
     throw new Error(`overlay: size must be ${OVERLAY_SIZES.join(', ')}`)
   }
   // An unknown kind is refused by the switch below.
-  const extras = s.kind === 'terminal' || s.kind === 'url' || s.kind === 'html' ? parseOverlayExtras(s, s.kind) : {}
+  const extras = s.kind === 'terminal' || s.kind === 'url' || s.kind === 'html' ? parseOverlayExtras(s, s.kind, context) : {}
   const withTitle = <T extends object>(o: T): T => {
     const withExtras = { ...o, ...extras }
     const withSize = size === undefined ? withExtras : { ...withExtras, size: size as OverlaySize }

@@ -264,6 +264,10 @@ again, so it cannot take the screen from a terminal being typed in. A missing or
 
 ### The reviewer service
 
+**Deprecated for documents:** `annotate` and its companions (`prepare`, `cancel`, `fail`, `update`, `companion`,
+`originals`) go in a later app release. Draw your own document in your own overlay instead, with `notes: { key }`,
+`ccPanel.notes`, `ccPanel.ask` and `handle.onAsk` (`api` and `panels` topics); `open(path)` stays.
+
 The built-in `reviewer` service (v1): `"uses": { "reviewer": 1 }`, then `ctx.services.use('reviewer')`. Both methods
 resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise. Sending to Claude is the
 overlay toolbar's Discuss with Claude (main part: a new session; ▾: a Claude tab of the window): `tabId` is the ▾ menu's preselected tab
@@ -417,7 +421,7 @@ point.
 ## Before you publish
 
 Read your pages against `ccc guide style`: the app's components (`.cc-btn`, `.cc-row`, `.cc-card`, `.cc-empty`, ...)
-instead of home-made buttons and lists, one primary button per view, empty, loading and error states drawn,
+instead of home-made buttons and lists, one primary button per pane, empty, loading and error states drawn,
 a `title` on every icon-only control.
 
 ## Publishing in the Marketplace

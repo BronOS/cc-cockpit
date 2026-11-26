@@ -220,6 +220,10 @@ export interface InstallerOptions {
   onRevoked?: (plugins: { id: string; revoked: PluginRevocation }[]) => void
   /** The plugin's `ctx.secrets` store (plugin-secrets.ts), emptied on uninstall. */
   secrets?: { removePlugin(pluginId: string): void }
+  /** The plugin's overlay notes (NotesApi, shared/design.md §3), dropped on uninstall. Absent: none. */
+  notes?: { removePlugin(pluginId: string): void }
+  /** The plugin's stored Ask chats (AskApi, design-parts.md §7), dropped on uninstall. Absent: none. */
+  asks?: { removePlugin(pluginId: string): void }
   /** The person's caps for the plugin (plugin-limits.ts), dropped on uninstall so they never carry over to another plugin with the id. */
   limits?: { forget(pluginId: string): void }
   log?: (message: string) => void
@@ -538,6 +542,17 @@ export class PluginInstaller {
         this.options.limits?.forget(id)
       } catch (err) {
         this.log(`uninstall ${id}: dropping its limits failed: ${errorText(err)}`)
+      }
+      // Its notes and Ask chats, so a later plugin with the id never inherits them (as its secrets).
+      try {
+        this.options.notes?.removePlugin(id)
+      } catch (err) {
+        this.log(`uninstall ${id}: dropping its notes failed: ${errorText(err)}`)
+      }
+      try {
+        this.options.asks?.removePlugin(id)
+      } catch (err) {
+        this.log(`uninstall ${id}: dropping its Ask chats failed: ${errorText(err)}`)
       }
       if (entry.source.kind === 'git') await this.removeInstallDir(id, entry.version)
     })

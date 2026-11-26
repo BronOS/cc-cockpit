@@ -322,6 +322,7 @@ import { warnLog } from '../warn-log'
 import { RateWindow } from '../rate-window'
 import type { MachineInfo } from '../remote/machine-status'
 import { DEFAULT_PLUGIN_LIMITS, type PluginLimits } from '../../shared/plugin-limits'
+import type { NotesApi } from '../notes/notes-api'
 
 /**
  * ctx.sessions.send per plugin: at most this many texts per window by default; the person's `sendsPerMinute` limit
@@ -451,6 +452,11 @@ export const SESSIONS_EVENT_INTERVAL_MS = 250
 
 /** main's services, as functions: index.ts defines some of them after the host manager. */
 export interface HostApiDeps {
+  /**
+   * The Notes service (shared/design.md §3) behind `ctx.notes(key)` (task 05's `notes.*` RPC, on the host's own plugin
+   * and project only). Absent: every `notes.*` call is refused.
+   */
+  notes?: NotesApi
   /** This project's Claude tabs (SessionRegistry.listByProject). */
   listSessions(projectId: string): SessionEntry[]
   /** Any tab's entry (SessionRegistry.get); the scope check is HostApi's. */
@@ -2810,7 +2816,9 @@ export class HostApi {
       ...(s.type === undefined ? {} : { type: s.type }),
       ...(s.buttons === undefined ? {} : { buttons: s.buttons }),
       ...(s.ready === undefined ? {} : { ready: s.ready }),
-      ...(s.discuss === undefined ? {} : { discuss: s.discuss })
+      ...(s.discuss === undefined ? {} : { discuss: s.discuss }),
+      // As sent too: parseOverlaySpec checks it with the opener's perView (main's), shared/design.md §3.
+      ...(s.notes === undefined ? {} : { notes: s.notes })
     }
     switch (s.kind) {
       case 'terminal': {

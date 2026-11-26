@@ -47,7 +47,7 @@ load, the strip shows the title's first letter.
 
 - `ccPanel.post(message)`: send JSON (at most 1 MiB) to the plugin host, where
   `ctx.panels.onMessage(panelId, fn)` hears it. Messages posted before the connection is up are
-  queued.
+  queued. A top-level `$cc` key is the app's and throws.
 - `ccPanel.onMessage(listener)`: hear what the host sends with `ctx.panels.post`. Returns an
   unsubscribe function.
 - `ccPanel.onConnect(listener)`: runs each time the page gets a new connection to your host after it was added
@@ -192,6 +192,24 @@ message is at most 1,040,384 chars of JSON (1 MiB less 8 KiB); a larger page mes
 with a console warning. Only the plugin that opened the overlay hears its page. Esc (or ✕,
 Cmd+Shift+W) closes the overlay as `{ kind: 'dismissed' }` without asking the page: a page with a
 draft should post it as it changes, so nothing is lost when the user presses Esc.
+
+An overlay opened with `notes: { key }` (a `perView` plugin, `api` topic) gives its page more, on each view's copy;
+each is undefined on an older app, in a panel, slot or page tab, and on an overlay without `notes`, so check first:
+
+- `ccPanel.notes`: `{ list(), add({ quote, anchor?, text }), change(id, { text }), remove(id), setGlobal(text),
+  onChange(fn) }`, the same notes as the host's `ctx.notes(key)`. `list()` resolves `{ global, notes, rev }`;
+  `onChange(fn)` gets that state after every write in any view. `anchor` is yours (where the note sits, at most
+  2,048 characters of JSON). A read guest's writes reject. The note for Claude is `global`.
+- `ccPanel.ask`: `{ start({ question, quote? }), say({ question, quote? }), close(), pick({ model?, effort? }),
+  continueInTab(), on(fn) }`, a chat with Claude about the document your host's `handle.onAsk` gives. `on(fn)` hears
+  `history` (the stored turns, on connect), `state`, `delta` (answer text as it comes), `tool`, `answer` and
+  `end`. `pick` with nothing reads the model and effort lists and the pick; the owner's pick is remembered.
+  `continueInTab()` (the owner's) opens the same session in a Claude tab. Undefined for a read guest. Render answers
+  as text or sanitized Markdown, never as raw HTML, and never post or send an answer without the person's click.
+- `ccPanel.overlay.discuss()`: open the toolbar's Discuss with Claude popover from your own button (New session, or
+  a Claude tab); the person sends from there. Nothing is sent by the call itself.
+
+Each call rejects after 30 s without an answer and past 50 outstanding.
 
 ```js
 // host

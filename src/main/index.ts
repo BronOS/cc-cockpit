@@ -88,9 +88,14 @@ import {
   registerWebviewHandlers,
   registerGuestHandlers,
   registerUploadHandlers,
+  isOwner,
   summary
 } from './ipc/router'
 import { registerRoomStripHandlers, registerRoomViewHandlers } from './ipc/room-handlers'
+import { registerNotesHandlers } from './ipc/notes-handlers'
+import { registerAskHandlers } from './ipc/ask-handlers'
+import { createNotesApi, type NotesApi } from './notes/notes-api'
+import { createAskApi, type AskApi } from './ask/ask-api'
 import { LayoutService, type PanelStatus, type PluginPanelDef, type SlotProviderInfo } from './layout/layout-service'
 import { AppMenu, focusedProjectIdOf, openFolderKey } from './menu'
 import { ElectronNoticeBackend } from './notifications/electron-notification'
@@ -488,11 +493,19 @@ function start(server: boolean): void {
   // The uploads are made after the GuestStore, whose constructor already ends the guests that lapsed while the app
   // was off: that early `end()` must find nothing to drop (no upload can exist yet), not a `const` in its dead zone.
   const uploadsRef: { current?: Uploads } = {}
+  // Notes and Ask (shared/design.md §3, §5; 00 contract): made once the overlay manager exists (below). A forget or an
+  // uninstall before that (none at start) has nothing of theirs to drop. Undefined while a build has no service:
+  // every caller then refuses (S2).
+  const notesRef: { current?: NotesApi } = {}
+  const asksRef: { current?: AskApi } = {}
   const registry = new ProjectRegistry({
     dataDir,
     onForget: (id) => {
       pluginSecrets.forgetProject(id)
       guestsForget.project?.(id)
+      // A forgotten project's notes and stored Ask chats go with it (spec-review S4).
+      notesRef.current?.dropProject(id)
+      asksRef.current?.dropProject(id)
     }
   })
   // One-time data migration, before any plugin host reads its settings: the core "changed files
@@ -666,6 +679,9 @@ function start(server: boolean): void {
     secrets: pluginSecrets,
     // `pluginLimits` is defined further down: this only runs on an uninstall, long after.
     limits: { forget: (pluginId) => pluginLimits.forget(pluginId) },
+    // The same for its notes and Ask chats (made further down, with the overlay manager).
+    notes: { removePlugin: (pluginId) => notesRef.current?.removePlugin(pluginId) },
+    asks: { removePlugin: (pluginId) => asksRef.current?.removePlugin(pluginId) },
     revocation: (plugin) => marketplace.revocationFor(plugin),
     // A plugin revoked at load is seen before `ready`, when a Notification cannot be shown yet.
     // `coreNotices` is declared further down: this only runs after load() has started, i.e. after it exists.
@@ -1330,6 +1346,24 @@ function start(server: boolean): void {
     // A not-ready copy dropped for an overflowing queue: that view's shell reloads its page as a new copy (Task 8).
     reloadCopy: (viewId, _windowId, overlayId, copy) => {
       views.toView(viewId, 'overlays.reload', { overlayId, copy })
+    },
+    // Discuss sends an overlay's notes as their own part (task 03); read at each Send.
+    notes: () => notesRef.current
+  })
+  // Notes and Ask in main (shared/design.md §3, §5; 00 contract: the services are tasks 03 and 02). Main's own tables
+  // only: a project's window and folder, never a payload's.
+  const windowOfProject = (projectId: string): number | undefined =>
+    windows.projectWindows().find((w) => w.projectId === projectId)?.windowId
+  notesRef.current = createNotesApi({ dataDir, log: warnLog, overlays, windowOfProject })
+  asksRef.current = createAskApi({
+    dataDir,
+    log: warnLog,
+    overlays,
+    projectRoot: (projectId) => registry.get(projectId)?.path,
+    projectOfWindow: (windowId) => windows.projectWindows().find((w) => w.windowId === windowId)?.projectId,
+    loginEnv: async () => {
+      await loginEnvReady
+      return loginEnv
     }
   })
   // Ask Claude from a page tab (design-editor.md §4): the tab from main's own list, the context from
@@ -1959,6 +1993,8 @@ function start(server: boolean): void {
     // ctx.files.open, ctx.openExternal (host-api.ts).
     // Functions, not objects: `sessions` and `tabs` are defined below; these only run once a host exists.
     api: {
+      // ctx.notes (task 05's host RPC `notes.*`): the same store the pages edit; absent: refused.
+      notes: notesRef.current,
       listSessions: (projectId) => sessions.listByProject(projectId),
       session: (tabId) => sessions.get(tabId),
       activeTab: (projectId) => sessions.activeTab(projectId),
@@ -2568,6 +2604,8 @@ function start(server: boolean): void {
     dropDownloads: (deviceId) => downloads.dropDevice(deviceId),
     // The same for uploads (design-upload.md §3.4); never a rejection in main.
     dropUploads: (deviceId) => void uploadsRef.current?.dropDevice(deviceId).catch((err: unknown) => warnLog(`guests: ending uploads failed: ${errorText(err)}`)),
+    // A guest's Ask chats end at once on any access change and at its end (spec-review S5).
+    dropAsks: (guestId) => asksRef.current?.dropGuest(guestId),
     pluginShown: (projectId, pluginId) => pluginGuestAccess.visible(projectId, pluginId),
     // A role downgrade warns about the guest's own unsaved pages only.
     unsavedOf: guestUnsavedOf((viewId) => views.whoOf(viewId), { access: (who) => guestStore.access(who) }, (projectId, inView) =>
@@ -2835,7 +2873,11 @@ function start(server: boolean): void {
       // kind of thing (if any) holds a token close to the guess.
       const tab = tabs.resolveToken(token)
       const overlay = overlays.resolveToken(token)
+      // An Ask process's token (spec-review S5 A2): a window owner, so a `ccc` run by that Claude gets no shell-only
+      // command (an anonymous caller's) and no tab command.
+      const ask = asksRef.current?.resolveToken(token)
       if (tab) return tab
+      if (ask) return { kind: 'window', projectId: ask.projectId }
       if (!overlay) return undefined
       // main's own window table: an overlay of a window that is closing has no project any more.
       const projectId = windows.projectWindows().find((w) => w.windowId === overlay.windowId)?.projectId
@@ -3906,6 +3948,19 @@ function start(server: boolean): void {
     // The checked folder (never a link), handed to the file manager through the shell adapter, as ctx.files.reveal.
     reveal: async (projectId, roomId) => electronSystemShell.showItemInFolder(await rooms.revealFolder(projectId, roomId))
   })
+  // Notes and Ask on a perView overlay's copy (shared/design.md §3, §5): stubs until tasks 03 and 02.
+  registerNotesHandlers(router, {
+    notes: notesRef.current,
+    overlays,
+    // S4: the author is main's word. A guest's name from presence (its invite name), a read guest none (refused).
+    authorOf: (view) => {
+      if (isOwner(view)) return { access: 'owner' }
+      if (view.access?.role !== 'write') return undefined
+      const person = presence.personOf(view.viewId)
+      return person === undefined ? { access: 'write' } : { access: 'write', person }
+    }
+  })
+  registerAskHandlers(router, { asks: asksRef.current, overlays })
   registerGroupHandlers(router, {
     get: (projectId) => tabGroups.get(projectId),
     place: (projectId, intent) => tabGroups.place(projectId, intent),

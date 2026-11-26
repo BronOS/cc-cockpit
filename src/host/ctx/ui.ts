@@ -900,6 +900,14 @@ export function createUiApi(
     }
     const handle: OverlayHandle = {
       result,
+      // 00 contract stubs (shared/tasks/00-contract.md): the shapes are frozen in sdk/types.ts; task 05 replaces them.
+      // Inert, not throwing: main has no Ask and no parts in this build, so a handler is never asked and an
+      // announcement has no listener; a plugin that feature-detects them keeps working.
+      onAsk: (handler: unknown): Disposer => {
+        if (typeof handler !== 'function') throw new TypeError('overlay onAsk needs a function')
+        return () => {}
+      },
+      announce: (): void => {},
       post: (message: JsonValue, options?: { copy?: string }): void => {
         htmlOnly('post')
         // Checked even when the overlay ended: a bad call fails where it is made.
@@ -1091,6 +1099,15 @@ export function createUiApi(
     overlay: Object.freeze({
       open: (spec: OverlaySpec): Promise<OverlayResult> => start(spec).result,
       start,
+      // 00 contract stubs (sdk/types.ts); task 05 replaces them. No announcement is ever heard (inert); a part is
+      // refused, as main's attachPart refuses it in this build.
+      onAnnounce: (_kind: string, listener: unknown): Disposer => {
+        if (typeof listener !== 'function') throw new TypeError('overlay.onAnnounce needs a function')
+        return () => {}
+      },
+      part: (): OverlayHandle => {
+        throw new Error('overlay.part: parts are not available in this build')
+      },
       buttons: (type: string, provider: (o: OverlayInfo) => OverlayTypeButton[] | Promise<OverlayTypeButton[]>): Disposer => {
         deps.alive()
         const off = deps.typeButtons.register(pluginId, type, provider)

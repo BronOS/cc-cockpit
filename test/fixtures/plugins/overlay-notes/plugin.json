@@ -1,0 +1,25 @@
+{
+  "id": "test.overlaynotes",
+  "name": "Overlay notes",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [
+      {
+        "id": "open",
+        "title": "Overlay notes: Open"
+      },
+      {
+        "id": "list",
+        "title": "Overlay notes: List notes"
+      }
+    ]
+  },
+  "overlays": {
+    "perView": true
+  },
+  "guests": {
+    "aware": true
+  }
+}

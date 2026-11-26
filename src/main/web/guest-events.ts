@@ -190,7 +190,9 @@ export const GUEST_EVENT: { readonly [E in EventChannel]: GuestEventRule<E> } = 
   'overlays.updated': (p, g) => guestOverlays(p, g),
   'overlays.data': guestByOverlay,
   // A guest never holds an html overlay (design §16.3): a holder's page messages never reach it; a perView
-  // overlay's copy messages only for its own live copy of an overlay it still sees.
+  // overlay's copy messages only for its own live copy of an overlay it still sees. Notes and Ask pushes ride this
+  // channel too (`envelope: true`, OverlayManager.postEnvelope; shared/design.md §3, §5), so they need no row of their
+  // own: a guest gets them for its own copy only, exactly as the opener's posts.
   'overlays.message': ownCopyEvent<IpcEventMap['overlays.message']>(true),
   // Its own copy only (docs/design-overlay-views.md §5): a hide even once the overlay is no longer visible to it.
   'overlays.hide': ownCopyEvent<IpcEventMap['overlays.hide']>(false),

@@ -308,8 +308,14 @@ export type OverlaySpec =
    * the app theme and the panel SDK. The page answers with `ccPanel.post({ result: value })`,
    * which closes the overlay and resolves `open` with `{ kind: 'value', value }`. With
    * `overlay.start`, anything else it posts (no `result` key) goes to the handle's `onMessage`.
+   *
+   * `notes`: the overlay keeps notes in the app under `key` (1-200 characters of `A-Z a-z 0-9 . _ : @ # + = ~ / -`,
+   * say `jira:PROJ-123`), per project and plugin, shared by every view's copy and kept over Esc and restarts. Its
+   * page gets `ccPanel.notes` and `ccPanel.ask`, Discuss with Claude sends the notes as their own part, and your host
+   * reaches the same notes with `ctx.notes(key)`. Needs `"overlays": { "perView": true }` in the manifest: `start`
+   * throws otherwise. An older app ignores it (the page then has no `ccPanel.notes`: check before use).
    */
-  | ({ kind: 'html'; file: string; title?: string; size?: OverlaySize } & OverlayExtras)
+  | ({ kind: 'html'; file: string; title?: string; size?: OverlaySize; notes?: { key: string } } & OverlayExtras)
 
 export type OverlayResult =
   | { kind: 'exit'; code: number }
@@ -427,6 +433,87 @@ export interface OverlayHandle {
    * a no-op once it ended or while Discuss is not shown. An older app has no such method.
    */
   setDiscussPrimary(on: boolean): void
+  /**
+   * Answer Ask (the page's `ccPanel.ask`, an overlay with `notes`) with the document the chat is about, within 10 s,
+   * or `null` for none. The first handler with a text wins; all null, a throw or a timeout refuses the question
+   * (nothing is spawned). Text past 100,000 characters is cut, with a note. `from`: the asking copy (view, access,
+   * person, copy; the app's word), so answer about what that copy shows. Ask runs in the app, never in your host.
+   * An older app has none: check `typeof handle.onAsk === 'function'`.
+   */
+  onAsk(handler: (from: ViewFrom & { copy: string }) => Promise<{ text: string } | null> | { text: string } | null): Disposer
+  /**
+   * Say what this overlay shows, for other plugins' `ctx.overlay.onAnnounce` listeners (a mail's linked issues):
+   * `kind` 1-40 characters of `a-z 0-9 . -`, `refs` at most 20 strings of at most 200 characters. Every listener
+   * of the window hears it, so never put the document itself here. A new announce replaces the last; at most 5 a
+   * minute. Announcing is your consent to parts: a listener may then draw its own part beside your page
+   * (`ctx.overlay.part`). An older app has none: check `typeof handle.announce === 'function'`.
+   */
+  announce(announcement: { kind: string; refs: readonly string[] }): void
+}
+
+/** What `ctx.overlay.onAnnounce` hears: an overlay of this window said what it shows (`handle.announce`). */
+export interface OverlayAnnouncement {
+  /** The overlay; `opener` is the app's record of who opened it, never the opener's word. */
+  readonly overlay: {
+    readonly id: string
+    readonly opener: string
+    readonly title: string
+    readonly type?: { readonly name: string; readonly data: JsonValue }
+  }
+  readonly kind: string
+  /** The opener's data: check each (that a key is one of yours) before you act on it. */
+  readonly refs: readonly string[]
+}
+
+/** The page of a part (`ctx.overlay.part`): one of your own files, drawn beside the parent's page. */
+export interface OverlayPartSpec {
+  /** Plugin-relative path, as an html overlay's `file`. */
+  file: string
+  /** Shown in the part's strip. Default: your plugin's name. */
+  title?: string
+  ready?: 'load' | 'manual'
+}
+
+/** Who wrote a note (the app's word, never a page's): the owner (no `person`), a write guest, or your own host. */
+export type NoteAuthor = { access: 'owner' | 'write'; person?: string } | { plugin: true }
+
+/** One note of an overlay's notes (`notes: { key }`). */
+export interface OverlayNote {
+  /** Made by the app. */
+  readonly id: string
+  /** The text the note is on (at most 4,000 characters). */
+  readonly quote: string
+  /** Opaque JSON only your page reads (where the note sits; at most 2,048 characters of JSON). */
+  readonly anchor: JsonValue
+  /** At most 4,000 characters. */
+  readonly text: string
+  /** Bumped by every change. */
+  readonly rev: number
+  readonly author: NoteAuthor
+}
+
+/** One key's notes: the note for Claude (`global`, '' for none) and the notes, at most 200. */
+export interface NotesState {
+  readonly global: string
+  readonly notes: readonly OverlayNote[]
+  /** Bumped by every write to the key. */
+  readonly rev: number
+}
+
+/**
+ * `ctx.notes(key)`: the notes your overlays with `notes: { key }` keep, in this project (the same ones their pages
+ * edit). A write past a cap (200 notes, 4,000 characters each and for the note for Claude, 400,000 characters of
+ * JSON for the key, 1,000 keys) rejects; nothing is ever cut. Notes you add are marked as your plugin's.
+ */
+export interface PluginNotes {
+  list(): Promise<NotesState>
+  add(note: { quote: string; anchor?: JsonValue; text: string }): Promise<OverlayNote>
+  change(id: string, patch: { text: string }): Promise<OverlayNote>
+  remove(id: string): Promise<void>
+  /** The note for Claude ('' clears it). */
+  setGlobal(text: string): Promise<void>
+  /** Called after any write to the key (a page's, another view's, Discuss removing sent notes): list again. */
+  onChange(listener: () => void): Disposer
 }
 
 export type SessionStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -1137,7 +1224,30 @@ export interface PluginContext {
       typeName: string,
       provider: (overlay: OverlayInfo) => OverlayTypeButton[] | Promise<OverlayTypeButton[]>
     ): Disposer
+    /**
+     * Hear what overlays of this window show (`handle.announce` of kind `kind`), whoever opened them. A listener added
+     * later first hears the live announcements. It has 2 s; a slow or throwing one is skipped (logged). Check the refs
+     * (and `overlay.opener`) before acting: they are the opener's data. An older app has none: check
+     * `typeof ctx.overlay.onAnnounce === 'function'`.
+     */
+    onAnnounce(kind: string, listener: (announcement: OverlayAnnouncement) => unknown): Disposer
+    /**
+     * Draw your own part beside an announced overlay's page (`overlayId` from `onAnnounce`): an ordinary perView
+     * html overlay of yours, with its own frame, port and copies, shown in that window (at most 2 parts, one per
+     * plugin). Your manifest needs `"overlays": { "perView": true }`. Throws when the overlay is gone, was not
+     * announced, is a part, or has a part of yours already. `handle.close()` detaches it; it ends with its window.
+     * A guest sees it only when it may see both plugins. An older app has none: check
+     * `typeof ctx.overlay.part === 'function'`.
+     */
+    part(overlayId: string, spec: OverlayPartSpec): OverlayHandle
   }
+
+  // notes
+  /**
+   * The notes of your overlays opened with `notes: { key }` in this project (see PluginNotes); `key` as in the
+   * spec. Throws for a malformed key. An older app has none: check `typeof ctx.notes === 'function'`.
+   */
+  notes(key: string): PluginNotes
 
   // sessions
   readonly sessions: {

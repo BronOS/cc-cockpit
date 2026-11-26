@@ -417,10 +417,26 @@ describe('guide drift guards', () => {
       'theme.onChange',
       'ccPanel.view.remote',
       'ccPanel.upload.pick({ folder })',
-      'ccPanel.upload.files(source, { folder })'
+      'ccPanel.upload.files(source, { folder })',
+      // Notes, Ask and page-started Discuss on a perView overlay's copy (shared/design.md §3-§5).
+      'ccPanel.notes',
+      'ccPanel.ask',
+      'ccPanel.overlay.discuss()'
     ]) {
       expect(topic('panels')).toContain(member)
     }
+  })
+
+  // D5 (Post in the Reply tab): the rule is one primary per pane, both where style.md states it and where plugins.md
+  // repeats it, and an overlay pane's own action may stay in the pane. A guide that says "per view" again fails here.
+  it('style.md says one primary per pane', () => {
+    const flat = (text: string): string => text.replace(/\s+/g, ' ')
+    const style = flat(topic('style'))
+    expect(style).toContain('- One primary button per pane.')
+    expect(style).not.toMatch(/primary button per view/i)
+    expect(style).toContain("A pane's own action stays in its pane")
+    expect(flat(topic('plugins'))).toContain('one primary button per pane')
+    expect(flat(topic('plugins'))).not.toMatch(/primary button per view/i)
   })
 })
 

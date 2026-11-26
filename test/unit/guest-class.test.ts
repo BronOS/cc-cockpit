@@ -71,6 +71,33 @@ describe('GUEST_CLASS', () => {
     expect(GUEST_CLASS['overlays.close'].cls).toBe('write')
   })
 
+  // shared/design.md §3, §5 (00 contract): a read guest reads its copy's notes; writing notes and Ask (start, say,
+  // close, pick) are a write guest's; Continue in a tab opens a Claude tab in the owner's project, the owner's alone.
+  it('notes.read is read; notes.write and ask.start/say/close/pick are write; ask.continue is no', () => {
+    const rules: Array<[InvokeChannel, 'read' | 'write']> = [
+      ['overlays.notes.read', 'read'],
+      ['overlays.notes.write', 'write'],
+      ['overlays.ask.start', 'write'],
+      ['overlays.ask.say', 'write'],
+      ['overlays.ask.close', 'write'],
+      ['overlays.ask.pick', 'write']
+    ]
+    for (const [channel, cls] of rules) {
+      const rule = GUEST_CLASS[channel]
+      expect(rule.cls, channel).toBe(cls)
+      const target = 'target' in rule ? rule.target : undefined
+      expect(target?.({ overlayId: 'o1', copy: 'c', op: 'add' }), channel).toEqual([{ overlay: 'o1' }])
+      // A malformed payload names no target: refused before the handler.
+      for (const bad of [undefined, null, 'o1', [], { copy: 'c' }, { overlayId: 7 }, { overlayId: '' }]) {
+        expect(target?.(bad), `${channel} ${JSON.stringify(bad)}`).toBeUndefined()
+      }
+    }
+    expect(GUEST_CLASS['overlays.ask.continue'].cls).toBe('no')
+    for (const channel of ['overlays.notes.read', 'overlays.notes.write', 'overlays.ask.start', 'overlays.ask.continue'] as const) {
+      expect(REMOTE_CLASS[channel], channel).toBe('yes')
+    }
+  })
+
   it('keeps the riskiest channels away from guests (design §4)', () => {
     const never: InvokeChannel[] = [
       'links.answer', 'oauth.paste', 'plugins.limits.set', 'plugins.globalLimits.set', 'projects.close',

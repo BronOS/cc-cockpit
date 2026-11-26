@@ -3107,3 +3107,192 @@ describe('perView overlays: one copy per view (docs/design-overlay-views.md §5)
     expect(m.infos(W1)).toHaveLength(2)
   })
 })
+
+describe('00 contract: notes, envelopes and copy hooks (shared/tasks/00-contract.md)', () => {
+  const page = { kind: 'html', src: 'cc-plugin://a.one/doc.html', notes: { key: 'doc:1' } }
+  const D = desktopViewId(W1)
+  const guests = new Set<string>()
+  const allowed = new Set<string>()
+  let toView: Array<{ viewId: string; channel: EventChannel; payload: unknown }>
+  beforeEach(() => {
+    guests.clear()
+    allowed.clear()
+    toView = []
+  })
+  function nm(): OverlayManager {
+    return new OverlayManager({
+      ownerView: (viewId) => !guests.has(viewId),
+      backend,
+      views,
+      isWindowOpen: () => true,
+      env: () => ({}),
+      emit: <C extends EventChannel>(windowId: number, channel: C, payload: IpcEventMap[C]) => {
+        events.push({ windowId, channel, payload })
+      },
+      emitToView: <C extends EventChannel>(viewId: string, channel: C, payload: IpcEventMap[C]) => {
+        toView.push({ viewId, channel, payload })
+        return true
+      },
+      isViewLive: () => true,
+      mayConnectCopy: (_windowId, _overlayId, viewId) => allowed.has(viewId),
+      guestOf: (viewId) => (guests.has(viewId) ? `guest-${viewId}` : undefined),
+      reloadCopy: () => {},
+      commandForChord: () => undefined,
+      log: () => {}
+    })
+  }
+  const channel: OverlayChannel = { onMessage: () => {} }
+  function open(m: OverlayManager, window = W1): string {
+    void m.open(window, page, 'plugin a.one', undefined, channel, 'a.one', undefined, undefined, { perView: true })
+    return m.infos(window).at(-1)!.id
+  }
+  /** connectReady as the shell's `overlays.ready` does: minted and ready. */
+  function ready(m: OverlayManager, id: string, view: string): string {
+    const answer = m.connectReady(W1, id, view)
+    if (!('copy' in answer)) throw new Error(`refused: ${answer.refused}`)
+    return answer.copy
+  }
+  const envelopes = (): Array<[string, unknown]> =>
+    toView
+      .filter((e) => e.channel === 'overlays.message' && (e.payload as { envelope?: true }).envelope === true)
+      .map((e) => [e.viewId, (e.payload as { copy?: string }).copy])
+
+  it('a notes spec gives info.notes on a perView overlay, and is refused without perView', async () => {
+    const m = nm()
+    const id = open(m)
+    expect(m.infos(W1).find((o) => o.id === id)?.notes).toBe(true)
+    expect(m.notesOf(W1, id)).toEqual({ pluginId: 'a.one', key: 'doc:1' })
+    // Fail closed: the whole open is refused, never an overlay opened without its notes.
+    await expect(m.open(W1, page, 'plugin a.one', undefined, channel, 'a.one', undefined, undefined, { perView: false })).rejects.toThrow(/perView/)
+    await expect(m.open(W1, page, 'plugin a.one', undefined, channel, 'a.one')).rejects.toThrow(/perView/)
+    expect(m.infos(W1)).toHaveLength(1)
+  })
+
+  it('postEnvelope to a replaced, released or retired copy is dropped', () => {
+    const m = nm()
+    const id = open(m)
+    const first = ready(m, id, D)
+    expect(m.postEnvelope(W1, id, first, '{"$cc":1}')).toBe(true)
+    // Replaced: the view's next connect.
+    const second = ready(m, id, D)
+    expect(m.postEnvelope(W1, id, first, '{"$cc":1}')).toBe(false)
+    // Released: retired, still in copyViewOf's record, never a target.
+    expect(m.releaseCopy(W1, id, D, second)).toBe(true)
+    expect(m.copyViewOf(W1, id, second)).toBe(D)
+    expect(m.postEnvelope(W1, id, second, '{"$cc":1}')).toBe(false)
+    // Unknown copy, another window, gone overlay: nothing delivered.
+    expect(m.postEnvelope(W1, id, 'made-up', '{"$cc":1}')).toBe(false)
+    expect(m.postEnvelope(W2, id, first, '{"$cc":1}')).toBe(false)
+    expect(envelopes()).toEqual([[D, first]])
+  })
+
+  it('postEnvelope to a copy mayConnectCopy no longer admits is dropped and never sets joined', () => {
+    const m = nm()
+    const id = open(m)
+    guests.add('web:2')
+    allowed.add('web:2')
+    const owner = ready(m, id, D)
+    const guest = ready(m, id, 'web:2')
+    expect(m.postEnvelope(W1, id, guest, '{"$cc":1}')).toBe(true)
+    // The rule is read at each push: a guest the opener's plugin (or a via plugin) is now hidden from gets nothing.
+    allowed.delete('web:2')
+    expect(m.postEnvelope(W1, id, guest, '{"$cc":1}')).toBe(false)
+    // Main's pushes are not the opener's addressed post: neither copy joins broadcasts.
+    expect(m.postEnvelope(W1, id, owner, '{"$cc":1}')).toBe(true)
+    expect(m.copies(W1, id).map((c) => c.joined)).toEqual([false, false])
+    expect(envelopes()).toEqual([
+      ['web:2', guest],
+      [D, owner]
+    ])
+    // A plain post never carries the mark.
+    m.post(W1, id, '{"plain":1}', { copy: owner })
+    const plain = toView.filter((e) => (e.payload as { message: string }).message === '{"plain":1}')
+    expect(plain).toHaveLength(1)
+    expect(plain[0]!.payload).not.toHaveProperty('envelope')
+  })
+
+  it('copyOwner of a retired copy or another window\'s overlay is undefined', () => {
+    const m = nm()
+    const id = open(m)
+    const c = ready(m, id, 'web:1')
+    expect(m.copyOwner(W1, id, c)).toBe('web:1')
+    expect(m.copyOwner(W2, id, c)).toBeUndefined()
+    expect(m.copiesOf(W1, id)).toEqual([{ copy: c, view: 'web:1' }])
+    expect(m.copiesOf(W2, id)).toEqual([])
+    m.releaseCopy(W1, id, 'web:1', c)
+    expect(m.copyViewOf(W1, id, c)).toBe('web:1')
+    expect(m.copyOwner(W1, id, c)).toBeUndefined()
+    expect(m.copyOwner(W1, id, 7)).toBeUndefined()
+  })
+
+  it('onCopyEnd fires on release, replace, view gone (:951), hide, overflow and close', () => {
+    const m = nm()
+    const ended: string[] = []
+    const readied: string[] = []
+    m.onCopyEnd((e) => ended.push(e.copy))
+    m.onCopyReady((e) => readied.push(e.copy))
+    const id = open(m)
+    // release
+    const a = ready(m, id, D)
+    m.releaseCopy(W1, id, D, a)
+    // replace
+    const b = ready(m, id, D)
+    const b2 = ready(m, id, D)
+    // view gone
+    const c = ready(m, id, 'web:1')
+    m.viewGone('web:1')
+    // hide (the opener's handle.hide)
+    const d = ready(m, id, 'web:3')
+    expect(m.hideCopy(W1, id, d)).toBe(true)
+    // overflow: a copy whose port never came up, its queue full
+    const r = m.connectCopy(W1, id, 'web:4')
+    if (!r.ok) throw new Error('refused')
+    for (let i = 0; i <= MAX_QUEUED_OVERLAY_MESSAGES; i++) m.post(W1, id, '"x"', { copy: r.copy })
+    expect(ended).toEqual([a, b, c, d, r.copy])
+    expect(readied).toEqual([a, b, b2, c, d])
+    // close: every live copy ends with the overlay (no opener disconnects, but main's services hear it)
+    m.close(W1, id)
+    expect(ended).toEqual([a, b, c, d, r.copy, b2])
+    // The listener carries main's record of the copy.
+    const seen: unknown[] = []
+    const off = m.onCopyEnd((e) => seen.push(e))
+    const id2 = open(m)
+    const e = ready(m, id2, D)
+    m.releaseCopy(W1, id2, D, e)
+    expect(seen).toEqual([{ windowId: W1, overlayId: id2, copy: e, view: D, pluginId: 'a.one' }])
+    off()
+    m.releaseCopy(W1, id2, D, ready(m, id2, D))
+    expect(seen).toHaveLength(1)
+  })
+
+  it('isOverlayPage is false for a closed overlay, another window or a throw', () => {
+    const m = nm()
+    const id = open(m)
+    expect(m.isOverlayPage(W1, 'cc-plugin://a.one/doc.html')).toBe(true)
+    // The page may set its own hash or query.
+    expect(m.isOverlayPage(W1, 'cc-plugin://a.one/doc.html?x=1#y')).toBe(true)
+    expect(m.isOverlayPage(W1, 'cc-plugin://a.one/other.html')).toBe(false)
+    expect(m.isOverlayPage(W1, 'cc-plugin://b.two/doc.html')).toBe(false)
+    expect(m.isOverlayPage(W2, 'cc-plugin://a.one/doc.html')).toBe(false)
+    expect(m.isOverlayPage(W1, 'not a url')).toBe(false)
+    expect(m.isOverlayPage(W1, 42)).toBe(false)
+    // An inline page (the CLI's) is no plugin's overlay page.
+    void m.open(W1, { kind: 'html', html: '<p>x</p>' }, 'cli')
+    const inline = m.infos(W1).at(-1)!
+    expect(inline.kind === 'html' && m.isOverlayPage(W1, inline.src)).toBe(false)
+    m.close(W1, id)
+    expect(m.isOverlayPage(W1, 'cc-plugin://a.one/doc.html')).toBe(false)
+  })
+
+  it('overlaysWithNotes matches the opener and the key; parts are stubs', async () => {
+    const m = nm()
+    const id = open(m)
+    void m.open(W1, page, 'plugin b.two', undefined, channel, 'b.two', undefined, undefined, { perView: true })
+    expect(m.overlaysWithNotes(W1, 'a.one', 'doc:1')).toEqual([id])
+    expect(m.overlaysWithNotes(W1, 'a.one', 'doc:2')).toEqual([])
+    expect(m.overlaysWithNotes(W2, 'a.one', 'doc:1')).toEqual([])
+    expect(m.partsOf(W1, id)).toEqual([])
+    expect(m.markAnnounced(W1, id)).toBe(false)
+    await expect(m.attachPart(W1, id, 'b.two', { kind: 'html', src: 'cc-plugin://b.two/p.html' }, channel, { perView: true })).rejects.toThrow(/parts/)
+  })
+})

@@ -268,6 +268,37 @@ with full Node access.
   An older app has no `ctx.services.callers` and sends no `requestedBy`: check `typeof ctx.services.callers ===
   'function'`; and it ignores `{ view }` on `ctx.openExternal`, so a `perView` plugin needs the app version that
   has `perView` anyway.
+- Notes (`notes: { key }` in an `html` spec with a `file`): the overlay keeps notes in the app under `key` (1-200
+  characters of `A-Z a-z 0-9 . _ : @ # + = ~ / -`, say `jira:PROJ-123`), per project and plugin, shared by every
+  view's copy and kept over Esc and restarts. Needs `"overlays": { "perView": true }` (`start` throws otherwise).
+  The page gets `ccPanel.notes` and `ccPanel.ask` (`panels` topic), and Discuss with Claude sends the notes as
+  their own part, fenced as data, each saying who wrote it. Writes: the owner and write guests; a read guest sees
+  them. Caps: 200 notes, 4,000 characters each and for the note for Claude, 400,000 characters of JSON per key,
+  1,000 keys; a write past one is refused, never cut. An older app ignores `notes`: check for `ccPanel.notes`.
+- `ctx.notes(key)`: your host's view of the same notes, in this project: `{ list(), add({ quote, anchor?, text }),
+  change(id, { text }), remove(id), setGlobal(text), onChange(fn) }`. `list()` resolves `{ global, notes, rev }`,
+  a note `{ id, quote, anchor, text, rev, author }` (`author` is the app's word: `{ access: 'owner' | 'write',
+  person? }`, or `{ plugin: true }` for a note your host added). `onChange` runs after any write (a page's, another
+  view's, Discuss removing the notes it sent): list again. An older app has none: check `typeof ctx.notes`.
+- `handle.onAsk((from) => ({ text }) | null)`: Ask (the page's `ccPanel.ask`, on an overlay with `notes`) asks for
+  the document the chat is about, within 10 s; the first handler with a text wins, all null, a throw or a timeout
+  refuses the question. Text past 100,000 characters is cut, with a note. `from` is the asking copy (view, access,
+  person, copy). Ask runs Claude in the app, never in your host: the owner's is a regular `claude -p` session in
+  the project folder (the person's settings and tools; anything that would ask permission is denied), a write
+  guest's has no tools at all, a read guest has none. It starts on the first question, and a reopened overlay with
+  the same key shows the chat again and continues it.
+- `handle.announce({ kind, refs })`: say what this overlay shows, for other plugins' `ctx.overlay.onAnnounce`
+  (`kind` 1-40 of `a-z 0-9 . -`; `refs` at most 20 strings of at most 200 characters; at most 5 a minute; a new
+  one replaces the last). Every listener of the window hears it, so never put the document in it. Announcing is
+  your consent to parts beside your page.
+- `ctx.overlay.onAnnounce(kind, fn)`: hear announcements of `kind` in this window; `fn({ overlay: { id, opener,
+  title, type? }, kind, refs })`, 2 s each (a slow or throwing one is skipped and logged); a later listener first
+  hears the live ones. `refs` are the opener's data: check them before acting.
+- `ctx.overlay.part(overlayId, { file, title?, ready? })`: draw your own part beside an announced overlay's page: an
+  ordinary `perView` html overlay of yours (its own frame, port, copies and handle), in that window, at most 2 parts
+  and one per plugin. Throws when the overlay is gone, was not announced, is a part, or has your part already.
+  `handle.close()` detaches it; it ends with its window. A guest sees it only when it may see both plugins. Check
+  `typeof handle.announce`, `ctx.overlay.onAnnounce` and `ctx.overlay.part` first: an older app has none.
 - `ctx.overlay.buttons(typeName, provider)`: add buttons to every overlay of that `type` in the
   window, whoever opened it. `provider(info)` gets `{ type: { name, data }, title, opener }` and
   answers up to 4 buttons, each with a `run(info, from)`; it is asked when such an overlay opens, after

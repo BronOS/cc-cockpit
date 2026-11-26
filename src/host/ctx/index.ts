@@ -22,6 +22,7 @@ import {
   type OAuthTokens,
   type PluginContext,
   type PluginLogger,
+  type PluginNotes,
   type PluginProcess,
   type ProcessSpawnOptions,
   type PluginSettings,
@@ -567,7 +568,20 @@ export class HostContexts {
       themes: createThemesApi({ pluginId: spec.id, call, guardAsync }),
       log: Object.freeze(logger),
       notify,
-      openExternal
+      openExternal,
+      // 00 contract stub (sdk/types.ts PluginNotes); task 05 replaces it with host/ctx/notes.ts. Every call is refused
+      // (no Notes service in main yet: S2), as a rejection, so a plugin's await sees why.
+      notes: (): PluginNotes => {
+        const refused = (): Promise<never> => Promise.reject(new Error('ctx.notes: notes are not available in this build'))
+        return Object.freeze({
+          list: refused,
+          add: refused,
+          change: refused,
+          remove: refused,
+          setGlobal: refused,
+          onChange: (): Disposer => () => {}
+        })
+      }
     })
   }
 

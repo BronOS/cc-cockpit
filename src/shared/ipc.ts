@@ -24,6 +24,7 @@ import type { DeliverHeldAnswer, TabRoom, TabRoomRef } from './tab-room'
 import type { RoomRemoveAsk, RoomView } from './room-view'
 import type { GroupRefusalReason, GroupsSnapshot, PaneEdge, PlaceIntent } from './tab-groups'
 import type { DiscussTarget } from './discuss'
+import type { AskPickState, NotesSnapshot, NoteWriteResult } from './overlay-envelope'
 import type { DownloadAccept, DownloadAnswer, DownloadFailed, DownloadOffer, DownloadSettled, DownloadStart } from './downloads'
 import type {
   UploadBeginReply,
@@ -1145,6 +1146,16 @@ export type OverlayInfo = OverlayInfoBody & {
    */
   pluginId?: string
   pluginTitle?: string
+  /**
+   * The overlay has a notes key (spec `notes: { key }`, shared/design.md §3): its copies' intro says so, and the page
+   * gets `ccPanel.notes` (and `ccPanel.ask`, for a view that may Ask). Never the key itself: that is main's.
+   */
+  notes?: true
+  /**
+   * A part (design-parts.md §2): the overlay id of the window it is drawn in. A part is never on the stack itself;
+   * the shell draws it beside its parent's page.
+   */
+  partOf?: string
 }
 
 /** Why main gave a view no copy of a `perView` overlay (OverlayManager.connectCopy; `cap`: try again later). */
@@ -1771,6 +1782,46 @@ export interface IpcInvokeMap {
     req: { overlayId: string; target: DiscussTarget }
     res: DiscussAnswer
   }
+  /*
+   * Notes and Ask (shared/design.md §3, §5; spec-review S1, S2; design-parts.md §7). A perView overlay copy's page
+   * asks through its own port (shared/overlay-envelope.ts); the shell turns each request into one of these, adding
+   * the overlay and the copy from its own record. Main takes the caller's view from the connection it bound, refuses
+   * unless `copy` is that view's live copy of the overlay (OverlayManager.copyOwner), and refuses a non-perView
+   * overlay or one with no notes key. A refusal throws: the shell answers the page `ok: false`.
+   */
+  /** The overlay's notes (its key's whole state) and the store-wide push counter it reflects. */
+  'overlays.notes.read': { req: { overlayId: string; copy: string }; res: NotesSnapshot }
+  /**
+   * One write to the overlay's notes: add (main mints the id and reads the author from the caller), change a note's
+   * text, remove a note, or set the note for Claude. Past a cap (shared/notes-limits.ts) it is refused, never cut.
+   */
+  'overlays.notes.write': {
+    req:
+      | { overlayId: string; copy: string; op: 'add'; quote: string; anchor: unknown; text: string }
+      | { overlayId: string; copy: string; op: 'change'; id: string; text: string }
+      | { overlayId: string; copy: string; op: 'remove'; id: string }
+      | { overlayId: string; copy: string; op: 'setGlobal'; text: string }
+    res: NoteWriteResult
+  }
+  /**
+   * Ask's first question in this copy (D14: Claude starts only now; a chat stored for the key resumes). A new start
+   * on a copy replaces its chat. Pushes (`overlays.message`, `envelope: true`) go to the asking copy only.
+   */
+  'overlays.ask.start': { req: { overlayId: string; copy: string; question: string; quote?: string }; res: void }
+  /** A follow-up question in the copy's chat; refused while a turn runs (busy). */
+  'overlays.ask.say': { req: { overlayId: string; copy: string; question: string; quote?: string }; res: void }
+  /** The copy's chat closed: its process ends (the stored turns stay, D14). */
+  'overlays.ask.close': { req: { overlayId: string; copy: string }; res: void }
+  /**
+   * The model and effort pick (D3), checked against session-options.ts's lists; empty: a read. Saved app-wide only
+   * for the owner (S5); a guest's pick holds for its own chat only.
+   */
+  'overlays.ask.pick': { req: { overlayId: string; copy: string; model?: string; effort?: string }; res: AskPickState }
+  /**
+   * Continue in a tab (D14): main ends the Ask process and opens a Claude tab resuming the key's session, in the
+   * project root. The owner's only (`isOwner(view)`); refused for a key with no session.
+   */
+  'overlays.ask.continue': { req: { overlayId: string; copy: string }; res: { tabId: string } }
 
   // Webview panels (PanelInfo.kind 'webview'). The panel key must name a webview panel of a
   // plugin of the sender's project; the view is the one in the sender's window.
@@ -2238,7 +2289,17 @@ export interface IpcEventMap {
    * `copy`: a `perView` overlay's copy it is for (main's id, docs/design-overlay-views.md §5); the shell
    * hands it to that copy's page only, so a replaced copy's late message never reaches its successor.
    */
-  'overlays.message': { overlayId: string; message: string; copy?: string }
+  'overlays.message': {
+    overlayId: string
+    message: string
+    copy?: string
+    /**
+     * Main's own push (a notes or Ask envelope, shared/overlay-envelope.ts, OverlayManager.postEnvelope), never the
+     * opener's post: the shell hands a message to the page as an envelope only with this mark, so a plugin host cannot
+     * fake core's notes or Ask to its own page.
+     */
+    envelope?: true
+  }
   /**
    * The opener hid this view's copy of a `perView` overlay (handle.hide: a read guest's own Close): main
    * released it already; the shell unloads it and takes the overlay off this view's stack. Sent to the
@@ -2475,6 +2536,13 @@ export const INVOKE_CHANNELS = [
   'overlays.take',
   'overlays.button',
   'overlays.discuss',
+  'overlays.notes.read',
+  'overlays.notes.write',
+  'overlays.ask.start',
+  'overlays.ask.say',
+  'overlays.ask.close',
+  'overlays.ask.pick',
+  'overlays.ask.continue',
   'webviews.placement',
   'webviews.step',
   'webviews.current',
@@ -2910,6 +2978,16 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'overlays.take': 'yes',
   'overlays.button': 'yes',
   'overlays.discuss': 'yes',
+  // Notes and Ask (shared/design.md §3, §5): project work on the caller's own copy, which main checks against the view
+  // it bound (copyOwner); who may write or Ask is GUEST_CLASS's and the handlers' (isOwner, never view.remote).
+  'overlays.notes.read': 'yes',
+  'overlays.notes.write': 'yes',
+  'overlays.ask.start': 'yes',
+  'overlays.ask.say': 'yes',
+  'overlays.ask.close': 'yes',
+  'overlays.ask.pick': 'yes',
+  // The owner's own act on any of its views (a browser's included): the handler refuses anything not isOwner(view).
+  'overlays.ask.continue': 'yes',
 
   // Webview panels: a WebContentsView in the host's window ("available on the desktop", §6.1).
   'webviews.placement': 'no',
