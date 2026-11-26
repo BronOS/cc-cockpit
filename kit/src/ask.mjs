@@ -67,6 +67,13 @@ export function mountAsk(container, opts = {}) {
   let phase = null
   let quote = null
   /**
+   * Whether the chat has a Claude session to continue, as far as the pushes say (they carry no session id): stored
+   * turns not continued elsewhere, or an answer that came. Continue in a tab shows only then (QA F3: before any
+   * answer it only ever drew main's "no session to continue yet"); after this view continued, or an end with an
+   * error (a resume that failed drops the session), it hides until the next answer.
+   */
+  let hasSession = false
+  /**
    * A turn is running: one this view asked (`open`), another view's streaming here, or main's phase says so (a page
    * loaded mid-turn). Ask waits then: main refuses a question during a turn ("Ask: busy"), and asking used to replace
    * `open`, so the running turn's question was lost and its answer streamed under an empty one (review S-9).
@@ -127,12 +134,16 @@ export function mountAsk(container, opts = {}) {
   const close = button('Close chat', () => attempt(() => api.close()).catch(() => {}))
   const cont = button('Continue in a tab', () => {
     // The SDK's name (ccPanel.ask.continue, the owner's; the app refuses anyone else).
-    attempt(() => api.continue()).catch((err) => {
+    attempt(() => api.continue()).then(() => {
+      hasSession = false
+      syncContinue()
+    }, (err) => {
       setText(error, errorText(err, 'Not continued.'))
       show(error, true)
     })
   })
-  show(cont, opts.canContinue === true)
+  const syncContinue = () => show(cont, opts.canContinue === true && hasSession)
+  syncContinue()
   const el = h(
     doc,
     'section',
@@ -198,6 +209,8 @@ export function mountAsk(container, opts = {}) {
           ? ev.turns.filter((t) => t && typeof t.question === 'string').map((t) => ({ question: t.question, quote: typeof t.quote === 'string' ? t.quote : undefined, answer: typeof t.answer === 'string' ? t.answer : '', error: typeof t.error === 'string' ? t.error : undefined }))
           : []
         applyPick(ev.pick)
+        hasSession = turns.length > 0 && typeof ev.continuedIn !== 'string'
+        syncContinue()
         if (typeof ev.continuedIn === 'string') setText(status, 'Continued in a Claude tab.')
         draw()
         return
@@ -225,6 +238,10 @@ export function mountAsk(container, opts = {}) {
         if (!open) open = { question: '', answer: '', tools: [] }
         if (typeof ev.text === 'string') open.answer = ev.text
         if (typeof ev.error === 'string') open.error = ev.error
+        else {
+          hasSession = true
+          syncContinue()
+        }
         turns.push(open)
         open = null
         draw()
@@ -232,6 +249,10 @@ export function mountAsk(container, opts = {}) {
       case 'end':
         running = false
         phase = null
+        if (ev.error === true) {
+          hasSession = false
+          syncContinue()
+        }
         if (open) {
           open.error = typeof ev.message === 'string' && ev.message ? ev.message : 'The chat ended.'
           turns.push(open)
