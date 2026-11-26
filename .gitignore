@@ -22,3 +22,6 @@ playwright-report/
 !marketplace/tools/dist/
 # The example plugin ships its built host too: it is the master copy of a public template repo (examples/plugin/README.md).
 !examples/plugin/dist/
+# The overlay kit ships built (kit/README.md; plugins vendor these bytes), and so does the kit-demo fixture's copy.
+!kit/dist/
+!test/fixtures/plugins/kit-demo/kit/dist/

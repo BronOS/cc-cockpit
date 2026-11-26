@@ -1,0 +1,25 @@
+{
+  "id": "test.kitdemo",
+  "name": "Kit demo",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [
+      {
+        "id": "open",
+        "title": "Kit demo: Open"
+      },
+      {
+        "id": "fail",
+        "title": "Kit demo: Open failing"
+      }
+    ]
+  },
+  "overlays": {
+    "perView": true
+  },
+  "guests": {
+    "aware": true
+  }
+}
