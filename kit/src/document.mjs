@@ -7,8 +7,8 @@ import { locate, makeAnchor } from './anchor.mjs'
 import { postLink } from './connect.mjs'
 import { elementsOf, env, h, listen, textNodesOf, toggleClass } from './dom.mjs'
 
-/** Classes the sanitizer itself adds (an image placeholder, a caller's action button): kept with `classes: 'none'`. */
-const OWN_CLASSES = new Set(['img-missing', 'doc-action'])
+/** Classes the sanitizer itself adds (an image placeholder): kept with `classes: 'none'`. */
+const OWN_CLASSES = new Set(['img-missing'])
 
 /** The parse of a document's HTML: inert (no script runs, nothing loads). */
 const defaultParse = (html) => new DOMParser().parseFromString(html, 'text/html')

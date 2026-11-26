@@ -325,6 +325,18 @@ test('S-10: a note being edited keeps what was typed when the notes change anywh
   notes.destroy()
 })
 
+test('N9: a document\'s span[data-action] stays a plain span: no button the kit never wired', async () => {
+  const doc = new FakeDocument()
+  const root = doc.createElement('div')
+  doc.body.appendChild(root)
+  const html = parsed(doc, el(doc, 'p', {}, 'Pictures are hidden. ', el(doc, 'span', { 'data-action': 'show-images', title: 'Show' }, 'Show images')))
+  const r = kit.renderDocument(root, { html: 'ignored' }, { doc, parse: () => html })
+  assert.equal(byTag(r.root, 'button').length, 0)
+  const span = byTag(r.root, 'span').find((s) => s.textContent === 'Show images')
+  assert.ok(span, 'the label stays as text')
+  assert.equal(span.getAttribute('data-action'), null)
+})
+
 test("mountAsk shows a state push's notice beside the phase, as text (D15)", async () => {
   const doc = new FakeDocument()
   const panel = fakePanel()
