@@ -627,6 +627,9 @@ describe('the copy intro (S1, design-parts §2)', () => {
     expect(overlayIntroOf({ notes: true }, 'read').overlay).toEqual({ notes: true, ask: false, discuss: false })
     // No notes key: no notes and no Ask.
     expect(overlayIntroOf({}, 'owner').overlay).toEqual({ notes: false, ask: false, discuss: true })
+    // The spec said discuss: false (main's discussOff): never offered, whatever comes later (review r2 n1).
+    expect(overlayIntroOf({ notes: true, discussOff: true }, 'owner').overlay).toEqual({ notes: true, ask: true, discuss: false })
+    expect(overlayIntroOf({ discussOff: true }, 'write').overlay).toEqual({ notes: false, ask: false, discuss: false })
     expect(overlayIntroOf({ ...both, partOf: 'o1' }, 'owner').overlay).toEqual({ notes: false, ask: false, discuss: false })
   })
 })

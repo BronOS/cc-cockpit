@@ -2242,6 +2242,9 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     expect(preferred!.discuss).toEqual({ tabId: 't2' })
     expect(off).not.toHaveProperty('discuss')
     expect(bare).not.toHaveProperty('discuss')
+    // Only the opt-out is marked (the page's intro offers no Discuss then); a bare overlay may still get a handler.
+    expect(off!.discussOff).toBe(true)
+    for (const o of [typed, preferred, bare]) expect(o).not.toHaveProperty('discussOff')
     // A handler brings it to an untyped overlay, and takes it away again; discuss: false stays off.
     expect(m.setDiscussHandler(W1, bare!.id, true)).toBe(true)
     expect(m.infos(W1)[3]!.discuss).toEqual({})
@@ -2250,6 +2253,7 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     expect(m.infos(W1)[3]).not.toHaveProperty('discuss')
     m.setDiscussHandler(W1, off!.id, true)
     expect(m.infos(W1)[2]).not.toHaveProperty('discuss')
+    expect(m.infos(W1)[2]!.discussOff).toBe(true)
     // Another window's id is unknown.
     expect(m.setDiscussHandler(W2, bare!.id, true)).toBe(false)
   })

@@ -1115,6 +1115,11 @@ export type OverlayInfo = OverlayInfoBody & {
    */
   discuss?: { tabId?: string; primary?: true }
   /**
+   * Present when the spec said `discuss: false`: Discuss never shows, so a copy's intro offers no page-started Discuss
+   * either (overlayIntroOf). Without it `discuss` may still come later (an `onDiscuss` added after the page loaded).
+   */
+  discussOff?: true
+  /**
    * Present while the body is not ready yet (design-next §3.4), so the renderer draws a loader over
    * it: html until the page's port is up (`ready: 'load'`, the default) or until it calls
    * `ccPanel.ready()` (`ready: 'manual'`); url until the view's first load ends (loaded or failed);
