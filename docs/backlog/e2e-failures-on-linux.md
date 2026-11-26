@@ -17,5 +17,10 @@ stale spec, or a real bug.
 - `tab-command-overlays.spec.ts:51`
 - `window-bounds.spec.ts:40` and `:62`
 
+Run 003 (overlay foundation, 2026-11-26, QA's full e2e on 0.27.0 master and the run's branch): `tab-command-overlays.spec.ts:51`
+and both `window-bounds.spec.ts` tests still fail alone; new in that list, `project-color.spec.ts:63` fails alone on both.
+`server-mode.spec.ts:386` failed once in a full run and passed alone (load flake). The guest, upload, split and
+reviewer-annotate ones above were not reported failing in that run.
+
 Also seen (pre-existing, not a failure): a `tabs.create` invoked straight from a page does not show in that page's own
 strip until a reload; specs create through the UI.
